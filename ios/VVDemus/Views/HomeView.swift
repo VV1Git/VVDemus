@@ -29,9 +29,10 @@ struct HomeView: View {
     @State private var sections: [RecommendationSection] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     Text(greeting)
@@ -78,6 +79,7 @@ struct HomeView: View {
                     RadioDetailView(seedTrack: seed, player: player)
                 }
             }
+            .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
         }
         .task { await load() }
         .refreshable { await load() }

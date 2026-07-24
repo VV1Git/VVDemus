@@ -6,9 +6,10 @@ struct SearchView: View {
     @State private var results: [Track] = []
     @State private var isLoading = false
     @State private var searchTask: Task<Void, Never>?
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if results.isEmpty && !query.trimmingCharacters(in: .whitespaces).isEmpty && !isLoading {
                     Text("No results for \"\(query)\"")
@@ -39,6 +40,17 @@ struct SearchView: View {
             }
             .background(Theme.background)
             .navigationTitle("Search")
+            .navigationDestination(for: LibraryDestination.self) { destination in
+                switch destination {
+                case .liked:
+                    LikedSongsView(player: player)
+                case .playlist(let id):
+                    PlaylistDetailView(playlistId: id, player: player)
+                case .radio(let seed):
+                    RadioDetailView(seedTrack: seed, player: player)
+                }
+            }
+            .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
         }
         .searchable(text: $query, prompt: "Songs, artists")
         .onChange(of: query) { _, newValue in

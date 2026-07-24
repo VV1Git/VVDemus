@@ -7,6 +7,7 @@ struct TrackRowActions: ViewModifier {
     @ObservedObject var player: PlayerService
     @ObservedObject private var liked = LikedSongsStore.shared
     @ObservedObject private var playlists = PlaylistStore.shared
+    @Environment(\.openRadio) private var openRadio
     @State private var showNewPlaylistAlert = false
     @State private var newPlaylistName = ""
 
@@ -32,7 +33,7 @@ struct TrackRowActions: ViewModifier {
                     Label("Add to Queue", systemImage: "text.badge.plus")
                 }
                 Button {
-                    player.playRadio(for: track)
+                    openRadio(track)
                 } label: {
                     Label("Go to Radio", systemImage: "dot.radiowaves.left.and.right")
                 }

@@ -127,29 +127,6 @@ final class PlayerService: ObservableObject {
         load(track)
     }
 
-    /// Start this track's radio: the track itself, followed by similar songs.
-    /// Saved to RadioHistoryStore so it shows up on Home/Library, like Spotify's radio shortcuts.
-    func playRadio(for track: Track) {
-        isLoading = true
-        errorMessage = nil
-        loadTask?.cancel()
-        RadioHistoryStore.shared.record(seed: track)
-        loadTask = Task {
-            do {
-                let mix = try await APIClient.shared.radio(videoId: track.videoId, limit: 30)
-                guard !Task.isCancelled else { return }
-                let seed = mix.first ?? track
-                upNext = Array(mix.dropFirst())
-                queueContextTitle = "\(track.title) Radio"
-                load(seed)
-            } catch {
-                guard !Task.isCancelled else { return }
-                isLoading = false
-                errorMessage = "Couldn't start radio for \"\(track.title)\"."
-            }
-        }
-    }
-
     // MARK: - Queue manipulation
 
     func addToQueue(_ track: Track) {

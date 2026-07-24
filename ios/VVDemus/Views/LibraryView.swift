@@ -6,9 +6,10 @@ struct LibraryView: View {
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @State private var showNewPlaylist = false
     @State private var newPlaylistName = ""
+    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 Section {
                     NavigationLink(value: LibraryDestination.liked) {
@@ -89,6 +90,7 @@ struct LibraryView: View {
                     RadioDetailView(seedTrack: seed, player: player)
                 }
             }
+            .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
