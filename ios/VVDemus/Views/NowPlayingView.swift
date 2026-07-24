@@ -118,30 +118,51 @@ struct NowPlayingView: View {
     }
 
     private var transportControls: some View {
-        HStack(spacing: 44) {
-            Button { player.previous() } label: {
-                Image(systemName: "backward.fill").font(.title2)
+        HStack {
+            Button { player.toggleShuffle() } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "shuffle")
+                        .font(.title3)
+                    Circle()
+                        .fill(player.isShuffling ? Theme.accent : .clear)
+                        .frame(width: 4, height: 4)
+                }
+                .foregroundStyle(player.isShuffling ? Theme.accent : .white)
             }
+            .frame(width: 44)
 
-            Button { player.togglePlayPause() } label: {
-                ZStack {
-                    Circle().fill(Color.white).frame(width: 64, height: 64)
-                    if player.isLoading {
-                        ProgressView().tint(.black)
-                    } else {
-                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 26))
-                            .foregroundStyle(.black)
+            Spacer()
+
+            HStack(spacing: 44) {
+                Button { player.previous() } label: {
+                    Image(systemName: "backward.fill").font(.title2)
+                }
+
+                Button { player.togglePlayPause() } label: {
+                    ZStack {
+                        Circle().fill(Color.white).frame(width: 64, height: 64)
+                        if player.isLoading {
+                            ProgressView().tint(.black)
+                        } else {
+                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 26))
+                                .foregroundStyle(.black)
+                        }
                     }
+                }
+
+                Button { player.advance() } label: {
+                    Image(systemName: "forward.fill").font(.title2)
                 }
             }
 
-            Button { player.advance() } label: {
-                Image(systemName: "forward.fill").font(.title2)
-            }
+            Spacer()
+
+            Color.clear.frame(width: 44)
         }
         .foregroundStyle(.white)
         .buttonStyle(.plain)
+        .padding(.horizontal, 24)
     }
 
     private func format(_ seconds: Double) -> String {

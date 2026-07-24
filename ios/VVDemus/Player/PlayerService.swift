@@ -8,7 +8,13 @@ final class PlayerService: ObservableObject {
     static let shared = PlayerService()
 
     @Published private(set) var currentTrack: Track?
-    @Published private(set) var upNext: [Track] = []
+    /// Explicitly user-queued tracks ("Play Next" / "Add to Queue"), FIFO — these always
+    /// play before the rest of the current context, regardless of shuffle.
+    @Published private(set) var manualQueue: [Track] = []
+    /// The rest of the playlist/radio/search results that were playing when playback
+    /// started (or that autoplay fetched next). Reorders when shuffle is toggled.
+    @Published private(set) var contextQueue: [Track] = []
+    @Published private(set) var isShuffling = false
     @Published private(set) var isPlaying = false
     @Published private(set) var isLoading = false
     @Published private(set) var progress: Double = 0
@@ -18,6 +24,9 @@ final class PlayerService: ObservableObject {
 
     var autoplayEnabled = true
 
+    /// contextQueue in its real (unshuffled) order — the source of truth restored when
+    /// shuffle is turned off, and reshuffled fresh each time it's turned back on.
+    private var orderedContextQueue: [Track] = []
     private var backStack: [Track] = []
     private let recentRadioAvoidCount = 12
 
@@ -118,38 +127,69 @@ final class PlayerService: ObservableObject {
 
     /// Play `track`, queuing up whatever comes after it in `context` (the list it was tapped from).
     func play(track: Track, context: [Track] = [], contextTitle: String? = nil) {
+        manualQueue = []
+        isShuffling = false
         if let index = context.firstIndex(where: { $0.id == track.id }) {
-            upNext = Array(context[(index + 1)...])
+            orderedContextQueue = Array(context[(index + 1)...])
         } else {
-            upNext = []
+            orderedContextQueue = []
         }
+        contextQueue = orderedContextQueue
         queueContextTitle = contextTitle
         load(track)
+    }
+
+    // MARK: - Shuffle
+
+    /// Toggling on shuffles the remaining context queue fresh (so re-enabling after
+    /// disabling produces a new order, not the last shuffle); toggling off restores the
+    /// real order. Manually queued tracks are never shuffled — the user chose that order.
+    func toggleShuffle() {
+        isShuffling.toggle()
+        contextQueue = isShuffling ? orderedContextQueue.shuffled() : orderedContextQueue
     }
 
     // MARK: - Queue manipulation
 
     func addToQueue(_ track: Track) {
-        upNext.append(track)
+        manualQueue.append(track)
     }
 
     func playNext(_ track: Track) {
-        upNext.removeAll { $0.id == track.id }
-        upNext.insert(track, at: 0)
+        manualQueue.removeAll { $0.id == track.id }
+        manualQueue.insert(track, at: 0)
     }
 
     func removeFromQueue(_ track: Track) {
-        upNext.removeAll { $0.id == track.id }
+        manualQueue.removeAll { $0.id == track.id }
+        contextQueue.removeAll { $0.id == track.id }
+        orderedContextQueue.removeAll { $0.id == track.id }
     }
 
-    func moveInQueue(from source: IndexSet, to destination: Int) {
-        upNext.move(fromOffsets: source, toOffset: destination)
+    func moveInManualQueue(from source: IndexSet, to destination: Int) {
+        manualQueue.move(fromOffsets: source, toOffset: destination)
     }
 
-    /// Jump straight to an item already in the queue, dropping whatever preceded it.
+    func moveInContextQueue(from source: IndexSet, to destination: Int) {
+        contextQueue.move(fromOffsets: source, toOffset: destination)
+        if !isShuffling {
+            orderedContextQueue = contextQueue
+        }
+    }
+
+    /// Jump straight to an item already in the queue, dropping whatever preceded it —
+    /// manual queue first, then context queue, matching how they're displayed.
     func skipTo(_ track: Track) {
-        guard let index = upNext.firstIndex(where: { $0.id == track.id }) else { return }
-        upNext.removeFirst(index + 1)
+        if let index = manualQueue.firstIndex(where: { $0.id == track.id }) {
+            manualQueue.removeFirst(index + 1)
+            load(track)
+            return
+        }
+        guard let index = contextQueue.firstIndex(where: { $0.id == track.id }) else { return }
+        manualQueue.removeAll()
+        let skipped = contextQueue.prefix(index + 1).map(\.id)
+        contextQueue.removeFirst(index + 1)
+        orderedContextQueue.removeAll { skipped.contains($0.id) }
         load(track)
     }
 
@@ -172,14 +212,23 @@ final class PlayerService: ObservableObject {
     }
 
     func advance() {
-        if !upNext.isEmpty {
-            let next = upNext.removeFirst()
+        if !manualQueue.isEmpty {
+            let next = manualQueue.removeFirst()
+            load(next)
+        } else if let next = popNextContextTrack() {
             load(next)
         } else if autoplayEnabled, let seed = currentTrack {
             continueAutoplay(from: seed)
         } else {
             isPlaying = false
         }
+    }
+
+    private func popNextContextTrack() -> Track? {
+        guard !contextQueue.isEmpty else { return nil }
+        let next = contextQueue.removeFirst()
+        orderedContextQueue.removeAll { $0.id == next.id }
+        return next
     }
 
     func previous() {
@@ -214,7 +263,8 @@ final class PlayerService: ObservableObject {
                     isPlaying = false
                     return
                 }
-                upNext = Array(fresh.dropFirst())
+                orderedContextQueue = Array(fresh.dropFirst())
+                contextQueue = isShuffling ? orderedContextQueue.shuffled() : orderedContextQueue
                 queueContextTitle = "\(seed.title) Radio"
                 load(next)
             } catch {

@@ -17,32 +17,29 @@ struct QueueView: View {
                     .moveDisabled(true)
             }
 
-            if player.upNext.isEmpty {
+            if player.manualQueue.isEmpty && player.contextQueue.isEmpty {
                 Text("Queue is empty — autoplay will keep the music going.")
                     .font(.footnote)
                     .foregroundStyle(Theme.textSecondary)
                     .listRowBackground(Theme.background)
                     .listRowSeparator(.hidden)
-            } else {
-                Section {
-                    ForEach(player.upNext) { track in
-                        TrackRow(track: track)
-                            .listRowBackground(Theme.background)
-                            .listRowSeparatorTint(Theme.card)
-                            .contentShape(Rectangle())
-                            .onTapGesture { player.skipTo(track) }
-                            // Swipe left (trailing edge) to remove — matches Spotify's convention.
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    player.removeFromQueue(track)
-                                } label: {
-                                    Label("Remove", systemImage: "minus.circle.fill")
-                                }
-                            }
+            }
+
+            if !player.manualQueue.isEmpty {
+                Section("Next in Queue") {
+                    ForEach(player.manualQueue) { track in
+                        queueRow(track)
                     }
-                    .onMove { player.moveInQueue(from: $0, to: $1) }
-                } header: {
-                    Text("Next Up")
+                    .onMove { player.moveInManualQueue(from: $0, to: $1) }
+                }
+            }
+
+            if !player.contextQueue.isEmpty {
+                Section(player.queueContextTitle.map { "Next from: \($0)" } ?? "Next Up") {
+                    ForEach(player.contextQueue) { track in
+                        queueRow(track)
+                    }
+                    .onMove { player.moveInContextQueue(from: $0, to: $1) }
                 }
             }
         }
@@ -50,6 +47,22 @@ struct QueueView: View {
         .scrollContentBackground(.hidden)
         .background(Theme.background)
         .environment(\.editMode, .constant(.active))
+    }
+
+    private func queueRow(_ track: Track) -> some View {
+        TrackRow(track: track)
+            .listRowBackground(Theme.background)
+            .listRowSeparatorTint(Theme.card)
+            .contentShape(Rectangle())
+            .onTapGesture { player.skipTo(track) }
+            // Swipe left (trailing edge) to remove — matches Spotify's convention.
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                Button(role: .destructive) {
+                    player.removeFromQueue(track)
+                } label: {
+                    Label("Remove", systemImage: "minus.circle.fill")
+                }
+            }
     }
 
     private var header: some View {
