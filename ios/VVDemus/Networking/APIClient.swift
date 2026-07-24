@@ -16,9 +16,18 @@ enum APIError: LocalizedError {
 final class APIClient {
     static let shared = APIClient()
 
-    /// Simulator reaches the Mac's own localhost via 127.0.0.1.
-    /// For a physical device, point this at your Mac's LAN IP instead (e.g. "http://192.168.1.23:8000").
-    var baseURL = URL(string: "http://127.0.0.1:8000")!
+    static let baseURLDefaultsKey = "backend_base_url"
+    /// Simulator reaches the Mac's own localhost via 127.0.0.1; a physical device can't, so it
+    /// needs the Mac's LAN IP instead (set from Settings — see BackendSettingsView).
+    static let defaultBaseURL = "http://127.0.0.1:8000"
+
+    var baseURL: URL = {
+        if let saved = UserDefaults.standard.string(forKey: APIClient.baseURLDefaultsKey),
+           let url = URL(string: saved) {
+            return url
+        }
+        return URL(string: APIClient.defaultBaseURL)!
+    }()
 
     private let session: URLSession = .shared
     private let decoder = JSONDecoder()
@@ -32,6 +41,13 @@ final class APIClient {
 
     func home() async throws -> [Track] {
         try await get("/home")
+    }
+
+    struct Health: Decodable { let ok: Bool }
+
+    func healthCheck() async throws -> Bool {
+        let health: Health = try await get("/health")
+        return health.ok
     }
 
     func playlist(_ id: String) async throws -> [Track] {

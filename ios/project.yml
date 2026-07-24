@@ -26,6 +26,11 @@ targets:
         UIUserInterfaceStyle: Dark
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+          # Only loopback/.local addresses are ATS-exempt automatically; a LAN IP like
+          # 192.168.x.x (needed to reach the Mac's backend from a real phone) is not,
+          # and the backend is plain HTTP. Personal-use LAN-only app, so arbitrary
+          # loads is an acceptable tradeoff rather than standing up TLS for it.
+          NSAllowsArbitraryLoads: true
         NSLocalNetworkUsageDescription: "VVDemus connects to your local backend server to search and stream music."
         UIBackgroundModes:
           - audio

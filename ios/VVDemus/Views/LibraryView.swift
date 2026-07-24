@@ -6,6 +6,7 @@ struct LibraryView: View {
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @State private var showNewPlaylist = false
     @State private var newPlaylistName = ""
+    @State private var showSettings = false
     @State private var path = NavigationPath()
 
     var body: some View {
@@ -92,6 +93,13 @@ struct LibraryView: View {
             }
             .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showNewPlaylist = true
@@ -108,6 +116,9 @@ struct LibraryView: View {
                     if !name.isEmpty { playlists.create(name: name) }
                     newPlaylistName = ""
                 }
+            }
+            .sheet(isPresented: $showSettings) {
+                BackendSettingsView()
             }
         }
     }
