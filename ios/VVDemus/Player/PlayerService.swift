@@ -324,6 +324,7 @@ final class PlayerService: ObservableObject {
         isPlaying = true
         isLoading = false
         PlayHistoryStore.shared.record(track)
+        ListeningStatsStore.shared.record(track)
         updateNowPlayingInfo()
 
         endObserver = NotificationCenter.default.addObserver(

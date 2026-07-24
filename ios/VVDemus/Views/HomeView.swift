@@ -104,6 +104,8 @@ struct HomeView: View {
                     DaylistDetailView(player: player)
                 case .downloads:
                     DownloadsView(player: player)
+                case .stats:
+                    StatsView(player: player)
                 }
             }
             .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }

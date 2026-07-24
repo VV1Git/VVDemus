@@ -35,6 +35,12 @@ struct LibraryView: View {
                     }
                     .listRowBackground(Theme.background)
                     .listRowSeparator(.hidden)
+
+                    NavigationLink(value: LibraryDestination.stats) {
+                        ShortcutRow(title: "Your Stats", imageURL: nil, systemImageFallback: "chart.bar.fill")
+                    }
+                    .listRowBackground(Theme.background)
+                    .listRowSeparator(.hidden)
                 }
 
                 if !radioHistory.stations.isEmpty {
@@ -118,6 +124,8 @@ struct LibraryView: View {
                     DaylistDetailView(player: player)
                 case .downloads:
                     DownloadsView(player: player)
+                case .stats:
+                    StatsView(player: player)
                 }
             }
             .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }

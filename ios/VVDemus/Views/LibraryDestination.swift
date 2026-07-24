@@ -7,4 +7,5 @@ enum LibraryDestination: Hashable {
     case radio(Track)
     case daylist
     case downloads
+    case stats
 }
