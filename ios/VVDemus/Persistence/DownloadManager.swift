@@ -74,10 +74,18 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     func remove(_ track: Track) {
-        if let url = localFileURL(for: track) {
-            try? FileManager.default.removeItem(at: url)
+        removeAll([track])
+    }
+
+    /// Bulk removal — one save() at the end instead of one per track.
+    func removeAll(_ tracks: [Track]) {
+        for track in tracks {
+            if let url = localFileURL(for: track) {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
-        downloadedTracks.removeAll { $0.id == track.id }
+        let idsToRemove = Set(tracks.map(\.id))
+        downloadedTracks.removeAll { idsToRemove.contains($0.id) }
         save()
     }
 
