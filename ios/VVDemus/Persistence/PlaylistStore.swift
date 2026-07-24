@@ -35,9 +35,9 @@ final class PlaylistStore: ObservableObject {
         save()
     }
 
-    func removeTrack(at offsets: IndexSet, from playlist: Playlist) {
+    func removeTrack(_ track: Track, from playlist: Playlist) {
         guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
-        playlists[index].tracks.remove(atOffsets: offsets)
+        playlists[index].tracks.removeAll { $0.id == track.id }
         save()
     }
 

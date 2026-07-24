@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		082596746F77B66284CC0342 /* PlaylistDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3749A84767663BE66CC19FE1 /* PlaylistDetailView.swift */; };
+		0F189141B4387ED956FEA49B /* MixSortOption.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F31636C2C095A73EB1B5E1E /* MixSortOption.swift */; };
 		10293C406D101E5F5735303C /* RemoteImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF660773C7BC7989E7E05D5B /* RemoteImage.swift */; };
 		16656422E88606F5DC30D4FB /* TrackRowActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D5509253603EAEB0DA11CA3 /* TrackRowActions.swift */; };
 		1857ADE5956C0D53D8AEFF50 /* PlayHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65807ECA760D586605EBE794 /* PlayHistoryStore.swift */; };
@@ -26,6 +27,7 @@
 		7649E5A7DC843C20E85C434E /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E5DFE4DA1AF52C9AF6172F7 /* NowPlayingView.swift */; };
 		7DC0BC48FEE5673360991904 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1408988D40442F8C2D74EDB9 /* APIClient.swift */; };
 		7E2F37BC5E54BFC545248DD9 /* RadioHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C57FFD369DF49FF64FEBBBBE /* RadioHistoryStore.swift */; };
+		8160D31B80DC00A168DADCC5 /* RadioDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44726B5C601B6B527D2AA4A7 /* RadioDetailView.swift */; };
 		81BDFFE48C64064A494FBE52 /* LikedSongsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 464C7EDC38ABAC13D8AFCD53 /* LikedSongsView.swift */; };
 		85A7BA4C32C23CB8423F2D11 /* HomeShelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEE323A81C0D0F79A7A1CCB9 /* HomeShelf.swift */; };
 		8EFAEF5EEE97CAC5D8830528 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA6C800B30627AF0F63270F /* RootView.swift */; };
@@ -34,6 +36,7 @@
 		B4E1B0DE2BA745CA668931CD /* VVDemusApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50964CDD65DBD8591D6D540 /* VVDemusApp.swift */; };
 		BE5CED11CC492E0D61C5E085 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10E8B217981BE6896AA6091E /* HomeView.swift */; };
 		C2605EED52D38BEA1F7996A1 /* Track.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D2482DD8A638DA753721FED /* Track.swift */; };
+		D206190078985BFE103A9AE4 /* MixDetailHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E17E32E089B5719C65506BB2 /* MixDetailHeader.swift */; };
 		E1DD2412792513A059F0D027 /* TrackRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C3AD15A14F7B2833A3EC05 /* TrackRow.swift */; };
 		E4DDFBB8DACEAF0D0AF20591 /* ArtworkColorLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69462CBED0F68B02C8DF2CD5 /* ArtworkColorLoader.swift */; };
 		ECADF6950ADDC8380A45DBEE /* Playlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 764FE1B65E9781A3D93FB7F7 /* Playlist.swift */; };
@@ -48,10 +51,12 @@
 		1D2482DD8A638DA753721FED /* Track.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Track.swift; sourceTree = "<group>"; };
 		1F6C4F55682CB1FBC029FEF1 /* TrackCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackCard.swift; sourceTree = "<group>"; };
 		23D4D1FB74714A8C3E085B63 /* PlaylistStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistStore.swift; sourceTree = "<group>"; };
+		2F31636C2C095A73EB1B5E1E /* MixSortOption.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixSortOption.swift; sourceTree = "<group>"; };
 		3724068A82FD576F953CA5B2 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		3749A84767663BE66CC19FE1 /* PlaylistDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistDetailView.swift; sourceTree = "<group>"; };
 		37C3AD15A14F7B2833A3EC05 /* TrackRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackRow.swift; sourceTree = "<group>"; };
 		406923FFB280590D32023F78 /* RadioStation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadioStation.swift; sourceTree = "<group>"; };
+		44726B5C601B6B527D2AA4A7 /* RadioDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadioDetailView.swift; sourceTree = "<group>"; };
 		464C7EDC38ABAC13D8AFCD53 /* LikedSongsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LikedSongsView.swift; sourceTree = "<group>"; };
 		52994059AB22AB5A4FD1C32D /* LibraryDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDestination.swift; sourceTree = "<group>"; };
 		531CDB2CD96A3B2898813D74 /* QueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueView.swift; sourceTree = "<group>"; };
@@ -73,6 +78,7 @@
 		C57FFD369DF49FF64FEBBBBE /* RadioHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadioHistoryStore.swift; sourceTree = "<group>"; };
 		D9DF3D4F42D29E3AFB672771 /* LikedSongsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LikedSongsStore.swift; sourceTree = "<group>"; };
 		DF660773C7BC7989E7E05D5B /* RemoteImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImage.swift; sourceTree = "<group>"; };
+		E17E32E089B5719C65506BB2 /* MixDetailHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixDetailHeader.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -101,6 +107,8 @@
 				AEE323A81C0D0F79A7A1CCB9 /* HomeShelf.swift */,
 				A7C73BE8983E44C1581A2E34 /* JumpBackInCard.swift */,
 				A8435F1A3A9C3B73536259A1 /* MiniPlayerBar.swift */,
+				E17E32E089B5719C65506BB2 /* MixDetailHeader.swift */,
+				2F31636C2C095A73EB1B5E1E /* MixSortOption.swift */,
 				DF660773C7BC7989E7E05D5B /* RemoteImage.swift */,
 				AA49ED311E399AE0D246BB99 /* ShortcutRow.swift */,
 				1F6C4F55682CB1FBC029FEF1 /* TrackCard.swift */,
@@ -159,6 +167,7 @@
 				9E5DFE4DA1AF52C9AF6172F7 /* NowPlayingView.swift */,
 				3749A84767663BE66CC19FE1 /* PlaylistDetailView.swift */,
 				531CDB2CD96A3B2898813D74 /* QueueView.swift */,
+				44726B5C601B6B527D2AA4A7 /* RadioDetailView.swift */,
 				8CA6C800B30627AF0F63270F /* RootView.swift */,
 				065D59E498934820BF0FB583 /* SearchView.swift */,
 				65791B4F7A47E2B4BFF1E8FF /* Components */,
@@ -280,6 +289,8 @@
 				62BAB33EABE72D940B4B2788 /* LikedSongsStore.swift in Sources */,
 				81BDFFE48C64064A494FBE52 /* LikedSongsView.swift in Sources */,
 				5AECAB7DC0B793C3FAE846AF /* MiniPlayerBar.swift in Sources */,
+				D206190078985BFE103A9AE4 /* MixDetailHeader.swift in Sources */,
+				0F189141B4387ED956FEA49B /* MixSortOption.swift in Sources */,
 				7649E5A7DC843C20E85C434E /* NowPlayingView.swift in Sources */,
 				1857ADE5956C0D53D8AEFF50 /* PlayHistoryStore.swift in Sources */,
 				F777C18D244C605A64878038 /* PlayerService.swift in Sources */,
@@ -287,6 +298,7 @@
 				082596746F77B66284CC0342 /* PlaylistDetailView.swift in Sources */,
 				9CD584C637204CD56CBB61DA /* PlaylistStore.swift in Sources */,
 				4E2B13AF254A197CD9F17F98 /* QueueView.swift in Sources */,
+				8160D31B80DC00A168DADCC5 /* RadioDetailView.swift in Sources */,
 				7E2F37BC5E54BFC545248DD9 /* RadioHistoryStore.swift in Sources */,
 				71B8088F4904B442FCDB2172 /* RadioStation.swift in Sources */,
 				10293C406D101E5F5735303C /* RemoteImage.swift in Sources */,

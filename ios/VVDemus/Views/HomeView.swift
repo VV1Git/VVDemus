@@ -44,8 +44,12 @@ struct HomeView: View {
                         shortcutGrid
                     }
 
-                    if !jumpBackInItems.isEmpty {
-                        jumpBackInShelf
+                    if !radioHistory.stations.isEmpty {
+                        mixShelf(title: "Your Radio", badge: "Radio", stations: radioHistory.stations)
+                    }
+
+                    if !playlists.playlists.isEmpty {
+                        mixShelf(title: "Your Playlists", playlists: playlists.playlists)
                     }
 
                     if isLoading && sections.isEmpty {
@@ -70,6 +74,8 @@ struct HomeView: View {
                     LikedSongsView(player: player)
                 case .playlist(let id):
                     PlaylistDetailView(playlistId: id, player: player)
+                case .radio(let seed):
+                    RadioDetailView(seedTrack: seed, player: player)
                 }
             }
         }
@@ -105,8 +111,10 @@ struct HomeView: View {
             }
             .buttonStyle(.plain)
         case .radio(let station):
-            ShortcutRow(title: station.title, imageURL: station.seedTrack.thumbnailUrl, systemImageFallback: "dot.radiowaves.left.and.right")
-                .onTapGesture { player.playRadio(for: station.seedTrack) }
+            NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
+                ShortcutRow(title: station.title, imageURL: station.seedTrack.thumbnailUrl, systemImageFallback: "dot.radiowaves.left.and.right")
+            }
+            .buttonStyle(.plain)
         case .playlist(let playlist):
             NavigationLink(value: LibraryDestination.playlist(playlist.id)) {
                 ShortcutRow(title: playlist.name, imageURL: playlist.tracks.first?.thumbnailUrl, systemImageFallback: "music.note.list")
@@ -115,46 +123,32 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - Jump back in (big radio/playlist cards)
+    // MARK: - Your Radio / Your Playlists shelves
 
-    private var jumpBackInItems: [ShortcutItem] {
-        let radios = radioHistory.stations.prefix(6).map(ShortcutItem.radio)
-        let lists = playlists.playlists.prefix(6).map(ShortcutItem.playlist)
-        return Array((radios + lists).prefix(10))
-    }
-
-    private var jumpBackInShelf: some View {
+    private func mixShelf(title: String, badge: String? = nil, stations: [RadioStation] = [], playlists: [Playlist] = []) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Jump back in")
+            Text(title)
                 .font(.title3.bold())
                 .foregroundStyle(.white)
                 .padding(.horizontal)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 14) {
-                    ForEach(jumpBackInItems) { item in
-                        jumpBackInCard(item)
+                    ForEach(stations) { station in
+                        NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
+                            JumpBackInCard(title: station.title, subtitle: "Radio", badge: "Radio", imageURL: station.seedTrack.thumbnailUrl)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    ForEach(playlists) { playlist in
+                        NavigationLink(value: LibraryDestination.playlist(playlist.id)) {
+                            JumpBackInCard(title: playlist.name, subtitle: "Playlist", badge: nil, imageURL: playlist.tracks.first?.thumbnailUrl)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal)
             }
-        }
-    }
-
-    @ViewBuilder
-    private func jumpBackInCard(_ item: ShortcutItem) -> some View {
-        switch item {
-        case .likedSongs:
-            EmptyView()
-        case .radio(let station):
-            JumpBackInCard(title: station.title, subtitle: "Radio", badge: "Radio", imageURL: station.seedTrack.thumbnailUrl)
-                .contentShape(Rectangle())
-                .onTapGesture { player.playRadio(for: station.seedTrack) }
-        case .playlist(let playlist):
-            NavigationLink(value: LibraryDestination.playlist(playlist.id)) {
-                JumpBackInCard(title: playlist.name, subtitle: "Playlist", badge: "Playlist", imageURL: playlist.tracks.first?.thumbnailUrl)
-            }
-            .buttonStyle(.plain)
         }
     }
 

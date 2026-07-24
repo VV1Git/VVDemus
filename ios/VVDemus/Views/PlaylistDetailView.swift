@@ -7,22 +7,45 @@ struct PlaylistDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showRename = false
     @State private var renameText = ""
+    @State private var searchText = ""
+    @State private var sortOption: MixSortOption = .order
 
     private var playlist: Playlist? {
         store.playlists.first { $0.id == playlistId }
+    }
+
+    /// Reordering only makes sense against the playlist's real, unfiltered order.
+    private var canReorder: Bool { searchText.isEmpty && sortOption == .order }
+
+    private func visibleTracks(for playlist: Playlist) -> [Track] {
+        sortOption.apply(to: filterTracks(playlist.tracks, matching: searchText))
     }
 
     var body: some View {
         Group {
             if let playlist {
                 List {
+                    MixDetailHeader(
+                        title: playlist.name,
+                        subtitle: "Playlist",
+                        badge: nil,
+                        imageURL: playlist.tracks.first?.thumbnailUrl,
+                        trackCount: playlist.tracks.count,
+                        totalDuration: totalDuration(of: playlist.tracks),
+                        onPlay: { playAll(playlist, shuffled: false) },
+                        onShuffle: { playAll(playlist, shuffled: true) }
+                    )
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Theme.background)
+
                     if playlist.tracks.isEmpty {
-                        Text("No songs yet. Add some from Search or any Radio's \"Add to Playlist\" menu.")
+                        Text("No songs yet. Add some from Search or any track's \"Add to Playlist\" menu.")
                             .font(.footnote)
                             .foregroundStyle(Theme.textSecondary)
                             .listRowBackground(Theme.background)
                     } else {
-                        ForEach(playlist.tracks) { track in
+                        ForEach(visibleTracks(for: playlist)) { track in
                             TrackRow(track: track, isActive: player.currentTrack?.id == track.id)
                                 .listRowBackground(Theme.background)
                                 .listRowSeparatorTint(Theme.card)
@@ -30,13 +53,25 @@ struct PlaylistDetailView: View {
                                     player.play(track: track, context: playlist.tracks, contextTitle: playlist.name)
                                 }
                                 .trackActions(track: track, player: player)
+                                .swipeActions(edge: .leading) {
+                                    Button(role: .destructive) {
+                                        store.removeTrack(track, from: playlist)
+                                    } label: {
+                                        Label("Remove", systemImage: "trash")
+                                    }
+                                }
+                                .moveDisabled(!canReorder)
                         }
-                        .onDelete { offsets in store.removeTrack(at: offsets, from: playlist) }
-                        .onMove { source, destination in store.moveTrack(in: playlist, from: source, to: destination) }
+                        .onMove { source, destination in
+                            guard canReorder else { return }
+                            store.moveTrack(in: playlist, from: source, to: destination)
+                        }
                     }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .background(Theme.background)
+                .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find on this page")
             } else {
                 Text("Playlist deleted")
                     .foregroundStyle(Theme.textSecondary)
@@ -44,7 +79,6 @@ struct PlaylistDetailView: View {
             }
         }
         .background(Theme.background)
-        .navigationTitle(playlist?.name ?? "Playlist")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let playlist {
@@ -53,17 +87,24 @@ struct PlaylistDetailView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button {
-                            renameText = playlist.name
-                            showRename = true
-                        } label: {
-                            Label("Rename", systemImage: "pencil")
+                        Section {
+                            ForEach(MixSortOption.allCases, id: \.self) { option in
+                                Button(option.label(orderLabel: "Playlist order")) { sortOption = option }
+                            }
                         }
-                        Button(role: .destructive) {
-                            store.delete(playlist)
-                            dismiss()
-                        } label: {
-                            Label("Delete Playlist", systemImage: "trash")
+                        Section {
+                            Button {
+                                renameText = playlist.name
+                                showRename = true
+                            } label: {
+                                Label("Rename", systemImage: "pencil")
+                            }
+                            Button(role: .destructive) {
+                                store.delete(playlist)
+                                dismiss()
+                            } label: {
+                                Label("Delete Playlist", systemImage: "trash")
+                            }
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -81,5 +122,11 @@ struct PlaylistDetailView: View {
                 }
             }
         }
+    }
+
+    private func playAll(_ playlist: Playlist, shuffled: Bool) {
+        guard !playlist.tracks.isEmpty else { return }
+        let ordered = shuffled ? playlist.tracks.shuffled() : playlist.tracks
+        player.play(track: ordered[0], context: ordered, contextTitle: playlist.name)
     }
 }

@@ -21,15 +21,14 @@ struct LibraryView: View {
                 if !radioHistory.stations.isEmpty {
                     Section("Radio") {
                         ForEach(radioHistory.stations) { station in
-                            HStack(spacing: 12) {
-                                RemoteImage(url: station.seedTrack.thumbnailUrl, size: 48)
-                                Text(station.title)
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-                                Spacer()
+                            NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
+                                HStack(spacing: 12) {
+                                    RemoteImage(url: station.seedTrack.thumbnailUrl, size: 48)
+                                    Text(station.title)
+                                        .foregroundStyle(.white)
+                                        .lineLimit(1)
+                                }
                             }
-                            .contentShape(Rectangle())
-                            .onTapGesture { player.playRadio(for: station.seedTrack) }
                             .listRowBackground(Theme.background)
                             .listRowSeparatorTint(Theme.card)
                         }
@@ -86,6 +85,8 @@ struct LibraryView: View {
                     LikedSongsView(player: player)
                 case .playlist(let id):
                     PlaylistDetailView(playlistId: id, player: player)
+                case .radio(let seed):
+                    RadioDetailView(seedTrack: seed, player: player)
                 }
             }
             .toolbar {

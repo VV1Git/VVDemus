@@ -4,4 +4,5 @@ import Foundation
 enum LibraryDestination: Hashable {
     case liked
     case playlist(UUID)
+    case radio(Track)
 }
