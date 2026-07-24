@@ -1,0 +1,36 @@
+import SwiftUI
+
+struct LibraryView: View {
+    @ObservedObject var player: PlayerService
+    @ObservedObject private var liked = LikedSongsStore.shared
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if liked.tracks.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "heart")
+                            .font(.largeTitle)
+                            .foregroundStyle(Theme.textSecondary)
+                        Text("Songs you like will appear here")
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(liked.tracks) { track in
+                            TrackRow(track: track, isActive: player.currentTrack?.id == track.id)
+                                .listRowBackground(Theme.background)
+                                .listRowSeparatorTint(Theme.card)
+                                .onTapGesture { player.play(track: track, queue: liked.tracks) }
+                        }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                }
+            }
+            .background(Theme.background)
+            .navigationTitle("Your Library")
+        }
+    }
+}
