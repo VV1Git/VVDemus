@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Music Remote</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Music Remote</h1>
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="home">Home</button>
+      <button class="tab-btn" data-tab="search">Search</button>
+      <button class="tab-btn" data-tab="library">Library</button>
+      <button class="tab-btn" data-tab="queue">Queue</button>
+    </nav>
+  </header>
+
+  <main id="content">
+    <section id="tab-home" class="tab-panel active">
+      <h2>Quick Picks</h2>
+      <div id="home-list" class="track-list"></div>
+    </section>
+
+    <section id="tab-search" class="tab-panel">
+      <input id="search-input" type="text" placeholder="Songs, artists…" autocomplete="off">
+      <div id="search-list" class="track-list"></div>
+    </section>
+
+    <section id="tab-library" class="tab-panel">
+      <div class="library-nav">
+        <button class="lib-btn active" data-lib="liked">Liked Songs</button>
+        <button class="lib-btn" data-lib="playlists">Playlists</button>
+        <button class="lib-btn" data-lib="radios">Radio</button>
+        <button class="lib-btn" data-lib="downloads">Downloads</button>
+        <button class="lib-btn" data-lib="daylist">Daylist</button>
+      </div>
+      <div id="lib-liked" class="lib-panel active track-list"></div>
+      <div id="lib-playlists" class="lib-panel">
+        <div class="new-playlist-row">
+          <input id="new-playlist-name" type="text" placeholder="New playlist name">
+          <button id="new-playlist-btn">Create</button>
+        </div>
+        <div id="playlists-list" class="track-list"></div>
+        <div id="playlist-detail" class="track-list"></div>
+      </div>
+      <div id="lib-radios" class="lib-panel">
+        <div id="radios-list" class="track-list"></div>
+        <div id="radio-detail" class="track-list"></div>
+      </div>
+      <div id="lib-downloads" class="lib-panel track-list"></div>
+      <div id="lib-daylist" class="lib-panel">
+        <div class="daylist-header">
+          <span id="daylist-title">Daylist</span>
+          <button id="daylist-refresh">Refresh</button>
+        </div>
+        <div id="daylist-list" class="track-list"></div>
+      </div>
+    </section>
+
+    <section id="tab-queue" class="tab-panel">
+      <h2>Next in Queue</h2>
+      <div id="manual-queue-list" class="track-list"></div>
+      <h2 id="context-queue-title">Next Up</h2>
+      <div id="context-queue-list" class="track-list"></div>
+    </section>
+  </main>
+
+  <footer class="now-playing" id="now-playing">
+    <img id="np-art" class="np-art" alt="">
+    <div class="np-info">
+      <div id="np-title" class="np-title">Nothing playing</div>
+      <div id="np-artist" class="np-artist"></div>
+      <input id="np-seek" type="range" min="0" max="100" value="0" step="1">
+      <div class="np-times"><span id="np-elapsed">0:00</span><span id="np-duration">0:00</span></div>
+    </div>
+    <div class="np-controls">
+      <button id="np-shuffle" title="Shuffle">🔀</button>
+      <button id="np-prev" title="Previous">⏮</button>
+      <button id="np-toggle" title="Play/Pause">▶️</button>
+      <button id="np-next" title="Next">⏭</button>
+    </div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

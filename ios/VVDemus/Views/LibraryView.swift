@@ -9,6 +9,7 @@ struct LibraryView: View {
     @State private var newPlaylistName = ""
     @State private var path = NavigationPath()
     @AppStorage(InnerTubeClient.dataSaverDefaultsKey) private var dataSaverEnabled = false
+    @ObservedObject private var controlServer = LocalControlServer.shared
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -106,6 +107,33 @@ struct LibraryView: View {
                         .listRowBackground(Theme.background)
                 } footer: {
                     Text("Streams at a lower audio bitrate to use noticeably less cellular data, at the cost of some sound quality.")
+                }
+
+                Section {
+                    Toggle(
+                        "Remote Control",
+                        isOn: Binding(
+                            get: { controlServer.isRunning },
+                            set: { $0 ? controlServer.start() : controlServer.stop() }
+                        )
+                    )
+                    .tint(Theme.accent)
+                    .listRowBackground(Theme.background)
+
+                    if controlServer.isRunning {
+                        HStack {
+                            Text("Open on your computer")
+                                .foregroundStyle(Theme.textSecondary)
+                            Spacer()
+                            Text(controlServer.localAddress.map { "http://\($0):\(controlServer.port)" } ?? "Finding address…")
+                                .font(.system(.footnote, design: .monospaced))
+                                .foregroundStyle(.white)
+                                .textSelection(.enabled)
+                        }
+                        .listRowBackground(Theme.background)
+                    }
+                } footer: {
+                    Text("Lets a browser on the same WiFi network see and control what's playing — no account or pairing needed, so only turn this on when you're on a network you trust.")
                 }
             }
             .listStyle(.plain)
