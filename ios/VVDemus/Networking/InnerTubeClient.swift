@@ -1,0 +1,237 @@
+import Foundation
+
+/// Talks directly to YouTube Music's internal ("InnerTube") API — the same API the
+/// music.youtube.com web client and the ytmusicapi/yt-dlp Python libraries use — so the
+/// app needs no backend server of its own and works over any network, not just a LAN.
+///
+/// Search/browse (WEB_REMIX client) is stable, documented-by-convention JSON. Stream
+/// resolution (ANDROID client) is the fragile part: it works today because that client's
+/// legacy muxed `formats` entry still ships a direct, un-ciphered playback URL, but
+/// YouTube tightens anti-bot measures over time, and unlike yt-dlp there's no upstream
+/// project patching this when it eventually breaks — the fix at that point is code,
+/// not a `pip install -U`.
+enum InnerTubeClient {
+    private static let webRemixAPIKey = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
+    private static let webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0"
+    private static let androidUserAgent = "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip"
+    /// InnerTube "params" blob selecting the Songs filter — reverse-engineered value,
+    /// stable in practice (it's what music.youtube.com itself sends for this filter).
+    private static let songsFilterParams = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
+
+    private static var clientVersion: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd"
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return "1.\(formatter.string(from: Date())).01.00"
+    }
+
+    // MARK: - Search
+
+    static func search(query: String, limit: Int) async throws -> [Track] {
+        let body: [String: Any] = [
+            "context": [
+                "client": ["clientName": "WEB_REMIX", "clientVersion": clientVersion],
+                "user": [String: Any](),
+            ],
+            "query": query,
+            "params": songsFilterParams,
+        ]
+        let json = try await post(
+            url: "https://music.youtube.com/youtubei/v1/search?alt=json&key=\(webRemixAPIKey)",
+            userAgent: webUserAgent,
+            origin: "https://music.youtube.com",
+            body: body
+        )
+
+        let shelves = json["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"].array ?? []
+        var tracks: [Track] = []
+        for shelf in shelves {
+            let items = shelf["musicShelfRenderer"]["contents"].array ?? []
+            for item in items {
+                if let track = parseSearchItem(item["musicResponsiveListItemRenderer"]) {
+                    tracks.append(track)
+                    if tracks.count >= limit { return tracks }
+                }
+            }
+        }
+        return tracks
+    }
+
+    /// No personalized "home" endpoint without signing in, so this mirrors what the
+    /// old backend did: a handful of broad seed searches, deduplicated.
+    static func home() async throws -> [Track] {
+        let seeds = ["top hits 2026", "chill mix", "trending music"]
+        var seen = Set<String>()
+        var tracks: [Track] = []
+        for seed in seeds {
+            for track in try await search(query: seed, limit: 10) where !seen.contains(track.id) {
+                seen.insert(track.id)
+                tracks.append(track)
+            }
+        }
+        return tracks
+    }
+
+    // MARK: - Radio
+
+    static func radio(videoId: String, limit: Int) async throws -> [Track] {
+        let body: [String: Any] = [
+            "context": [
+                "client": ["clientName": "WEB_REMIX", "clientVersion": clientVersion],
+                "user": [String: Any](),
+            ],
+            "videoId": videoId,
+            "playlistId": "RDAMVM" + videoId,
+            "params": "wAEB",
+            "enablePersistentPlaylistPanel": true,
+            "isAudioOnly": true,
+            "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
+        ]
+        let json = try await post(
+            url: "https://music.youtube.com/youtubei/v1/next?alt=json&key=\(webRemixAPIKey)",
+            userAgent: webUserAgent,
+            origin: "https://music.youtube.com",
+            body: body
+        )
+
+        let items = json["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"]["contents"].array ?? []
+        var tracks: [Track] = []
+        for item in items {
+            if let track = parseWatchItem(item["playlistPanelVideoRenderer"]) {
+                tracks.append(track)
+                if tracks.count >= limit { break }
+            }
+        }
+        return tracks
+    }
+
+    // MARK: - Stream resolution
+
+    static func stream(videoId: String) async throws -> StreamInfo {
+        let body: [String: Any] = [
+            "context": [
+                "client": [
+                    "clientName": "ANDROID",
+                    "clientVersion": "21.02.35",
+                    "androidSdkVersion": 30,
+                    "userAgent": androidUserAgent,
+                    "osName": "Android",
+                    "osVersion": "11",
+                ],
+            ],
+            "videoId": videoId,
+        ]
+        let json = try await post(
+            url: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+            userAgent: androidUserAgent,
+            origin: nil,
+            body: body
+        )
+
+        guard json["playabilityStatus"]["status"].string == "OK" else {
+            let reason = json["playabilityStatus"]["reason"].string ?? "video unavailable"
+            throw APIError.server(reason)
+        }
+
+        let formats = json["streamingData"]["formats"].array ?? []
+        guard let playable = formats.first(where: { $0["url"].exists }),
+              let urlString = playable["url"].string else {
+            throw APIError.server("No playable format returned")
+        }
+        let mime = playable["mimeType"].string ?? "video/mp4"
+        // These signed URLs are time-limited; treat as expiring in a few hours to be safe.
+        let expiresAt = Date().addingTimeInterval(5 * 3600).timeIntervalSince1970
+        return StreamInfo(videoId: videoId, url: urlString, expiresAt: expiresAt, mimeType: mime)
+    }
+
+    // MARK: - Shared parsing
+
+    private static func parseSearchItem(_ item: JSON) -> Track? {
+        guard let videoId = item["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]["videoId"].string else {
+            return nil
+        }
+        let title = item["flexColumns"][0]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"][0]["text"].string ?? "Unknown Title"
+        let runs = item["flexColumns"][1]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"].array ?? []
+        let parsed = parseRuns(runs)
+        let thumbnails = item["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"].array ?? []
+
+        return Track(
+            videoId: videoId,
+            title: title,
+            artist: parsed.artists.isEmpty ? "Unknown Artist" : parsed.artists.joined(separator: ", "),
+            album: parsed.album,
+            thumbnailUrl: thumbnails.last?["url"].string,
+            durationSeconds: parsed.durationSeconds
+        )
+    }
+
+    private static func parseWatchItem(_ item: JSON) -> Track? {
+        guard let videoId = item["videoId"].string else { return nil }
+        let title = item["title"]["runs"][0]["text"].string ?? "Unknown Title"
+        let runs = item["longBylineText"]["runs"].array ?? []
+        let parsed = parseRuns(runs)
+        let thumbnails = item["thumbnail"]["thumbnails"].array ?? []
+        let lengthText = item["lengthText"]["runs"][0]["text"].string
+
+        return Track(
+            videoId: videoId,
+            title: title,
+            artist: parsed.artists.isEmpty ? "Unknown Artist" : parsed.artists.joined(separator: ", "),
+            album: parsed.album,
+            thumbnailUrl: thumbnails.last?["url"].string,
+            durationSeconds: parsed.durationSeconds ?? lengthText.flatMap(parseDuration)
+        )
+    }
+
+    private struct ParsedRuns {
+        var artists: [String] = []
+        var album: String?
+        var durationSeconds: Int?
+    }
+
+    /// "Artist • Album • 3:45"-style runs: even indices are data, odd indices are
+    /// separators. A data run with a navigationEndpoint is an artist or album (album
+    /// browseIds start with "MPRE"); one without is plain text like a duration or year.
+    private static func parseRuns(_ runs: [JSON]) -> ParsedRuns {
+        var result = ParsedRuns()
+        for (index, run) in runs.enumerated() where index % 2 == 0 {
+            guard let text = run["text"].string else { continue }
+            if let browseId = run["navigationEndpoint"]["browseEndpoint"]["browseId"].string {
+                if browseId.hasPrefix("MPRE") {
+                    result.album = text
+                } else {
+                    result.artists.append(text)
+                }
+            } else if let duration = parseDuration(text) {
+                result.durationSeconds = duration
+            }
+        }
+        return result
+    }
+
+    private static func parseDuration(_ text: String) -> Int? {
+        let parts = text.split(separator: ":")
+        guard !parts.isEmpty, parts.allSatisfy({ Int($0) != nil }) else { return nil }
+        return parts.compactMap { Int($0) }.reduce(0) { $0 * 60 + $1 }
+    }
+
+    // MARK: - HTTP
+
+    private static func post(url: String, userAgent: String, origin: String?, body: [String: Any]) async throws -> JSON {
+        guard let requestURL = URL(string: url) else { throw APIError.invalidURL }
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "POST"
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let origin {
+            request.setValue(origin, forHTTPHeaderField: "Origin")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIError.server("YouTube request failed")
+        }
+        return try JSON.parse(data)
+    }
+}
