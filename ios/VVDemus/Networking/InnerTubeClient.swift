@@ -5,18 +5,20 @@ import Foundation
 /// app needs no backend server of its own and works over any network, not just a LAN.
 ///
 /// Search/browse (WEB_REMIX client) is stable, documented-by-convention JSON. Stream
-/// resolution (ANDROID client) is the fragile part: it works today because that client's
-/// legacy muxed `formats` entry still ships a direct, un-ciphered playback URL, but
-/// YouTube tightens anti-bot measures over time, and unlike yt-dlp there's no upstream
-/// project patching this when it eventually breaks — the fix at that point is code,
-/// not a `pip install -U`.
+/// resolution is the fragile part — both paths key off client contexts that aren't
+/// officially supported, and YouTube tightens anti-bot measures over time. Unlike
+/// yt-dlp there's no upstream project patching this when it eventually breaks; the fix
+/// at that point is code, not a `pip install -U`.
 enum InnerTubeClient {
     private static let webRemixAPIKey = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
     private static let webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0"
     private static let androidUserAgent = "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip"
+    private static let androidVRUserAgent = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
     /// InnerTube "params" blob selecting the Songs filter — reverse-engineered value,
     /// stable in practice (it's what music.youtube.com itself sends for this filter).
     private static let songsFilterParams = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
+
+    static let dataSaverDefaultsKey = "data_saver_enabled"
 
     private static var clientVersion: String {
         let formatter = DateFormatter()
@@ -107,7 +109,70 @@ enum InnerTubeClient {
 
     // MARK: - Stream resolution
 
+    /// Audio-only first (a few MB instead of the ~3-4x heavier muxed video+audio file),
+    /// falling back to the muxed path if the audio-only client ever stops cooperating.
     static func stream(videoId: String) async throws -> StreamInfo {
+        if let audioOnly = try? await audioOnlyStream(videoId: videoId) {
+            return audioOnly
+        }
+        return try await muxedStream(videoId: videoId)
+    }
+
+    /// ANDROID_VR's player response exposes adaptiveFormats with direct, un-ciphered
+    /// audio-only URLs and no PO-token gate — unlike the ANDROID client's adaptiveFormats,
+    /// which are gated behind the newer SABR streaming protocol we don't implement.
+    /// This is the most fragile part of the whole client: it rides on a client context
+    /// YouTube never intended third parties to use for this, and could stop working
+    /// without notice. If it does, `stream(videoId:)` above transparently falls back to
+    /// the muxed path, so playback keeps working — just at ~3-4x the data cost.
+    private static func audioOnlyStream(videoId: String) async throws -> StreamInfo {
+        let body: [String: Any] = [
+            "context": [
+                "client": [
+                    "clientName": "ANDROID_VR",
+                    "clientVersion": "1.65.10",
+                    "deviceMake": "Oculus",
+                    "deviceModel": "Quest 3",
+                    "androidSdkVersion": 32,
+                    "userAgent": androidVRUserAgent,
+                    "osName": "Android",
+                    "osVersion": "12L",
+                ],
+            ],
+            "videoId": videoId,
+        ]
+        let json = try await post(
+            url: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+            userAgent: androidVRUserAgent,
+            origin: nil,
+            body: body
+        )
+
+        guard json["playabilityStatus"]["status"].string == "OK" else {
+            throw APIError.server(json["playabilityStatus"]["reason"].string ?? "video unavailable")
+        }
+
+        // AAC-in-MP4 only (itags 139/140) — AVPlayer doesn't support WebM/Opus, which is
+        // what the other adaptive audio formats (249/251) would otherwise offer.
+        let audioFormats = (json["streamingData"]["adaptiveFormats"].array ?? [])
+            .filter { $0["mimeType"].string?.hasPrefix("audio/mp4") == true && $0["url"].exists }
+
+        // itag 140 (~128kbps) by default; itag 139 (~48kbps) under Data Saver — noticeably
+        // smaller downloads at the cost of audible quality, so it's opt-in.
+        let dataSaver = UserDefaults.standard.bool(forKey: dataSaverDefaultsKey)
+        let preferredItag = dataSaver ? 139 : 140
+        guard let chosen = audioFormats.first(where: { $0["itag"].int == preferredItag }) ?? audioFormats.first,
+              let urlString = chosen["url"].string else {
+            throw APIError.server("No audio-only format available")
+        }
+        let mime = chosen["mimeType"].string ?? "audio/mp4"
+        let expiresAt = Date().addingTimeInterval(5 * 3600).timeIntervalSince1970
+        return StreamInfo(videoId: videoId, url: urlString, expiresAt: expiresAt, mimeType: mime)
+    }
+
+    /// itag 18: a legacy muxed 360p video + AAC audio file. Works reliably (no PO-token
+    /// gate) but costs roughly 3-4x the data of audio-only for the video you never see.
+    private static func muxedStream(videoId: String) async throws -> StreamInfo {
         let body: [String: Any] = [
             "context": [
                 "client": [

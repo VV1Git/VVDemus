@@ -8,6 +8,7 @@ struct LibraryView: View {
     @State private var showNewPlaylist = false
     @State private var newPlaylistName = ""
     @State private var path = NavigationPath()
+    @AppStorage(InnerTubeClient.dataSaverDefaultsKey) private var dataSaverEnabled = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -85,6 +86,14 @@ struct LibraryView: View {
                             offsets.map { playlists.playlists[$0] }.forEach(playlists.delete)
                         }
                     }
+                }
+
+                Section {
+                    Toggle("Data Saver", isOn: $dataSaverEnabled)
+                        .tint(Theme.accent)
+                        .listRowBackground(Theme.background)
+                } footer: {
+                    Text("Streams at a lower audio bitrate to use noticeably less cellular data, at the cost of some sound quality.")
                 }
             }
             .listStyle(.plain)

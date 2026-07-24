@@ -18,6 +18,7 @@ struct JSON {
     }
 
     var string: String? { value as? String }
+    var int: Int? { value as? Int }
     var array: [JSON]? { (value as? [Any])?.map(JSON.init) }
     var exists: Bool { value != nil }
 
