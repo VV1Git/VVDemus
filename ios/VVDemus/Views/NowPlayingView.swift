@@ -4,6 +4,7 @@ struct NowPlayingView: View {
     @ObservedObject var player: PlayerService
     @ObservedObject private var liked = LikedSongsStore.shared
     @Environment(\.dismiss) private var dismiss
+    @State private var showQueue = false
 
     var body: some View {
         ZStack {
@@ -40,6 +41,9 @@ struct NowPlayingView: View {
             .padding(.top, 8)
         }
         .foregroundStyle(.white)
+        .sheet(isPresented: $showQueue) {
+            QueueView(player: player)
+        }
     }
 
     private var header: some View {
@@ -50,11 +54,22 @@ struct NowPlayingView: View {
                     .foregroundStyle(.white)
             }
             Spacer()
-            Text("NOW PLAYING")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(Theme.textSecondary)
+            VStack(spacing: 2) {
+                Text("NOW PLAYING")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Theme.textSecondary)
+                if let contextTitle = player.queueContextTitle {
+                    Text(contextTitle.uppercased())
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+            }
             Spacer()
-            Color.clear.frame(width: 20)
+            Button { showQueue = true } label: {
+                Image(systemName: "list.bullet")
+                    .font(.title3)
+                    .foregroundStyle(.white)
+            }
         }
         .padding(.horizontal)
     }
@@ -123,8 +138,6 @@ struct NowPlayingView: View {
             Button { player.advance() } label: {
                 Image(systemName: "forward.fill").font(.title2)
             }
-            .disabled(!player.hasNext)
-            .opacity(player.hasNext ? 1 : 0.4)
         }
         .foregroundStyle(.white)
         .buttonStyle(.plain)

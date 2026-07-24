@@ -6,14 +6,18 @@ final class PlayerService: ObservableObject {
     static let shared = PlayerService()
 
     @Published private(set) var currentTrack: Track?
+    @Published private(set) var upNext: [Track] = []
     @Published private(set) var isPlaying = false
     @Published private(set) var isLoading = false
     @Published private(set) var progress: Double = 0
     @Published private(set) var duration: Double = 0
+    @Published private(set) var queueContextTitle: String?
     @Published var errorMessage: String?
 
-    private var queue: [Track] = []
-    private var queueIndex = 0
+    var autoplayEnabled = true
+
+    private var backStack: [Track] = []
+    private let recentRadioAvoidCount = 12
 
     private let player = AVPlayer()
     private var timeObserver: Any?
@@ -33,12 +37,67 @@ final class PlayerService: ObservableObject {
         }
     }
 
-    func play(track: Track, queue: [Track]? = nil) {
-        let effectiveQueue = queue ?? [track]
-        self.queue = effectiveQueue
-        self.queueIndex = effectiveQueue.firstIndex(where: { $0.id == track.id }) ?? 0
+    // MARK: - Playback entry points
+
+    /// Play `track`, queuing up whatever comes after it in `context` (the list it was tapped from).
+    func play(track: Track, context: [Track] = [], contextTitle: String? = nil) {
+        if let index = context.firstIndex(where: { $0.id == track.id }) {
+            upNext = Array(context[(index + 1)...])
+        } else {
+            upNext = []
+        }
+        queueContextTitle = contextTitle
         load(track)
     }
+
+    /// Start this track's radio: the track itself, followed by similar songs.
+    func playRadio(for track: Track) {
+        isLoading = true
+        errorMessage = nil
+        loadTask?.cancel()
+        loadTask = Task {
+            do {
+                let mix = try await APIClient.shared.radio(videoId: track.videoId, limit: 30)
+                guard !Task.isCancelled else { return }
+                let seed = mix.first ?? track
+                upNext = Array(mix.dropFirst())
+                queueContextTitle = "\(track.title) Radio"
+                load(seed)
+            } catch {
+                guard !Task.isCancelled else { return }
+                isLoading = false
+                errorMessage = "Couldn't start radio for \"\(track.title)\"."
+            }
+        }
+    }
+
+    // MARK: - Queue manipulation
+
+    func addToQueue(_ track: Track) {
+        upNext.append(track)
+    }
+
+    func playNext(_ track: Track) {
+        upNext.removeAll { $0.id == track.id }
+        upNext.insert(track, at: 0)
+    }
+
+    func removeFromQueue(at offsets: IndexSet) {
+        upNext.remove(atOffsets: offsets)
+    }
+
+    func moveInQueue(from source: IndexSet, to destination: Int) {
+        upNext.move(fromOffsets: source, toOffset: destination)
+    }
+
+    /// Jump straight to an item already in the queue, dropping whatever preceded it.
+    func skipTo(_ track: Track) {
+        guard let index = upNext.firstIndex(where: { $0.id == track.id }) else { return }
+        upNext.removeFirst(index + 1)
+        load(track)
+    }
+
+    // MARK: - Transport
 
     func togglePlayPause() {
         guard currentTrack != nil else { return }
@@ -56,10 +115,14 @@ final class PlayerService: ObservableObject {
     }
 
     func advance() {
-        let next = queueIndex + 1
-        guard next < queue.count else { return }
-        queueIndex = next
-        load(queue[next])
+        if !upNext.isEmpty {
+            let next = upNext.removeFirst()
+            load(next)
+        } else if autoplayEnabled, let seed = currentTrack {
+            continueAutoplay(from: seed)
+        } else {
+            isPlaying = false
+        }
     }
 
     func previous() {
@@ -67,19 +130,55 @@ final class PlayerService: ObservableObject {
             seek(to: 0)
             return
         }
-        let prev = queueIndex - 1
-        guard prev >= 0 else {
+        guard let prev = backStack.popLast() else {
             seek(to: 0)
             return
         }
-        queueIndex = prev
-        load(queue[prev])
+        // Bypass load()'s backStack push: walking backward shouldn't re-push the track
+        // we're leaving, or repeated "previous" presses would just bounce between two tracks.
+        beginLoad(prev)
     }
 
-    var hasNext: Bool { queueIndex + 1 < queue.count }
-    var hasPrevious: Bool { queueIndex > 0 }
+    var hasPrevious: Bool { !backStack.isEmpty }
+
+    // MARK: - Autoplay
+
+    private func continueAutoplay(from seed: Track) {
+        isLoading = true
+        loadTask?.cancel()
+        loadTask = Task {
+            do {
+                let mix = try await APIClient.shared.radio(videoId: seed.videoId, limit: 30)
+                guard !Task.isCancelled else { return }
+                let recent = Set(PlayHistoryStore.shared.recentSeeds(recentRadioAvoidCount).map(\.id))
+                let fresh = mix.filter { $0.id != seed.id && !recent.contains($0.id) }
+                guard let next = fresh.first else {
+                    isLoading = false
+                    isPlaying = false
+                    return
+                }
+                upNext = Array(fresh.dropFirst())
+                queueContextTitle = "\(seed.title) Radio"
+                load(next)
+            } catch {
+                guard !Task.isCancelled else { return }
+                isLoading = false
+                isPlaying = false
+            }
+        }
+    }
+
+    // MARK: - Loading a track
 
     private func load(_ track: Track) {
+        if let outgoing = currentTrack {
+            backStack.append(outgoing)
+            if backStack.count > 30 { backStack.removeFirst(backStack.count - 30) }
+        }
+        beginLoad(track)
+    }
+
+    private func beginLoad(_ track: Track) {
         loadTask?.cancel()
         currentTrack = track
         isLoading = true
@@ -92,7 +191,7 @@ final class PlayerService: ObservableObject {
                 let stream = try await APIClient.shared.stream(videoId: track.videoId)
                 guard !Task.isCancelled else { return }
                 guard let url = URL(string: stream.url) else { throw APIError.invalidURL }
-                attach(url: url)
+                attach(url: url, track: track)
             } catch {
                 guard !Task.isCancelled else { return }
                 isLoading = false
@@ -101,7 +200,7 @@ final class PlayerService: ObservableObject {
         }
     }
 
-    private func attach(url: URL) {
+    private func attach(url: URL, track: Track) {
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
         }
@@ -110,6 +209,7 @@ final class PlayerService: ObservableObject {
         player.play()
         isPlaying = true
         isLoading = false
+        PlayHistoryStore.shared.record(track)
 
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,

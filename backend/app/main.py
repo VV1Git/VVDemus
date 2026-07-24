@@ -50,7 +50,9 @@ class StreamInfo(BaseModel):
 
 # ---------- helpers ----------
 
-def _thumb(thumbnails: list[dict] | None) -> str | None:
+def _thumb(entry: dict) -> str | None:
+    # /search + /home results use "thumbnails"; get_watch_playlist (radio) uses "thumbnail".
+    thumbnails = entry.get("thumbnails") or entry.get("thumbnail")
     if not thumbnails:
         return None
     return thumbnails[-1].get("url")
@@ -60,7 +62,8 @@ def _duration_seconds(entry: dict) -> int | None:
     seconds = entry.get("duration_seconds")
     if seconds is not None:
         return seconds
-    text = entry.get("duration")
+    # /search + /home use "duration"; get_watch_playlist (radio) uses "length".
+    text = entry.get("duration") or entry.get("length")
     if not text:
         return None
     parts = [int(p) for p in text.split(":")]
@@ -83,7 +86,7 @@ def _to_track(entry: dict) -> Track | None:
         title=entry.get("title", "Unknown Title"),
         artist=artist_name,
         album=album_name,
-        thumbnailUrl=_thumb(entry.get("thumbnails")),
+        thumbnailUrl=_thumb(entry),
         durationSeconds=_duration_seconds(entry),
     )
 
@@ -127,6 +130,18 @@ def playlist(playlist_id: str):
         raise HTTPException(404, f"playlist not found: {exc}")
     tracks = [t for t in (_to_track(r) for r in data.get("tracks", [])) if t]
     return tracks
+
+
+@app.get("/radio/{video_id}", response_model=list[Track])
+def radio(video_id: str, limit: int = 30):
+    """YouTube Music's 'radio' for a track: the seed track followed by similar songs.
+    Powers both the per-song Radio screen and autoplay continuation."""
+    try:
+        data = yt.get_watch_playlist(videoId=video_id, radio=True, limit=limit)
+    except Exception as exc:
+        raise HTTPException(404, f"radio not found: {exc}")
+    tracks = [t for t in (_to_track(r) for r in data.get("tracks", [])) if t]
+    return tracks[:limit]
 
 
 _stream_cache: dict[str, tuple[str, str, float]] = {}

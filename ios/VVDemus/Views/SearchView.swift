@@ -29,7 +29,8 @@ struct SearchView: View {
                             TrackRow(track: track, isActive: player.currentTrack?.id == track.id)
                                 .listRowBackground(Theme.background)
                                 .listRowSeparatorTint(Theme.card)
-                                .onTapGesture { player.play(track: track, queue: results) }
+                                .onTapGesture { player.play(track: track, context: results, contextTitle: "Search") }
+                                .trackActions(track: track, player: player)
                         }
                     }
                     .listStyle(.plain)

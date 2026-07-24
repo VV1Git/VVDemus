@@ -22,7 +22,8 @@ struct LibraryView: View {
                             TrackRow(track: track, isActive: player.currentTrack?.id == track.id)
                                 .listRowBackground(Theme.background)
                                 .listRowSeparatorTint(Theme.card)
-                                .onTapGesture { player.play(track: track, queue: liked.tracks) }
+                                .onTapGesture { player.play(track: track, context: liked.tracks, contextTitle: "Liked Songs") }
+                                .trackActions(track: track, player: player)
                         }
                     }
                     .listStyle(.plain)

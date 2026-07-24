@@ -42,6 +42,11 @@ final class APIClient {
         try await get("/stream/\(videoId)")
     }
 
+    /// YouTube Music's "radio" for a track: the seed track followed by similar songs.
+    func radio(videoId: String, limit: Int = 30) async throws -> [Track] {
+        try await get("/radio/\(videoId)", query: [URLQueryItem(name: "limit", value: String(limit))])
+    }
+
     private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
         guard var components = URLComponents(
             url: baseURL.appendingPathComponent(path),
