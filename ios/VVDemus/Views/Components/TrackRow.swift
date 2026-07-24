@@ -4,6 +4,7 @@ struct TrackRow: View {
     let track: Track
     var isActive: Bool = false
     @ObservedObject private var liked = LikedSongsStore.shared
+    @ObservedObject private var downloads = DownloadManager.shared
 
     var body: some View {
         HStack(spacing: 12) {
@@ -22,6 +23,8 @@ struct TrackRow: View {
 
             Spacer()
 
+            downloadIndicator
+
             Button {
                 liked.toggle(track)
             } label: {
@@ -33,5 +36,25 @@ struct TrackRow: View {
         .padding(.horizontal)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var downloadIndicator: some View {
+        if let value = downloads.progress[track.id] {
+            ProgressView(value: value)
+                .progressViewStyle(.circular)
+                .frame(width: 16, height: 16)
+        } else if downloads.isDownloaded(track) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(Theme.accent)
+        } else {
+            Button {
+                downloads.download(track)
+            } label: {
+                Image(systemName: "arrow.down.circle")
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain)
+        }
     }
 }

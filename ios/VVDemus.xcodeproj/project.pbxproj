@@ -16,6 +16,7 @@
 		1B06EA5730E25007E8227A42 /* ErrorRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FDC0CAE84142D3EEAB5F41D /* ErrorRow.swift */; };
 		24A480C67C04CBB9394B1FC6 /* OpenRadioAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE18A2AA959CAC508C2EDAAE /* OpenRadioAction.swift */; };
 		2AD3E7AF38454586E73D2CC4 /* TrackCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F6C4F55682CB1FBC029FEF1 /* TrackCard.swift */; };
+		48E515CA56E91EF364F7C9D1 /* DownloadsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBBCA999A5DFC54C79CE126B /* DownloadsView.swift */; };
 		4D0137A3F9FE0048026FEF92 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4EE183565BC8CDAC04DDA81 /* Theme.swift */; };
 		4E2B13AF254A197CD9F17F98 /* QueueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531CDB2CD96A3B2898813D74 /* QueueView.swift */; };
 		50D63D77339D1E369D41A1A4 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3724068A82FD576F953CA5B2 /* LibraryView.swift */; };
@@ -43,6 +44,7 @@
 		D206190078985BFE103A9AE4 /* MixDetailHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E17E32E089B5719C65506BB2 /* MixDetailHeader.swift */; };
 		E0098BB02EF506524096A69F /* JSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3986CC91F2A338DEB6202F9E /* JSON.swift */; };
 		E1DD2412792513A059F0D027 /* TrackRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C3AD15A14F7B2833A3EC05 /* TrackRow.swift */; };
+		E29AC88FF8A5687BFC6927D6 /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15FF0189CD04B25B84B47893 /* DownloadManager.swift */; };
 		E4DDFBB8DACEAF0D0AF20591 /* ArtworkColorLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69462CBED0F68B02C8DF2CD5 /* ArtworkColorLoader.swift */; };
 		ECADF6950ADDC8380A45DBEE /* Playlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 764FE1B65E9781A3D93FB7F7 /* Playlist.swift */; };
 		EF37DC6C094E8164A906F80B /* DaylistStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D1E1505B115DA26860C4AE7 /* DaylistStore.swift */; };
@@ -55,6 +57,7 @@
 		0D1E1505B115DA26860C4AE7 /* DaylistStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaylistStore.swift; sourceTree = "<group>"; };
 		10E8B217981BE6896AA6091E /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		1408988D40442F8C2D74EDB9 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		15FF0189CD04B25B84B47893 /* DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
 		1AD0523F94E83FD9B4449B3A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1D2482DD8A638DA753721FED /* Track.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Track.swift; sourceTree = "<group>"; };
 		1F6C4F55682CB1FBC029FEF1 /* TrackCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackCard.swift; sourceTree = "<group>"; };
@@ -91,6 +94,7 @@
 		D9DF3D4F42D29E3AFB672771 /* LikedSongsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LikedSongsStore.swift; sourceTree = "<group>"; };
 		DF660773C7BC7989E7E05D5B /* RemoteImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImage.swift; sourceTree = "<group>"; };
 		E17E32E089B5719C65506BB2 /* MixDetailHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixDetailHeader.swift; sourceTree = "<group>"; };
+		FBBCA999A5DFC54C79CE126B /* DownloadsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -174,6 +178,7 @@
 			isa = PBXGroup;
 			children = (
 				4103EA7AD0538E3154A61CED /* DaylistDetailView.swift */,
+				FBBCA999A5DFC54C79CE126B /* DownloadsView.swift */,
 				10E8B217981BE6896AA6091E /* HomeView.swift */,
 				52994059AB22AB5A4FD1C32D /* LibraryDestination.swift */,
 				3724068A82FD576F953CA5B2 /* LibraryView.swift */,
@@ -194,6 +199,7 @@
 			isa = PBXGroup;
 			children = (
 				0D1E1505B115DA26860C4AE7 /* DaylistStore.swift */,
+				15FF0189CD04B25B84B47893 /* DownloadManager.swift */,
 				D9DF3D4F42D29E3AFB672771 /* LikedSongsStore.swift */,
 				65807ECA760D586605EBE794 /* PlayHistoryStore.swift */,
 				23D4D1FB74714A8C3E085B63 /* PlaylistStore.swift */,
@@ -301,6 +307,8 @@
 				9789DC27046060FE6B29F5D3 /* DaylistCard.swift in Sources */,
 				7E525D12E72D63EFA8EAA750 /* DaylistDetailView.swift in Sources */,
 				EF37DC6C094E8164A906F80B /* DaylistStore.swift in Sources */,
+				E29AC88FF8A5687BFC6927D6 /* DownloadManager.swift in Sources */,
+				48E515CA56E91EF364F7C9D1 /* DownloadsView.swift in Sources */,
 				1B06EA5730E25007E8227A42 /* ErrorRow.swift in Sources */,
 				85A7BA4C32C23CB8423F2D11 /* HomeShelf.swift in Sources */,
 				BE5CED11CC492E0D61C5E085 /* HomeView.swift in Sources */,

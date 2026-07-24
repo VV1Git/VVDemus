@@ -29,6 +29,7 @@ struct DaylistDetailView: View {
                         imageURL: store.tracks.first?.thumbnailUrl,
                         trackCount: store.tracks.count,
                         totalDuration: totalDuration(of: store.tracks),
+                        tracks: store.tracks,
                         onPlay: { playAll(shuffled: false) },
                         onShuffle: { playAll(shuffled: true) }
                     )

@@ -6,4 +6,5 @@ enum LibraryDestination: Hashable {
     case playlist(UUID)
     case radio(Track)
     case daylist
+    case downloads
 }

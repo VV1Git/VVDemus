@@ -7,6 +7,7 @@ struct TrackRowActions: ViewModifier {
     @ObservedObject var player: PlayerService
     @ObservedObject private var liked = LikedSongsStore.shared
     @ObservedObject private var playlists = PlaylistStore.shared
+    @ObservedObject private var downloads = DownloadManager.shared
     @Environment(\.openRadio) private var openRadio
     @State private var showNewPlaylistAlert = false
     @State private var newPlaylistName = ""
@@ -37,6 +38,19 @@ struct TrackRowActions: ViewModifier {
                     openRadio(track)
                 } label: {
                     Label("Go to Radio", systemImage: "dot.radiowaves.left.and.right")
+                }
+                if downloads.isDownloaded(track) {
+                    Button(role: .destructive) {
+                        downloads.remove(track)
+                    } label: {
+                        Label("Remove Download", systemImage: "trash")
+                    }
+                } else if !downloads.isDownloading(track) {
+                    Button {
+                        downloads.download(track)
+                    } label: {
+                        Label("Download", systemImage: "arrow.down.circle")
+                    }
                 }
                 Button {
                     liked.toggle(track)

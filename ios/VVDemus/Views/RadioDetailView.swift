@@ -46,6 +46,7 @@ struct RadioDetailView: View {
                         imageURL: seedTrack.thumbnailUrl,
                         trackCount: tracks.count,
                         totalDuration: totalDuration(of: tracks),
+                        tracks: tracks,
                         onPlay: { playAll(shuffled: false) },
                         onShuffle: { playAll(shuffled: true) }
                     )

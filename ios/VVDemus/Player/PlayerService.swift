@@ -294,6 +294,12 @@ final class PlayerService: ObservableObject {
         duration = 0
         updateNowPlayingInfo()
 
+        // Downloaded tracks play straight from disk — no network, no data usage.
+        if let localURL = DownloadManager.shared.localFileURL(for: track) {
+            attach(url: localURL, track: track)
+            return
+        }
+
         loadTask = Task {
             do {
                 let stream = try await APIClient.shared.stream(videoId: track.videoId)
@@ -303,7 +309,7 @@ final class PlayerService: ObservableObject {
             } catch {
                 guard !Task.isCancelled else { return }
                 isLoading = false
-                errorMessage = "Couldn't play \"\(track.title)\". Is the backend running?"
+                errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
             }
         }
     }

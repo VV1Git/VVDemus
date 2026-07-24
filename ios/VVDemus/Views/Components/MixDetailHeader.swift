@@ -9,8 +9,15 @@ struct MixDetailHeader: View {
     let imageURL: String?
     let trackCount: Int
     let totalDuration: TimeInterval
+    let tracks: [Track]
     let onPlay: () -> Void
     let onShuffle: () -> Void
+
+    @ObservedObject private var downloads = DownloadManager.shared
+
+    private var downloadedCount: Int { tracks.filter { downloads.isDownloaded($0) }.count }
+    private var isDownloadingAny: Bool { tracks.contains { downloads.isDownloading($0) } }
+    private var isFullyDownloaded: Bool { !tracks.isEmpty && downloadedCount == tracks.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -53,6 +60,10 @@ struct MixDetailHeader: View {
 
                 Spacer()
 
+                downloadAllButton
+
+                Spacer()
+
                 Button(action: onPlay) {
                     ZStack {
                         Circle().fill(Theme.accent).frame(width: 56, height: 56)
@@ -66,6 +77,26 @@ struct MixDetailHeader: View {
             .padding(.horizontal)
         }
         .padding(.top, 8)
+    }
+
+    private var downloadAllButton: some View {
+        Button {
+            downloads.downloadAll(tracks)
+        } label: {
+            if isDownloadingAny {
+                ProgressView()
+            } else if isFullyDownloaded {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(Theme.accent)
+            } else {
+                Image(systemName: "arrow.down.circle")
+                    .font(.title3)
+                    .foregroundStyle(.white)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(tracks.isEmpty || isFullyDownloaded || isDownloadingAny)
     }
 
     private var statsLine: String {

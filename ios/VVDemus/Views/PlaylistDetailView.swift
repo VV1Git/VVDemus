@@ -32,6 +32,7 @@ struct PlaylistDetailView: View {
                         imageURL: playlist.tracks.first?.thumbnailUrl,
                         trackCount: playlist.tracks.count,
                         totalDuration: totalDuration(of: playlist.tracks),
+                        tracks: playlist.tracks,
                         onPlay: { playAll(playlist, shuffled: false) },
                         onShuffle: { playAll(playlist, shuffled: true) }
                     )

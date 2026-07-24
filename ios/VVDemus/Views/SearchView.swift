@@ -50,6 +50,8 @@ struct SearchView: View {
                     RadioDetailView(seedTrack: seed, player: player)
                 case .daylist:
                     DaylistDetailView(player: player)
+                case .downloads:
+                    DownloadsView(player: player)
                 }
             }
             .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
