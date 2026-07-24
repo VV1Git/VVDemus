@@ -254,7 +254,7 @@ final class PlayerService: ObservableObject {
         loadTask?.cancel()
         loadTask = Task {
             do {
-                let mix = try await APIClient.shared.radio(videoId: seed.videoId, limit: 30)
+                let mix = try await APIClient.shared.radio(videoId: seed.videoId, limit: 50)
                 guard !Task.isCancelled else { return }
                 let recent = Set(PlayHistoryStore.shared.recentSeeds(recentRadioAvoidCount).map(\.id))
                 let fresh = mix.filter { $0.id != seed.id && !recent.contains($0.id) }

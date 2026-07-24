@@ -30,7 +30,7 @@ final class APIClient {
     }
 
     /// YouTube Music's "radio" for a track: the seed track followed by similar songs.
-    func radio(videoId: String, limit: Int = 30) async throws -> [Track] {
+    func radio(videoId: String, limit: Int = 50) async throws -> [Track] {
         try await InnerTubeClient.radio(videoId: videoId, limit: limit)
     }
 }

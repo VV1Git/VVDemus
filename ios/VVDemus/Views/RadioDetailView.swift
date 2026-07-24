@@ -104,7 +104,7 @@ struct RadioDetailView: View {
     }
 
     private func fetchTracks() async throws -> [Track] {
-        try await APIClient.shared.radio(videoId: seedTrack.videoId, limit: 30)
+        try await APIClient.shared.radio(videoId: seedTrack.videoId, limit: 50)
     }
 
     private func load() async {
