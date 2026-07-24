@@ -108,13 +108,23 @@ struct RadioDetailView: View {
         try await APIClient.shared.radio(videoId: seedTrack.videoId, limit: 50)
     }
 
+    /// Shows a cached mix (if this radio was ever loaded before) immediately, then
+    /// refreshes in the background — so a revisit still works offline instead of
+    /// blocking on a network call that can't succeed.
     private func load() async {
-        isLoading = true
+        if tracks.isEmpty, let cached = RadioCacheStore.shared.tracks(for: seedTrack.videoId) {
+            tracks = cached
+        }
+        isLoading = tracks.isEmpty
         errorMessage = nil
         do {
-            tracks = try await fetchTracks()
+            let fresh = try await fetchTracks()
+            tracks = fresh
+            RadioCacheStore.shared.store(fresh, for: seedTrack.videoId)
         } catch {
-            errorMessage = "Couldn't load this radio."
+            if tracks.isEmpty {
+                errorMessage = "Couldn't load this radio. Check your connection."
+            }
         }
         isLoading = false
     }
@@ -125,6 +135,7 @@ struct RadioDetailView: View {
         isRefreshing = true
         if let fresh = try? await fetchTracks() {
             tracks = fresh
+            RadioCacheStore.shared.store(fresh, for: seedTrack.videoId)
         }
         isRefreshing = false
     }

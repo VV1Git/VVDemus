@@ -27,6 +27,7 @@ struct HomeView: View {
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var daylist = DaylistStore.shared
+    @ObservedObject private var network = NetworkMonitor.shared
     @State private var sections: [RecommendationSection] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -36,11 +37,23 @@ struct HomeView: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
-                    Text(greeting)
-                        .font(.largeTitle.bold())
-                        .foregroundStyle(.white)
-                        .padding(.horizontal)
-                        .padding(.top, 8)
+                    HStack {
+                        Text(greeting)
+                            .font(.largeTitle.bold())
+                            .foregroundStyle(.white)
+                        Spacer()
+                        if !network.isConnected {
+                            Label("Offline", systemImage: "wifi.slash")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Theme.textSecondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Theme.cardLight)
+                                .clipShape(Capsule())
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.top, 8)
 
                     NavigationLink(value: LibraryDestination.daylist) {
                         DaylistCard(
