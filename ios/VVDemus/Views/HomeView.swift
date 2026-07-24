@@ -26,6 +26,7 @@ struct HomeView: View {
     @ObservedObject private var liked = LikedSongsStore.shared
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @ObservedObject private var playlists = PlaylistStore.shared
+    @ObservedObject private var daylist = DaylistStore.shared
     @State private var sections: [RecommendationSection] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -40,6 +41,15 @@ struct HomeView: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal)
                         .padding(.top, 8)
+
+                    NavigationLink(value: LibraryDestination.daylist) {
+                        DaylistCard(
+                            title: daylist.title.isEmpty ? "Your Daylist" : daylist.title,
+                            imageURL: daylist.tracks.first?.thumbnailUrl
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal)
 
                     if !shortcuts.isEmpty {
                         shortcutGrid
@@ -77,11 +87,14 @@ struct HomeView: View {
                     PlaylistDetailView(playlistId: id, player: player)
                 case .radio(let seed):
                     RadioDetailView(seedTrack: seed, player: player)
+                case .daylist:
+                    DaylistDetailView(player: player)
                 }
             }
             .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
         }
         .task { await load() }
+        .task { await daylist.refreshIfNeeded() }
         .refreshable { await load() }
     }
 
@@ -197,7 +210,7 @@ struct HomeView: View {
             sections = built
         } catch {
             if sections.isEmpty {
-                errorMessage = "Couldn't load Home.\nIs the backend running at 127.0.0.1:8000?"
+                errorMessage = "Couldn't load Home. Check your connection and try again."
             }
         }
         isLoading = false

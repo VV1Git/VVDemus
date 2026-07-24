@@ -8,6 +8,7 @@ struct RadioDetailView: View {
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var sortOption: MixSortOption = .order
+    @State private var isRefreshing = false
 
     private var title: String { "\(seedTrack.title) Radio" }
 
@@ -71,6 +72,18 @@ struct RadioDetailView: View {
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find on this page")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await refresh() }
+                } label: {
+                    if isRefreshing {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .disabled(isRefreshing)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     ForEach(MixSortOption.allCases, id: \.self) { option in
                         Button(option.label(orderLabel: "Recommended order")) { sortOption = option }
@@ -90,14 +103,28 @@ struct RadioDetailView: View {
         RadioHistoryStore.shared.record(seed: seedTrack)
     }
 
+    private func fetchTracks() async throws -> [Track] {
+        try await APIClient.shared.radio(videoId: seedTrack.videoId, limit: 30)
+    }
+
     private func load() async {
         isLoading = true
         errorMessage = nil
         do {
-            tracks = try await APIClient.shared.radio(videoId: seedTrack.videoId, limit: 30)
+            tracks = try await fetchTracks()
         } catch {
-            errorMessage = "Couldn't load this radio.\nIs the backend running?"
+            errorMessage = "Couldn't load this radio."
         }
         isLoading = false
+    }
+
+    /// Re-fetches a fresh mix for the same seed track — YouTube Music's radio endpoint
+    /// varies between calls, so this surfaces a different set of related songs.
+    private func refresh() async {
+        isRefreshing = true
+        if let fresh = try? await fetchTracks() {
+            tracks = fresh
+        }
+        isRefreshing = false
     }
 }

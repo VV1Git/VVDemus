@@ -4,6 +4,7 @@ struct LibraryView: View {
     @ObservedObject var player: PlayerService
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
+    @ObservedObject private var daylist = DaylistStore.shared
     @State private var showNewPlaylist = false
     @State private var newPlaylistName = ""
     @State private var path = NavigationPath()
@@ -12,6 +13,16 @@ struct LibraryView: View {
         NavigationStack(path: $path) {
             List {
                 Section {
+                    NavigationLink(value: LibraryDestination.daylist) {
+                        ShortcutRow(
+                            title: daylist.title.isEmpty ? "Your Daylist" : daylist.title,
+                            imageURL: daylist.tracks.first?.thumbnailUrl,
+                            systemImageFallback: "sun.max.fill"
+                        )
+                    }
+                    .listRowBackground(Theme.background)
+                    .listRowSeparator(.hidden)
+
                     NavigationLink(value: LibraryDestination.liked) {
                         ShortcutRow(title: "Liked Songs", imageURL: nil, systemImageFallback: "heart.fill")
                     }
@@ -88,6 +99,8 @@ struct LibraryView: View {
                     PlaylistDetailView(playlistId: id, player: player)
                 case .radio(let seed):
                     RadioDetailView(seedTrack: seed, player: player)
+                case .daylist:
+                    DaylistDetailView(player: player)
                 }
             }
             .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }

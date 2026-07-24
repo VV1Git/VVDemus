@@ -66,11 +66,11 @@ struct NowPlayingView: View {
                 }
             }
             Spacer()
-            Button { showQueue = true } label: {
-                Image(systemName: "list.bullet")
-                    .font(.title3)
-                    .foregroundStyle(.white)
-            }
+            // Balances the leading chevron so the title stack stays centered —
+            // the queue button now lives on the transport row, mirroring shuffle.
+            Image(systemName: "chevron.down")
+                .font(.title3)
+                .opacity(0)
         }
         .padding(.horizontal)
     }
@@ -158,7 +158,11 @@ struct NowPlayingView: View {
 
             Spacer()
 
-            Color.clear.frame(width: 44)
+            Button { showQueue = true } label: {
+                Image(systemName: "list.bullet")
+                    .font(.title3)
+            }
+            .frame(width: 44)
         }
         .foregroundStyle(.white)
         .buttonStyle(.plain)
