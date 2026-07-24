@@ -13,7 +13,8 @@ struct TrackRowActions: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            // Swipe right (leading edge) to add to queue — matches Spotify's convention.
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
                 Button {
                     player.addToQueue(track)
                 } label: {

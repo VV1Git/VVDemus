@@ -138,8 +138,8 @@ final class PlayerService: ObservableObject {
         upNext.insert(track, at: 0)
     }
 
-    func removeFromQueue(at offsets: IndexSet) {
-        upNext.remove(atOffsets: offsets)
+    func removeFromQueue(_ track: Track) {
+        upNext.removeAll { $0.id == track.id }
     }
 
     func moveInQueue(from source: IndexSet, to destination: Int) {
