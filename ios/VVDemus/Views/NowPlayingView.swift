@@ -3,13 +3,14 @@ import SwiftUI
 struct NowPlayingView: View {
     @ObservedObject var player: PlayerService
     @ObservedObject private var liked = LikedSongsStore.shared
+    @ObservedObject private var colorLoader = ArtworkColorLoader.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showQueue = false
 
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [Theme.cardLight, Theme.background],
+                colors: [colorLoader.color(for: player.currentTrack), Theme.background],
                 startPoint: .top,
                 endPoint: .bottom
             )

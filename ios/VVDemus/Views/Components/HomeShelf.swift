@@ -20,23 +20,7 @@ struct HomeShelf: View {
                             .onTapGesture {
                                 player.play(track: track, context: tracks, contextTitle: title)
                             }
-                            .contextMenu {
-                                Button {
-                                    player.playNext(track)
-                                } label: {
-                                    Label("Play Next", systemImage: "text.insert")
-                                }
-                                Button {
-                                    player.addToQueue(track)
-                                } label: {
-                                    Label("Add to Queue", systemImage: "text.badge.plus")
-                                }
-                                Button {
-                                    player.playRadio(for: track)
-                                } label: {
-                                    Label("Go to Radio", systemImage: "dot.radiowaves.left.and.right")
-                                }
-                            }
+                            .trackActions(track: track, player: player)
                     }
                 }
                 .padding(.horizontal)

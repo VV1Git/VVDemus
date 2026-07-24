@@ -1,5 +1,7 @@
 import AVFoundation
 import Combine
+import MediaPlayer
+import UIKit
 
 @MainActor
 final class PlayerService: ObservableObject {
@@ -23,6 +25,8 @@ final class PlayerService: ObservableObject {
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var loadTask: Task<Void, Never>?
+    private var artworkTask: Task<Void, Never>?
+    private var artworkCache: [String: MPMediaItemArtwork] = [:]
 
     private init() {
         timeObserver = player.addPeriodicTimeObserver(
@@ -33,6 +37,79 @@ final class PlayerService: ObservableObject {
             self.progress = time.seconds
             if let itemDuration = self.player.currentItem?.duration.seconds, itemDuration.isFinite {
                 self.duration = itemDuration
+            }
+            self.updateNowPlayingInfo()
+        }
+        configureRemoteCommandCenter()
+    }
+
+    // MARK: - Lock screen / Control Center
+
+    private func configureRemoteCommandCenter() {
+        let center = MPRemoteCommandCenter.shared()
+
+        center.playCommand.addTarget { [weak self] _ in
+            guard let self, self.currentTrack != nil else { return .noSuchContent }
+            if !self.isPlaying { self.togglePlayPause() }
+            return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            guard let self, self.currentTrack != nil else { return .noSuchContent }
+            if self.isPlaying { self.togglePlayPause() }
+            return .success
+        }
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self, self.currentTrack != nil else { return .noSuchContent }
+            self.togglePlayPause()
+            return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            self?.advance()
+            return .success
+        }
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            self?.previous()
+            return .success
+        }
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self, let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            self.seek(to: event.positionTime)
+            return .success
+        }
+    }
+
+    private func updateNowPlayingInfo() {
+        guard let track = currentTrack else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            return
+        }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: track.title,
+            MPMediaItemPropertyArtist: track.artist,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: progress,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
+        ]
+        if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
+        if let album = track.album { info[MPMediaItemPropertyAlbumTitle] = album }
+        if let artwork = artworkCache[track.id] {
+            info[MPMediaItemPropertyArtwork] = artwork
+        } else {
+            loadArtwork(for: track)
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func loadArtwork(for track: Track) {
+        guard artworkCache[track.id] == nil, let urlString = track.thumbnailUrl, let url = URL(string: urlString) else { return }
+        artworkTask?.cancel()
+        artworkTask = Task {
+            guard let (data, _) = try? await URLSession.shared.data(from: url),
+                  let image = UIImage(data: data) else { return }
+            guard !Task.isCancelled else { return }
+            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            artworkCache[track.id] = artwork
+            if currentTrack?.id == track.id {
+                updateNowPlayingInfo()
             }
         }
     }
@@ -51,10 +128,12 @@ final class PlayerService: ObservableObject {
     }
 
     /// Start this track's radio: the track itself, followed by similar songs.
+    /// Saved to RadioHistoryStore so it shows up on Home/Library, like Spotify's radio shortcuts.
     func playRadio(for track: Track) {
         isLoading = true
         errorMessage = nil
         loadTask?.cancel()
+        RadioHistoryStore.shared.record(seed: track)
         loadTask = Task {
             do {
                 let mix = try await APIClient.shared.radio(videoId: track.videoId, limit: 30)
@@ -107,6 +186,7 @@ final class PlayerService: ObservableObject {
             player.play()
         }
         isPlaying.toggle()
+        updateNowPlayingInfo()
     }
 
     func seek(to seconds: Double) {
@@ -185,6 +265,7 @@ final class PlayerService: ObservableObject {
         errorMessage = nil
         progress = 0
         duration = 0
+        updateNowPlayingInfo()
 
         loadTask = Task {
             do {
@@ -210,6 +291,7 @@ final class PlayerService: ObservableObject {
         isPlaying = true
         isLoading = false
         PlayHistoryStore.shared.record(track)
+        updateNowPlayingInfo()
 
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,

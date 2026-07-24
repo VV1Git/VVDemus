@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MiniPlayerBar: View {
     @ObservedObject var player: PlayerService
+    @ObservedObject private var colorLoader = ArtworkColorLoader.shared
 
     var body: some View {
         if let track = player.currentTrack {
@@ -36,7 +37,12 @@ struct MiniPlayerBar: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(Theme.cardLight)
+            .background(
+                ZStack {
+                    colorLoader.color(for: track)
+                    Color.black.opacity(0.35)
+                }
+            )
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .padding(.horizontal, 8)
         }

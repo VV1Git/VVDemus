@@ -1,11 +1,14 @@
 import SwiftUI
 
-/// Swipe-to-queue plus a long-press menu (radio, play next, like), shared by every
-/// track list (Home shelves, Search, Library, Queue).
+/// Swipe-to-queue plus a long-press menu (radio, play next, like, add to playlist),
+/// shared by every track list (Home shelves, Search, Library, Queue).
 struct TrackRowActions: ViewModifier {
     let track: Track
     @ObservedObject var player: PlayerService
     @ObservedObject private var liked = LikedSongsStore.shared
+    @ObservedObject private var playlists = PlaylistStore.shared
+    @State private var showNewPlaylistAlert = false
+    @State private var newPlaylistName = ""
 
     func body(content: Content) -> some View {
         content
@@ -40,6 +43,32 @@ struct TrackRowActions: ViewModifier {
                         liked.isLiked(track) ? "Unlike" : "Like",
                         systemImage: liked.isLiked(track) ? "heart.slash" : "heart"
                     )
+                }
+                Menu {
+                    ForEach(playlists.playlists) { playlist in
+                        Button(playlist.name) {
+                            playlists.addTrack(track, to: playlist)
+                        }
+                    }
+                    Button {
+                        showNewPlaylistAlert = true
+                    } label: {
+                        Label("New Playlist", systemImage: "plus")
+                    }
+                } label: {
+                    Label("Add to Playlist", systemImage: "plus.circle")
+                }
+            }
+            .alert("New Playlist", isPresented: $showNewPlaylistAlert) {
+                TextField("Playlist name", text: $newPlaylistName)
+                Button("Cancel", role: .cancel) { newPlaylistName = "" }
+                Button("Create") {
+                    let name = newPlaylistName.trimmingCharacters(in: .whitespaces)
+                    if !name.isEmpty {
+                        let playlist = playlists.create(name: name)
+                        playlists.addTrack(track, to: playlist)
+                    }
+                    newPlaylistName = ""
                 }
             }
     }
