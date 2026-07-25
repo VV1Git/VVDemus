@@ -7,79 +7,151 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header class="topbar">
-    <h1>Music Remote</h1>
-    <nav class="tabs">
-      <button class="tab-btn active" data-tab="home">Home</button>
-      <button class="tab-btn" data-tab="search">Search</button>
-      <button class="tab-btn" data-tab="library">Library</button>
-      <button class="tab-btn" data-tab="queue">Queue</button>
-    </nav>
-  </header>
-
-  <main id="content">
-    <section id="tab-home" class="tab-panel active">
-      <h2>Quick Picks</h2>
-      <div id="home-list" class="track-list"></div>
-    </section>
-
-    <section id="tab-search" class="tab-panel">
-      <input id="search-input" type="text" placeholder="Songs, artists…" autocomplete="off">
-      <div id="search-list" class="track-list"></div>
-    </section>
-
-    <section id="tab-library" class="tab-panel">
-      <div class="library-nav">
-        <button class="lib-btn active" data-lib="liked">Liked Songs</button>
-        <button class="lib-btn" data-lib="playlists">Playlists</button>
-        <button class="lib-btn" data-lib="radios">Radio</button>
-        <button class="lib-btn" data-lib="downloads">Downloads</button>
-        <button class="lib-btn" data-lib="daylist">Daylist</button>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <svg viewBox="0 0 24 24" class="brand-mark" fill="currentColor"><circle cx="12" cy="12" r="11"/><path d="M7 8.6c3.4-.9 7-.6 9.7 1 .3.2.4.6.2.9-.2.3-.6.4-.9.2-2.4-1.4-5.6-1.7-8.6-.9-.4.1-.7-.1-.8-.5-.1-.3.1-.6.4-.7zm-.3 2.9c2.9-.8 6-.5 8.2.8.3.2.4.5.2.8-.2.3-.5.4-.8.2-2-1.1-4.7-1.4-7.2-.7-.3.1-.6-.1-.7-.4-.1-.3.1-.6.3-.7zm-.5 2.8c2.5-.7 5-.4 7 .8.2.1.3.4.2.6-.1.2-.4.3-.6.2-1.8-1-4-1.3-6.2-.7-.3.1-.5-.1-.6-.3 0-.3.1-.5.2-.6z"/></svg>
+        <span>Music</span>
       </div>
-      <div id="lib-liked" class="lib-panel active track-list"></div>
-      <div id="lib-playlists" class="lib-panel">
+
+      <nav class="nav-primary">
+        <button class="nav-item active" data-view="home">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5 1.5 11h3V21h6v-6h3v6h6V11h3z"/></svg>
+          <span>Home</span>
+        </button>
+        <button class="nav-item" data-view="search">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l5 5-1.4 1.4-5-5A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"/></svg>
+          <span>Search</span>
+        </button>
+      </nav>
+
+      <div class="library-panel">
+        <div class="library-header">
+          <span>Your Library</span>
+        </div>
+
+        <div class="library-shortcuts">
+          <button class="lib-shortcut" data-detail="daylist">
+            <span class="lib-icon lib-icon-square"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 4a1 1 0 0 1 1 1v1.06a6.98 6.98 0 0 1 4.5 2.6l.9-.53a1 1 0 0 1 1 1.74l-.9.53a7 7 0 0 1 0 4.2l.9.53a1 1 0 0 1-1 1.74l-.9-.53A6.98 6.98 0 0 1 13 17.94V19a1 1 0 1 1-2 0v-1.06a6.98 6.98 0 0 1-4.5-2.6l-.9.53a1 1 0 1 1-1-1.74l.9-.53a7 7 0 0 1 0-4.2l-.9-.53a1 1 0 1 1 1-1.74l.9.53A6.98 6.98 0 0 1 11 6.06V5a1 1 0 0 1 1-1zm0 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></span>
+            <span>Daylist</span>
+          </button>
+          <button class="lib-shortcut" data-detail="liked">
+            <span class="lib-icon lib-icon-square lib-icon-liked"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.6-10-9.2C.4 8.6 2 5 5.6 5 8 5 9.6 6.3 12 8.8 14.4 6.3 16 5 18.4 5 22 5 23.6 8.6 22 11.8 19.5 16.4 12 21 12 21z"/></svg></span>
+            <span>Liked Songs</span>
+          </button>
+          <button class="lib-shortcut" data-detail="downloads">
+            <span class="lib-icon lib-icon-square"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a1 1 0 0 1 1 1v9.6l3-3a1 1 0 1 1 1.4 1.4l-4.7 4.7a1 1 0 0 1-1.4 0L6.6 12a1 1 0 1 1 1.4-1.4l3 3V4a1 1 0 0 1 1-1zM5 19a1 1 0 1 1 0 2h14a1 1 0 1 1 0-2H5z"/></svg></span>
+            <span>Downloads</span>
+          </button>
+        </div>
+
         <div class="new-playlist-row">
           <input id="new-playlist-name" type="text" placeholder="New playlist name">
           <button id="new-playlist-btn">Create</button>
         </div>
-        <div id="playlists-list" class="track-list"></div>
-        <div id="playlist-detail" class="track-list"></div>
-      </div>
-      <div id="lib-radios" class="lib-panel">
-        <div id="radios-list" class="track-list"></div>
-        <div id="radio-detail" class="track-list"></div>
-      </div>
-      <div id="lib-downloads" class="lib-panel track-list"></div>
-      <div id="lib-daylist" class="lib-panel">
-        <div class="daylist-header">
-          <span id="daylist-title">Daylist</span>
-          <button id="daylist-refresh">Refresh</button>
-        </div>
-        <div id="daylist-list" class="track-list"></div>
-      </div>
-    </section>
 
-    <section id="tab-queue" class="tab-panel">
-      <h2>Next in Queue</h2>
-      <div id="manual-queue-list" class="track-list"></div>
-      <h2 id="context-queue-title">Next Up</h2>
-      <div id="context-queue-list" class="track-list"></div>
-    </section>
-  </main>
+        <div id="library-list" class="library-list"></div>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <header class="topbar">
+        <div class="search-bar">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l5 5-1.4 1.4-5-5A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"/></svg>
+          <input id="global-search" type="text" placeholder="What do you want to play?" autocomplete="off">
+        </div>
+        <button class="queue-btn" id="open-queue" title="Queue">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6h13v2H4V6zm0 5h13v2H4v-2zm0 5h9v2H4v-2zm15-9v12l5-6z" transform="translate(-1)"/></svg>
+          <span>Queue</span>
+        </button>
+      </header>
+
+      <main id="content">
+        <section id="view-home" class="view active">
+          <h1 class="view-title">Quick Picks</h1>
+          <div id="home-grid" class="card-grid"></div>
+        </section>
+
+        <section id="view-search" class="view">
+          <h1 class="view-title">Search</h1>
+          <div id="search-list" class="track-list"></div>
+        </section>
+
+        <section id="view-detail" class="view">
+          <div class="detail-header">
+            <div id="detail-art" class="detail-art"></div>
+            <div class="detail-meta">
+              <span id="detail-badge" class="detail-badge"></span>
+              <h1 id="detail-title" class="detail-title"></h1>
+              <p id="detail-subtitle" class="detail-subtitle"></p>
+            </div>
+          </div>
+          <div class="detail-actions">
+            <button id="detail-play" class="play-btn" title="Play">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button id="detail-shuffle" class="icon-btn detail-shuffle" title="Shuffle play">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14.8 4.6h4.6v4.6h-1.8V7.7l-3.4 3.4-1.3-1.3 3.4-3.4h-1.5V4.6zM4.6 6h4.9l7.9 7.9v1.5h-1.8l-7.4-7.4H4.6V6zm14.8 12v-1.8l-3.4-3.4 1.3-1.3 3.4 3.4v-1.5h1.8v4.6h-4.6v-1.8h1.5zM4.6 18v-2h4.9l2.6-2.6 1.3 1.3-3.1 3.1H4.6z"/></svg>
+            </button>
+            <button id="detail-refresh" class="icon-btn detail-refresh" title="Refresh">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.3L14 10h6V4z"/></svg>
+            </button>
+          </div>
+          <div id="detail-list" class="track-list"></div>
+        </section>
+
+        <section id="view-queue" class="view">
+          <h1 class="view-title">Queue</h1>
+          <h2 class="section-label">Next in Queue</h2>
+          <div id="manual-queue-list" class="track-list"></div>
+          <h2 id="context-queue-title" class="section-label">Next Up</h2>
+          <div id="context-queue-list" class="track-list"></div>
+        </section>
+      </main>
+    </div>
+  </div>
 
   <footer class="now-playing" id="now-playing">
-    <img id="np-art" class="np-art" alt="">
-    <div class="np-info">
-      <div id="np-title" class="np-title">Nothing playing</div>
-      <div id="np-artist" class="np-artist"></div>
-      <input id="np-seek" type="range" min="0" max="100" value="0" step="1">
-      <div class="np-times"><span id="np-elapsed">0:00</span><span id="np-duration">0:00</span></div>
+    <div class="np-left">
+      <img id="np-art" class="np-art" alt="">
+      <div class="np-info">
+        <div id="np-title" class="np-title">Nothing playing</div>
+        <div id="np-artist" class="np-artist"></div>
+      </div>
+      <button id="np-like" class="icon-btn np-like" title="Like">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.6-10-9.2C.4 8.6 2 5 5.6 5 8 5 9.6 6.3 12 8.8 14.4 6.3 16 5 18.4 5 22 5 23.6 8.6 22 11.8 19.5 16.4 12 21 12 21z"/></svg>
+      </button>
     </div>
-    <div class="np-controls">
-      <button id="np-shuffle" title="Shuffle">🔀</button>
-      <button id="np-prev" title="Previous">⏮</button>
-      <button id="np-toggle" title="Play/Pause">▶️</button>
-      <button id="np-next" title="Next">⏭</button>
+
+    <div class="np-center">
+      <div class="np-controls">
+        <button id="np-shuffle" class="icon-btn" title="Shuffle">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14.8 4.6h4.6v4.6h-1.8V7.7l-3.4 3.4-1.3-1.3 3.4-3.4h-1.5V4.6zM4.6 6h4.9l7.9 7.9v1.5h-1.8l-7.4-7.4H4.6V6zm14.8 12v-1.8l-3.4-3.4 1.3-1.3 3.4 3.4v-1.5h1.8v4.6h-4.6v-1.8h1.5zM4.6 18v-2h4.9l2.6-2.6 1.3 1.3-3.1 3.1H4.6z"/></svg>
+        </button>
+        <button id="np-prev" class="icon-btn" title="Previous">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 9-6v12z"/></svg>
+        </button>
+        <button id="np-toggle" class="np-play-btn" title="Play/Pause">
+          <svg id="np-play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          <svg id="np-pause-icon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+        </button>
+        <button id="np-next" class="icon-btn" title="Next">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6.5 6l9 6-9 6z"/></svg>
+        </button>
+        <span class="np-spacer"></span>
+      </div>
+      <div class="np-seek-row">
+        <span id="np-elapsed" class="np-time">0:00</span>
+        <input id="np-seek" type="range" min="0" max="100" value="0" step="1">
+        <span id="np-duration" class="np-time">0:00</span>
+      </div>
+    </div>
+
+    <div class="np-right">
+      <span class="np-device">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm0 2v14h10V5H7zm5 11a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4z"/></svg>
+        Playing on iPhone
+      </span>
     </div>
   </footer>
 

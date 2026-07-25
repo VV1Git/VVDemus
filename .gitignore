@@ -8,5 +8,6 @@ __pycache__/
 
 # Xcode
 ios/DerivedData/
+ios/build/
 **/xcuserdata/
 *.xcuserstate

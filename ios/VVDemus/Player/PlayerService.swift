@@ -287,6 +287,7 @@ final class PlayerService: ObservableObject {
 
     private func beginLoad(_ track: Track) {
         loadTask?.cancel()
+        recordListeningStats()
         currentTrack = track
         isLoading = true
         errorMessage = nil
@@ -324,7 +325,6 @@ final class PlayerService: ObservableObject {
         isPlaying = true
         isLoading = false
         PlayHistoryStore.shared.record(track)
-        ListeningStatsStore.shared.record(track)
         updateNowPlayingInfo()
 
         endObserver = NotificationCenter.default.addObserver(
@@ -334,5 +334,15 @@ final class PlayerService: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.advance() }
         }
+    }
+
+    /// Logs how much of the *outgoing* track was actually heard, right before it's
+    /// replaced — using elapsed playback position, not the track's nominal length, so
+    /// stats reflect real listening instead of crediting a full play for every skip.
+    private func recordListeningStats() {
+        guard let outgoing = currentTrack, progress > 0 else { return }
+        let cap = outgoing.durationSeconds.map(Double.init) ?? progress
+        let elapsed = min(progress, cap)
+        ListeningStatsStore.shared.record(outgoing, secondsPlayed: Int(elapsed))
     }
 }

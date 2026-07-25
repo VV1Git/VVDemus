@@ -68,7 +68,7 @@ struct StatsView: View {
     }
 
     private var totalListeningSeconds: Int {
-        eventsInRange.reduce(0) { $0 + ($1.track.durationSeconds ?? 0) }
+        eventsInRange.reduce(0) { $0 + $1.secondsPlayed }
     }
 
     var body: some View {

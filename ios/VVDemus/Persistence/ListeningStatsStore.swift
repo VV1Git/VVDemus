@@ -20,8 +20,9 @@ final class ListeningStatsStore: ObservableObject {
 
     private init() { load() }
 
-    func record(_ track: Track) {
-        events.append(PlayEvent(track: track, playedAt: Date()))
+    func record(_ track: Track, secondsPlayed: Int) {
+        guard secondsPlayed >= 5 else { return } // ignore accidental taps/quick skips
+        events.append(PlayEvent(track: track, playedAt: Date(), secondsPlayed: secondsPlayed))
         prune()
         save()
     }

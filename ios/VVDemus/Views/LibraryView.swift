@@ -125,7 +125,7 @@ struct LibraryView: View {
                             Text("Open on your computer")
                                 .foregroundStyle(Theme.textSecondary)
                             Spacer()
-                            Text(controlServer.localAddress.map { "http://\($0):\(controlServer.port)" } ?? "Finding address…")
+                            Text(verbatim: controlServer.localAddress.map { "http://\($0):\(controlServer.port)" } ?? "Finding address…")
                                 .font(.system(.footnote, design: .monospaced))
                                 .foregroundStyle(.white)
                                 .textSelection(.enabled)

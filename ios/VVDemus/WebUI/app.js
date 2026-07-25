@@ -3,6 +3,21 @@ const state = {
   likedIds: new Set(),
 };
 
+// The track list + header info currently shown in the generic detail view
+// (playlist / radio / daylist / liked / downloads) — Play/Shuffle/Refresh act on this.
+let detail = { tracks: [], title: "", kind: null, seedTrack: null };
+
+const ICONS = {
+  heartOutline:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 21s-7.5-4.6-10-9.2C.4 8.6 2 5 5.6 5 8 5 9.6 6.3 12 8.8 14.4 6.3 16 5 18.4 5 22 5 23.6 8.6 22 11.8 19.5 16.4 12 21 12 21z"/></svg>',
+  heartFilled:
+    '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.6-10-9.2C.4 8.6 2 5 5.6 5 8 5 9.6 6.3 12 8.8 14.4 6.3 16 5 18.4 5 22 5 23.6 8.6 22 11.8 19.5 16.4 12 21 12 21z"/></svg>',
+  add: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>',
+  remove:
+    '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>',
+  note: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V5l11-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zm11-2a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+};
+
 // ---------- helpers ----------
 
 function fmtTime(seconds) {
@@ -26,9 +41,34 @@ function post(path, body) {
   });
 }
 
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ---------- view switching ----------
+
+function showView(name) {
+  document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+  document.getElementById(`view-${name}`).classList.add("active");
+  document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
+  document.querySelectorAll(".lib-shortcut, .library-row").forEach((b) => b.classList.remove("active"));
+}
+
+document.querySelectorAll(".nav-item").forEach((btn) => {
+  btn.onclick = () => {
+    showView(btn.dataset.view);
+    btn.classList.add("active");
+    if (btn.dataset.view === "search") document.getElementById("global-search").focus();
+  };
+});
+
+document.getElementById("open-queue").onclick = () => showView("queue");
+
 // ---------- track row rendering ----------
 
-function trackRow(track, { onPlay, showRemove, onRemove, showAddToPlaylist } = {}) {
+function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
   const row = document.createElement("div");
   row.className = "track-row" + (state.current && state.current.videoId === track.videoId ? " active" : "");
 
@@ -52,7 +92,8 @@ function trackRow(track, { onPlay, showRemove, onRemove, showAddToPlaylist } = {
   actions.className = "row-actions";
 
   const likeBtn = document.createElement("button");
-  likeBtn.textContent = state.likedIds.has(track.videoId) ? "♥" : "♡";
+  likeBtn.innerHTML = state.likedIds.has(track.videoId) ? ICONS.heartFilled : ICONS.heartOutline;
+  likeBtn.title = "Like";
   if (state.likedIds.has(track.videoId)) likeBtn.classList.add("liked");
   likeBtn.onclick = async (e) => {
     e.stopPropagation();
@@ -62,7 +103,7 @@ function trackRow(track, { onPlay, showRemove, onRemove, showAddToPlaylist } = {
   actions.appendChild(likeBtn);
 
   const queueBtn = document.createElement("button");
-  queueBtn.textContent = "➕";
+  queueBtn.innerHTML = ICONS.add;
   queueBtn.title = "Add to queue";
   queueBtn.onclick = async (e) => {
     e.stopPropagation();
@@ -72,7 +113,8 @@ function trackRow(track, { onPlay, showRemove, onRemove, showAddToPlaylist } = {
 
   if (showRemove) {
     const removeBtn = document.createElement("button");
-    removeBtn.textContent = "✕";
+    removeBtn.innerHTML = ICONS.remove;
+    removeBtn.title = "Remove";
     removeBtn.onclick = async (e) => {
       e.stopPropagation();
       await onRemove(track);
@@ -97,6 +139,119 @@ function renderList(container, tracks, opts) {
   tracks.forEach((t) => container.appendChild(trackRow(t, opts)));
 }
 
+// ---------- generic detail view (playlist / radio / daylist / liked / downloads) ----------
+
+function openDetail(tracks, { title, subtitle, badge, imageURL, kind, seedTrack, showRefresh }) {
+  detail = { tracks, title, kind: kind || null, seedTrack: seedTrack || null };
+
+  document.getElementById("detail-badge").textContent = badge || "";
+  document.getElementById("detail-title").textContent = title;
+  document.getElementById("detail-subtitle").textContent = subtitle || "";
+  document.getElementById("detail-art").innerHTML = imageURL ? `<img src="${imageURL}" alt="">` : "";
+  document.getElementById("detail-refresh").style.display = showRefresh ? "flex" : "none";
+
+  renderList(document.getElementById("detail-list"), tracks, {
+    onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: title }).then(refreshState),
+  });
+  showView("detail");
+}
+
+document.getElementById("detail-play").onclick = () => {
+  if (!detail.tracks.length) return;
+  post("/api/play", { track: detail.tracks[0], context: detail.tracks, contextTitle: detail.title }).then(refreshState);
+};
+
+document.getElementById("detail-shuffle").onclick = () => {
+  if (!detail.tracks.length) return;
+  const shuffled = [...detail.tracks].sort(() => Math.random() - 0.5);
+  post("/api/play", { track: shuffled[0], context: shuffled, contextTitle: detail.title }).then(refreshState);
+};
+
+document.getElementById("detail-refresh").onclick = async () => {
+  if (detail.kind === "radio" && detail.seedTrack) {
+    const tracks = await api(`/api/radio?videoId=${encodeURIComponent(detail.seedTrack.videoId)}`);
+    openRadioDetail(detail.seedTrack, tracks);
+  } else if (detail.kind === "daylist") {
+    await post("/api/library/daylist/refresh");
+    await openDaylistDetail();
+  }
+};
+
+function radioSubtitle(seedTrack, tracks) {
+  const others = tracks
+    .filter((t) => t.videoId !== seedTrack.videoId)
+    .map((t) => t.artist)
+    .flatMap((a) => a.split(", "));
+  const seen = new Set();
+  const unique = others.filter((a) => (seen.has(a) ? false : (seen.add(a), true))).slice(0, 3);
+  return unique.length ? `With ${unique.join(", ")} and more` : "";
+}
+
+function openRadioDetail(seedTrack, tracks) {
+  openDetail(tracks, {
+    title: `${seedTrack.title} Radio`,
+    subtitle: radioSubtitle(seedTrack, tracks),
+    badge: "Radio",
+    imageURL: seedTrack.thumbnailUrl,
+    kind: "radio",
+    seedTrack,
+    showRefresh: true,
+  });
+}
+
+async function openDaylistDetail() {
+  const daylist = await api("/api/library/daylist");
+  openDetail(daylist.tracks, {
+    title: daylist.title || "Daylist",
+    subtitle: `${daylist.tracks.length} songs`,
+    badge: "Made for you",
+    imageURL: daylist.tracks[0] ? daylist.tracks[0].thumbnailUrl : null,
+    kind: "daylist",
+    showRefresh: true,
+  });
+}
+
+async function openPlaylistDetail(playlist) {
+  openDetail(playlist.tracks, {
+    title: playlist.name,
+    subtitle: `${playlist.tracks.length} songs`,
+    badge: "Playlist",
+    imageURL: playlist.tracks[0] ? playlist.tracks[0].thumbnailUrl : null,
+    kind: "playlist",
+  });
+}
+
+async function openLikedDetail() {
+  const tracks = await api("/api/library/liked");
+  openDetail(tracks, {
+    title: "Liked Songs",
+    subtitle: `${tracks.length} songs`,
+    badge: "Playlist",
+    kind: "liked",
+  });
+}
+
+async function openDownloadsDetail() {
+  const tracks = await api("/api/library/downloads");
+  openDetail(tracks, {
+    title: "Downloads",
+    subtitle: `${tracks.length} songs`,
+    badge: "Offline",
+    kind: "downloads",
+  });
+}
+
+document.querySelectorAll(".lib-shortcut").forEach((btn) => {
+  btn.onclick = async () => {
+    document.querySelectorAll(".lib-shortcut, .library-row, .nav-item").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    const which = btn.dataset.detail;
+    if (which === "daylist") await openDaylistDetail();
+    else if (which === "liked") await openLikedDetail();
+    else if (which === "downloads") await openDownloadsDetail();
+  };
+});
+
 // ---------- now playing ----------
 
 function renderNowPlaying(s) {
@@ -104,8 +259,14 @@ function renderNowPlaying(s) {
   document.getElementById("np-art").src = s.currentTrack ? s.currentTrack.thumbnailUrl || "" : "";
   document.getElementById("np-title").textContent = s.currentTrack ? s.currentTrack.title : "Nothing playing";
   document.getElementById("np-artist").textContent = s.currentTrack ? s.currentTrack.artist : "";
-  document.getElementById("np-toggle").textContent = s.isPlaying ? "⏸" : "▶️";
+  document.getElementById("np-play-icon").style.display = s.isPlaying ? "none" : "block";
+  document.getElementById("np-pause-icon").style.display = s.isPlaying ? "block" : "none";
   document.getElementById("np-shuffle").classList.toggle("active", !!s.isShuffling);
+
+  const likeBtn = document.getElementById("np-like");
+  const liked = s.currentTrack && (s.likedVideoIds || []).includes(s.currentTrack.videoId);
+  likeBtn.innerHTML = liked ? ICONS.heartFilled : ICONS.heartOutline;
+  likeBtn.classList.toggle("liked", !!liked);
 
   const seek = document.getElementById("np-seek");
   if (!seek.dragging) {
@@ -137,33 +298,17 @@ async function refreshState() {
   renderNowPlaying(s);
 }
 
-// ---------- tabs ----------
-
-document.querySelectorAll(".tab-btn").forEach((btn) => {
-  btn.onclick = () => {
-    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
-    btn.classList.add("active");
-    document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
-  };
-});
-
-document.querySelectorAll(".lib-btn").forEach((btn) => {
-  btn.onclick = () => {
-    document.querySelectorAll(".lib-btn").forEach((b) => b.classList.remove("active"));
-    document.querySelectorAll(".lib-panel").forEach((p) => p.classList.remove("active"));
-    btn.classList.add("active");
-    document.getElementById(`lib-${btn.dataset.lib}`).classList.add("active");
-    loadLibrarySection(btn.dataset.lib);
-  };
-});
-
 // ---------- transport ----------
 
 document.getElementById("np-toggle").onclick = () => post("/api/toggle").then(refreshState);
 document.getElementById("np-next").onclick = () => post("/api/next").then(refreshState);
 document.getElementById("np-prev").onclick = () => post("/api/previous").then(refreshState);
 document.getElementById("np-shuffle").onclick = () => post("/api/shuffle").then(refreshState);
+document.getElementById("np-like").onclick = async () => {
+  if (!state.current) return;
+  await post("/api/library/liked/toggle", { track: state.current });
+  refreshState();
+};
 
 const seekEl = document.getElementById("np-seek");
 seekEl.addEventListener("mousedown", () => (seekEl.dragging = true));
@@ -178,91 +323,100 @@ seekEl.addEventListener("change", async () => {
 
 async function loadHome() {
   const tracks = await api("/api/home");
-  renderList(document.getElementById("home-list"), tracks, {
-    onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: "Quick Picks" }).then(refreshState),
+  const grid = document.getElementById("home-grid");
+  grid.innerHTML = "";
+  tracks.forEach((t) => {
+    const card = document.createElement("div");
+    card.className = "grid-card";
+    card.innerHTML = `
+      <img src="${t.thumbnailUrl || ""}" alt="">
+      <div class="g-title">${escapeHtml(t.title)}</div>
+      <div class="g-artist">${escapeHtml(t.artist)}</div>
+    `;
+    card.onclick = () => post("/api/play", { track: t, context: tracks, contextTitle: "Quick Picks" }).then(refreshState);
+    grid.appendChild(card);
   });
 }
 
 // ---------- search ----------
 
 let searchTimer = null;
-document.getElementById("search-input").addEventListener("input", (e) => {
+function runSearch(q) {
   clearTimeout(searchTimer);
-  const q = e.target.value;
+  if (!q.trim()) {
+    renderList(document.getElementById("search-list"), []);
+    return;
+  }
   searchTimer = setTimeout(async () => {
-    if (!q.trim()) {
-      renderList(document.getElementById("search-list"), []);
-      return;
-    }
     const tracks = await api(`/api/search?q=${encodeURIComponent(q)}`);
     renderList(document.getElementById("search-list"), tracks, {
       onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: "Search" }).then(refreshState),
     });
   }, 350);
+}
+
+document.getElementById("global-search").addEventListener("input", (e) => {
+  const q = e.target.value;
+  showView("search");
+  runSearch(q);
 });
 
-// ---------- library ----------
+document.getElementById("global-search").addEventListener("focus", () => showView("search"));
 
-async function loadLibrarySection(section) {
-  if (section === "liked") {
-    const tracks = await api("/api/library/liked");
-    renderList(document.getElementById("lib-liked"), tracks, {
-      onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: "Liked Songs" }).then(refreshState),
-    });
-  } else if (section === "playlists") {
-    const playlists = await api("/api/library/playlists");
-    const container = document.getElementById("playlists-list");
-    container.innerHTML = "";
-    if (playlists.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "empty-hint";
-      empty.textContent = "No playlists yet.";
-      container.appendChild(empty);
-    }
-    playlists.forEach((p) => {
-      const row = document.createElement("div");
-      row.className = "track-row";
-      const meta = document.createElement("div");
-      meta.className = "track-meta";
-      meta.innerHTML = `<div class="track-title">${escapeHtml(p.name)}</div><div class="track-artist">${p.tracks.length} songs</div>`;
-      row.appendChild(meta);
-      row.onclick = () => {
-        renderList(document.getElementById("playlist-detail"), p.tracks, {
-          onPlay: (t) => post("/api/play", { track: t, context: p.tracks, contextTitle: p.name }).then(refreshState),
-        });
+// ---------- library (sidebar list: playlists + radio stations) ----------
+
+async function loadLibraryList() {
+  const [playlists, stations] = await Promise.all([api("/api/library/playlists"), api("/api/library/radios")]);
+  const container = document.getElementById("library-list");
+  container.innerHTML = "";
+
+  if (stations.length) {
+    const label = document.createElement("div");
+    label.className = "library-section-label";
+    label.textContent = "Radio";
+    container.appendChild(label);
+    stations.forEach((station) => {
+      const row = document.createElement("button");
+      row.className = "library-row";
+      row.innerHTML = `
+        <span class="lib-icon"><img src="${station.seedTrack.thumbnailUrl || ""}" alt=""></span>
+        <span class="track-title-sm">${escapeHtml(station.seedTrack.title)} Radio</span>
+      `;
+      row.onclick = async () => {
+        document.querySelectorAll(".lib-shortcut, .library-row, .nav-item").forEach((b) => b.classList.remove("active"));
+        row.classList.add("active");
+        const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`);
+        openRadioDetail(station.seedTrack, tracks);
       };
       container.appendChild(row);
     });
-  } else if (section === "radios") {
-    const stations = await api("/api/library/radios");
-    const container = document.getElementById("radios-list");
-    container.innerHTML = "";
-    if (stations.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "empty-hint";
-      empty.textContent = "No radios yet — start one from the app.";
-      container.appendChild(empty);
-    }
-    stations.forEach((station) => {
-      const row = trackRow(station.seedTrack, {
-        onPlay: async (seed) => {
-          await post("/api/radio/play", { seedTrack: seed, shuffled: false });
-          refreshState();
-        },
-      });
-      row.querySelector(".track-title").textContent = `${station.seedTrack.title} Radio`;
+  }
+
+  const label = document.createElement("div");
+  label.className = "library-section-label";
+  label.textContent = "Playlists";
+  container.appendChild(label);
+
+  if (!playlists.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-hint";
+    empty.textContent = "Tap Create to add one.";
+    container.appendChild(empty);
+  } else {
+    playlists.forEach((p) => {
+      const row = document.createElement("button");
+      row.className = "library-row";
+      const art = p.tracks[0] ? p.tracks[0].thumbnailUrl : null;
+      row.innerHTML = `
+        <span class="lib-icon">${art ? `<img src="${art}" alt="">` : ICONS.note}</span>
+        <span class="track-title-sm">${escapeHtml(p.name)}<span class="row-sub">${p.tracks.length} songs</span></span>
+      `;
+      row.onclick = () => {
+        document.querySelectorAll(".lib-shortcut, .library-row, .nav-item").forEach((b) => b.classList.remove("active"));
+        row.classList.add("active");
+        openPlaylistDetail(p);
+      };
       container.appendChild(row);
-    });
-  } else if (section === "downloads") {
-    const tracks = await api("/api/library/downloads");
-    renderList(document.getElementById("lib-downloads"), tracks, {
-      onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: "Downloads" }).then(refreshState),
-    });
-  } else if (section === "daylist") {
-    const daylist = await api("/api/library/daylist");
-    document.getElementById("daylist-title").textContent = daylist.title || "Daylist";
-    renderList(document.getElementById("daylist-list"), daylist.tracks, {
-      onPlay: (t) => post("/api/play", { track: t, context: daylist.tracks, contextTitle: daylist.title }).then(refreshState),
     });
   }
 }
@@ -273,19 +427,8 @@ document.getElementById("new-playlist-btn").onclick = async () => {
   if (!name) return;
   await post("/api/library/playlists/create", { name });
   input.value = "";
-  loadLibrarySection("playlists");
+  loadLibraryList();
 };
-
-document.getElementById("daylist-refresh").onclick = async () => {
-  await post("/api/library/daylist/refresh");
-  loadLibrarySection("daylist");
-};
-
-function escapeHtml(text) {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
-}
 
 // ---------- live sync ----------
 
@@ -305,6 +448,7 @@ function connectWebSocket() {
 // ---------- init ----------
 
 loadHome();
+loadLibraryList();
 refreshState();
 connectWebSocket();
 setInterval(refreshState, 5000); // fallback in case the socket drops silently
