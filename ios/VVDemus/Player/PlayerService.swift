@@ -35,7 +35,13 @@ final class PlayerService: ObservableObject {
     private var endObserver: NSObjectProtocol?
     private var loadTask: Task<Void, Never>?
     private var artworkTask: Task<Void, Never>?
+    /// Bounded so this doesn't grow for the entire app session — lock-screen artwork only
+    /// ever needs the current (and maybe just-previous) track, so a handful of entries is
+    /// plenty. Unbounded, this held a full decoded UIImage per unique track ever played,
+    /// which is what was driving the app's memory usage up over long sessions.
     private var artworkCache: [String: MPMediaItemArtwork] = [:]
+    private var artworkCacheOrder: [String] = []
+    private let artworkCacheLimit = 6
 
     private init() {
         timeObserver = player.addPeriodicTimeObserver(
@@ -116,10 +122,20 @@ final class PlayerService: ObservableObject {
                   let image = UIImage(data: data) else { return }
             guard !Task.isCancelled else { return }
             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-            artworkCache[track.id] = artwork
+            cacheArtwork(artwork, for: track.id)
             if currentTrack?.id == track.id {
                 updateNowPlayingInfo()
             }
+        }
+    }
+
+    private func cacheArtwork(_ artwork: MPMediaItemArtwork, for trackId: String) {
+        artworkCache[trackId] = artwork
+        artworkCacheOrder.removeAll { $0 == trackId }
+        artworkCacheOrder.append(trackId)
+        while artworkCacheOrder.count > artworkCacheLimit {
+            let oldest = artworkCacheOrder.removeFirst()
+            artworkCache.removeValue(forKey: oldest)
         }
     }
 
