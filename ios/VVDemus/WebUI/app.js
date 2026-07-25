@@ -486,6 +486,15 @@ document.getElementById("new-playlist-btn").onclick = async () => {
 
 function connectWebSocket() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
+  let heartbeat = null;
+  ws.onopen = () => {
+    // Lets the server tell this connection apart from one that silently died (closed
+    // laptop lid, WiFi drop) without a clean close ever reaching it — see
+    // LocalControlServer's socketLastSeen/pruneStaleSockets.
+    heartbeat = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send("ping");
+    }, 15000);
+  };
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
@@ -502,7 +511,10 @@ function connectWebSocket() {
       /* ignore malformed frame */
     }
   };
-  ws.onclose = () => setTimeout(connectWebSocket, 2000);
+  ws.onclose = () => {
+    if (heartbeat) clearInterval(heartbeat);
+    setTimeout(connectWebSocket, 2000);
+  };
   ws.onerror = () => ws.close();
 }
 

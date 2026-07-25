@@ -24,6 +24,14 @@ final class LocalControlServer: ObservableObject {
 
     private let server = HttpServer()
     private var sockets: Set<WebSocketSession> = []
+    /// Swifter only fires its `disconnected` callback once a *blocking* per-connection
+    /// socket read throws — which may never happen if a browser tab is killed, a laptop
+    /// sleeps, or WiFi drops without a clean TCP close. Left unchecked, `sockets` (and the
+    /// blocked read thread behind each stale entry) accumulates for the life of the app.
+    /// The web client pings every 15s (see app.js); anything silent for longer than this
+    /// gets dropped here instead of being broadcast to forever.
+    private var socketLastSeen: [WebSocketSession: Date] = [:]
+    private let socketStaleTimeout: TimeInterval = 45
     private var broadcastTimer: Timer?
 
     private init() {}
@@ -54,6 +62,7 @@ final class LocalControlServer: ObservableObject {
         RadioCacheStore.shared.onUpdate = nil
         server.stop()
         sockets.removeAll()
+        socketLastSeen.removeAll()
         isRunning = false
     }
 
@@ -65,12 +74,21 @@ final class LocalControlServer: ObservableObject {
         server["/style.css"] = { [weak self] _ in self?.staticFile("style", "css", contentType: "text/css") ?? .notFound }
 
         server["/ws"] = websocket(
-            text: { _, _ in },
+            text: { [weak self] session, _ in
+                // Any text frame (the client's heartbeat ping) counts as "still alive".
+                Task { @MainActor in self?.socketLastSeen[session] = Date() }
+            },
             connected: { [weak self] session in
-                Task { @MainActor in self?.sockets.insert(session) }
+                Task { @MainActor in
+                    self?.sockets.insert(session)
+                    self?.socketLastSeen[session] = Date()
+                }
             },
             disconnected: { [weak self] session in
-                Task { @MainActor in self?.sockets.remove(session) }
+                Task { @MainActor in
+                    self?.sockets.remove(session)
+                    self?.socketLastSeen.removeValue(forKey: session)
+                }
             }
         )
 
@@ -277,8 +295,18 @@ final class LocalControlServer: ObservableObject {
     }
 
     private func broadcastState() {
+        pruneStaleSockets()
         guard !sockets.isEmpty else { return }
         broadcast(StateMessage(state: stateSnapshot()))
+    }
+
+    private func pruneStaleSockets() {
+        let cutoff = Date().addingTimeInterval(-socketStaleTimeout)
+        let stale = sockets.filter { (socketLastSeen[$0] ?? .distantPast) < cutoff }
+        for session in stale {
+            sockets.remove(session)
+            socketLastSeen.removeValue(forKey: session)
+        }
     }
 
     private func broadcastRadioUpdate(videoId: String, tracks: [Track]) {
