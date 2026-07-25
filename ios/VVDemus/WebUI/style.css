@@ -296,6 +296,67 @@ svg { display: block; }
   margin: 24px 0 10px;
 }
 
+/* ---------- radio chip grid (home) ---------- */
+
+.radio-chip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 32px;
+}
+
+.radio-chip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--card);
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  height: 64px;
+}
+
+.radio-chip:hover { background: var(--card-light); }
+
+.radio-chip img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  background: var(--card-light);
+  flex-shrink: 0;
+}
+
+.radio-chip .r-title {
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 12px;
+}
+
+/* ---------- recommendation shelves ---------- */
+
+.shelf { margin-bottom: 32px; }
+
+.shelf-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 14px;
+}
+
+.shelf-scroll {
+  display: flex;
+  gap: 18px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.shelf-scroll .grid-card {
+  width: 160px;
+  flex-shrink: 0;
+}
+
 /* ---------- card grid (home) ---------- */
 
 .card-grid {
@@ -305,6 +366,7 @@ svg { display: block; }
 }
 
 .grid-card {
+  position: relative;
   background: var(--card);
   border-radius: 8px;
   padding: 12px;
@@ -314,14 +376,47 @@ svg { display: block; }
 
 .grid-card:hover { background: var(--card-light); }
 
+.grid-card .g-art-wrap {
+  position: relative;
+  margin-bottom: 12px;
+}
+
 .grid-card img {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
   border-radius: 6px;
   background: var(--card-light);
-  margin-bottom: 12px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  display: block;
+}
+
+.grid-card .g-queue-btn {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #000;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+
+.grid-card .g-queue-btn svg { width: 16px; height: 16px; }
+
+.grid-card:hover .g-queue-btn,
+.grid-card .g-queue-btn:focus-visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .grid-card .g-title {

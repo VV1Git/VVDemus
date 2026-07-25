@@ -96,7 +96,7 @@
 		7FDC0CAE84142D3EEAB5F41D /* ErrorRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorRow.swift; sourceTree = "<group>"; };
 		8CA6C800B30627AF0F63270F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		93D23C7FF3F19509E309CB2D /* InnerTubeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InnerTubeClient.swift; sourceTree = "<group>"; };
-		94B2FABE57C274328FB4DB9C /* VVDemus.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = VVDemus.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		94B2FABE57C274328FB4DB9C /* VVDemus.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VVDemus.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9E5DFE4DA1AF52C9AF6172F7 /* NowPlayingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingView.swift; sourceTree = "<group>"; };
 		A50964CDD65DBD8591D6D540 /* VVDemusApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VVDemusApp.swift; sourceTree = "<group>"; };
 		A7C73BE8983E44C1581A2E34 /* JumpBackInCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpBackInCard.swift; sourceTree = "<group>"; };
@@ -324,8 +324,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = DDC189F0B63A5FA2F289F244 /* Build configuration list for PBXProject "VVDemus" */;
 			developmentRegion = en;
@@ -549,6 +547,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = Generated/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -572,6 +571,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = Generated/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;

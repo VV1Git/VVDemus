@@ -3,12 +3,16 @@ import SwiftUI
 struct RadioDetailView: View {
     let seedTrack: Track
     @ObservedObject var player: PlayerService
-    @State private var tracks: [Track] = []
+    @ObservedObject private var radioCache = RadioCacheStore.shared
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var sortOption: MixSortOption = .order
     @State private var isRefreshing = false
+
+    /// Reads straight from the shared cache so a refresh triggered from the web remote
+    /// control (or another screen) shows up here immediately, not just on next visit.
+    private var tracks: [Track] { radioCache.tracks(for: seedTrack.videoId) ?? [] }
 
     private var title: String { "\(seedTrack.title) Radio" }
 
@@ -108,18 +112,15 @@ struct RadioDetailView: View {
         try await APIClient.shared.radio(videoId: seedTrack.videoId, limit: 50)
     }
 
-    /// Shows a cached mix (if this radio was ever loaded before) immediately, then
-    /// refreshes in the background — so a revisit still works offline instead of
-    /// blocking on a network call that can't succeed.
+    /// Shows the cached mix (if this radio was ever loaded before, by this device or via
+    /// the web remote control) immediately since `tracks` reads the cache directly, then
+    /// refreshes in the background — so a revisit still works offline instead of blocking
+    /// on a network call that can't succeed.
     private func load() async {
-        if tracks.isEmpty, let cached = RadioCacheStore.shared.tracks(for: seedTrack.videoId) {
-            tracks = cached
-        }
         isLoading = tracks.isEmpty
         errorMessage = nil
         do {
             let fresh = try await fetchTracks()
-            tracks = fresh
             RadioCacheStore.shared.store(fresh, for: seedTrack.videoId)
         } catch {
             if tracks.isEmpty {
@@ -130,11 +131,11 @@ struct RadioDetailView: View {
     }
 
     /// Re-fetches a fresh mix for the same seed track — YouTube Music's radio endpoint
-    /// varies between calls, so this surfaces a different set of related songs.
+    /// varies between calls, so this surfaces a different set of related songs. Storing it
+    /// updates every view (and every connected web browser) watching this radio.
     private func refresh() async {
         isRefreshing = true
         if let fresh = try? await fetchTracks() {
-            tracks = fresh
             RadioCacheStore.shared.store(fresh, for: seedTrack.videoId)
         }
         isRefreshing = false

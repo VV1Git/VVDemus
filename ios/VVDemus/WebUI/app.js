@@ -169,7 +169,7 @@ document.getElementById("detail-shuffle").onclick = () => {
 
 document.getElementById("detail-refresh").onclick = async () => {
   if (detail.kind === "radio" && detail.seedTrack) {
-    const tracks = await api(`/api/radio?videoId=${encodeURIComponent(detail.seedTrack.videoId)}`);
+    const tracks = await post("/api/radio/refresh", { videoId: detail.seedTrack.videoId });
     openRadioDetail(detail.seedTrack, tracks);
   } else if (detail.kind === "daylist") {
     await post("/api/library/daylist/refresh");
@@ -321,21 +321,73 @@ seekEl.addEventListener("change", async () => {
 
 // ---------- home ----------
 
-async function loadHome() {
-  const tracks = await api("/api/home");
-  const grid = document.getElementById("home-grid");
-  grid.innerHTML = "";
-  tracks.forEach((t) => {
-    const card = document.createElement("div");
-    card.className = "grid-card";
-    card.innerHTML = `
-      <img src="${t.thumbnailUrl || ""}" alt="">
-      <div class="g-title">${escapeHtml(t.title)}</div>
-      <div class="g-artist">${escapeHtml(t.artist)}</div>
+function gridTrackCard(track, tracks, contextTitle) {
+  const card = document.createElement("div");
+  card.className = "grid-card";
+  card.innerHTML = `
+    <div class="g-art-wrap">
+      <img src="${track.thumbnailUrl || ""}" alt="">
+      <button class="g-queue-btn" title="Add to queue">${ICONS.add}</button>
+    </div>
+    <div class="g-title">${escapeHtml(track.title)}</div>
+    <div class="g-artist">${escapeHtml(track.artist)}</div>
+  `;
+  card.querySelector(".g-queue-btn").onclick = (e) => {
+    e.stopPropagation();
+    post("/api/queue/add", { track });
+  };
+  card.onclick = () => post("/api/play", { track, context: tracks, contextTitle }).then(refreshState);
+  return card;
+}
+
+async function loadHomeRadios() {
+  const stations = await api("/api/library/radios");
+  const container = document.getElementById("home-radios");
+  container.innerHTML = "";
+  stations.forEach((station) => {
+    const chip = document.createElement("div");
+    chip.className = "radio-chip";
+    chip.innerHTML = `
+      <img src="${station.seedTrack.thumbnailUrl || ""}" alt="">
+      <span class="r-title">${escapeHtml(station.seedTrack.title)} Radio</span>
     `;
-    card.onclick = () => post("/api/play", { track: t, context: tracks, contextTitle: "Quick Picks" }).then(refreshState);
-    grid.appendChild(card);
+    chip.onclick = async () => {
+      const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`);
+      openRadioDetail(station.seedTrack, tracks);
+    };
+    container.appendChild(chip);
   });
+}
+
+async function loadHomeRecommendations() {
+  const container = document.getElementById("home-recommendations");
+  container.innerHTML = "";
+  const sections = await api("/api/home");
+  if (!sections.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-hint";
+    empty.textContent = "Play a few songs and your recommendations will show up here.";
+    container.appendChild(empty);
+    return;
+  }
+  sections.forEach((section) => {
+    const shelf = document.createElement("div");
+    shelf.className = "shelf";
+    const title = document.createElement("div");
+    title.className = "shelf-title";
+    title.textContent = section.title;
+    const scroll = document.createElement("div");
+    scroll.className = "shelf-scroll";
+    section.tracks.forEach((t) => scroll.appendChild(gridTrackCard(t, section.tracks, section.title)));
+    shelf.appendChild(title);
+    shelf.appendChild(scroll);
+    container.appendChild(shelf);
+  });
+}
+
+function loadHome() {
+  loadHomeRadios();
+  loadHomeRecommendations();
 }
 
 // ---------- search ----------
@@ -436,7 +488,16 @@ function connectWebSocket() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onmessage = (event) => {
     try {
-      renderNowPlaying(JSON.parse(event.data));
+      const msg = JSON.parse(event.data);
+      if (msg.type === "radio") {
+        // A radio's mix changed (refreshed from the phone or another browser tab) —
+        // if that's the one currently open here, update it live instead of going stale.
+        if (detail.kind === "radio" && detail.seedTrack && detail.seedTrack.videoId === msg.videoId) {
+          openRadioDetail(detail.seedTrack, msg.tracks);
+        }
+      } else if (msg.type === "state") {
+        renderNowPlaying(msg.state);
+      }
     } catch (e) {
       /* ignore malformed frame */
     }

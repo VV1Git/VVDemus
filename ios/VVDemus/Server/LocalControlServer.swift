@@ -40,6 +40,9 @@ final class LocalControlServer: ObservableObject {
             broadcastTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.broadcastState() }
             }
+            RadioCacheStore.shared.onUpdate = { [weak self] videoId, tracks in
+                self?.broadcastRadioUpdate(videoId: videoId, tracks: tracks)
+            }
         } catch {
             isRunning = false
         }
@@ -48,6 +51,7 @@ final class LocalControlServer: ObservableObject {
     func stop() {
         broadcastTimer?.invalidate()
         broadcastTimer = nil
+        RadioCacheStore.shared.onUpdate = nil
         server.stop()
         sockets.removeAll()
         isRunning = false
@@ -137,8 +141,9 @@ final class LocalControlServer: ObservableObject {
 
         server.GET["/api/home"] = { [weak self] _ in
             guard let self else { return .internalServerError }
-            switch self.awaitAsync({ try await APIClient.shared.home() }) {
-            case .success(let tracks): return self.jsonResponse(tracks)
+            let seeds = self.onMain { PlayHistoryStore.shared.recentSeeds(4) }
+            switch self.awaitAsync({ try await Self.buildRecommendations(seeds: seeds) }) {
+            case .success(let sections): return self.jsonResponse(sections)
             case .failure: return .internalServerError
             }
         }
@@ -148,8 +153,27 @@ final class LocalControlServer: ObservableObject {
             guard let videoId = request.queryParams.first(where: { $0.0 == "videoId" })?.1 else {
                 return .badRequest(.text("missing videoId"))
             }
+            // Serve the same cached mix the phone would show, so opening a radio from
+            // the web shows exactly what's already on the phone instead of a different
+            // fresh fetch (YouTube's radio endpoint varies between calls).
+            if let cached = self.onMain({ RadioCacheStore.shared.tracks(for: videoId) }) {
+                return self.jsonResponse(cached)
+            }
             switch self.awaitAsync({ try await APIClient.shared.radio(videoId: videoId, limit: 50) }) {
-            case .success(let tracks): return self.jsonResponse(tracks)
+            case .success(let tracks):
+                self.onMain { RadioCacheStore.shared.store(tracks, for: videoId) }
+                return self.jsonResponse(tracks)
+            case .failure: return .internalServerError
+            }
+        }
+        server.POST["/api/radio/refresh"] = { [weak self] request in
+            guard let self, let body: VideoIdBody = self.decodeBody(request) else { return .badRequest(.text("bad body")) }
+            switch self.awaitAsync({ try await APIClient.shared.radio(videoId: body.videoId, limit: 50) }) {
+            case .success(let tracks):
+                // Storing pushes onUpdate → broadcastRadioUpdate, which is what actually
+                // syncs this to the phone (and any other open browser) live.
+                self.onMain { RadioCacheStore.shared.store(tracks, for: body.videoId) }
+                return self.jsonResponse(tracks)
             case .failure: return .internalServerError
             }
         }
@@ -254,10 +278,39 @@ final class LocalControlServer: ObservableObject {
 
     private func broadcastState() {
         guard !sockets.isEmpty else { return }
-        let snapshot = stateSnapshot()
-        guard let data = try? JSONEncoder().encode(snapshot), let text = String(data: data, encoding: .utf8) else { return }
+        broadcast(StateMessage(state: stateSnapshot()))
+    }
+
+    private func broadcastRadioUpdate(videoId: String, tracks: [Track]) {
+        guard !sockets.isEmpty else { return }
+        broadcast(RadioUpdateMessage(videoId: videoId, tracks: tracks))
+    }
+
+    private func broadcast<T: Encodable>(_ value: T) {
+        guard let data = try? JSONEncoder().encode(value), let text = String(data: data, encoding: .utf8) else { return }
         for socket in sockets {
             socket.writeText(text)
+        }
+    }
+
+    /// Builds "Because you listened to…" shelves from local play history, mirroring
+    /// HomeView's own recommendation logic so the web UI's Home tab matches the phone's
+    /// personalization instead of showing a generic, non-personalized feed.
+    private static func buildRecommendations(seeds: [Track]) async throws -> [HomeRecommendationSection] {
+        guard !seeds.isEmpty else { return [] }
+        let radios = try await withThrowingTaskGroup(of: (Int, [Track]).self) { group -> [[Track]] in
+            for (index, seed) in seeds.enumerated() {
+                group.addTask {
+                    let mix = try await APIClient.shared.radio(videoId: seed.videoId, limit: 15)
+                    return (index, Array(mix.dropFirst()))
+                }
+            }
+            var results = Array(repeating: [Track](), count: seeds.count)
+            for try await (index, tracks) in group { results[index] = tracks }
+            return results
+        }
+        return zip(seeds, radios).compactMap { seed, tracks in
+            tracks.isEmpty ? nil : HomeRecommendationSection(title: "Because you listened to \(seed.title)", tracks: tracks)
         }
     }
 

@@ -11,6 +11,11 @@ final class RadioCacheStore: ObservableObject {
     private var cache: [String: [Track]] = [:]
     private var order: [String] = []
 
+    /// Fired whenever a radio's track list changes (from either the phone's own refresh
+    /// or one requested over the local control server) — lets LocalControlServer push the
+    /// update to any connected browser so the two stay in sync instead of drifting apart.
+    var onUpdate: ((_ seedVideoId: String, _ tracks: [Track]) -> Void)?
+
     private init() { load() }
 
     func tracks(for seedVideoId: String) -> [Track]? {
@@ -26,6 +31,7 @@ final class RadioCacheStore: ObservableObject {
             cache.removeValue(forKey: oldest)
         }
         save()
+        onUpdate?(seedVideoId, tracks)
     }
 
     private struct Snapshot: Codable {
