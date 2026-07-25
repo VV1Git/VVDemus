@@ -21,13 +21,6 @@ struct DaylistSnapshot: Codable {
     let tracks: [Track]
 }
 
-/// A "Because you listened to X" shelf for the web UI's Home tab, built from local play
-/// history the same way HomeView builds its recommendation shelves.
-struct HomeRecommendationSection: Codable {
-    let title: String
-    let tracks: [Track]
-}
-
 /// A WebSocket push telling connected browsers that a radio's track list changed — sent
 /// whenever RadioCacheStore is updated, from either the phone or the web UI itself, so
 /// both stay in sync instead of drifting apart.

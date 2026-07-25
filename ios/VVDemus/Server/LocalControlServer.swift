@@ -160,7 +160,7 @@ final class LocalControlServer: ObservableObject {
         server.GET["/api/home"] = { [weak self] _ in
             guard let self else { return .internalServerError }
             let seeds = self.onMain { PlayHistoryStore.shared.recentSeeds(4) }
-            switch self.awaitAsync({ try await Self.buildRecommendations(seeds: seeds) }) {
+            switch self.awaitAsync({ try await RecommendationsBuilder.build(seeds: seeds) }) {
             case .success(let sections): return self.jsonResponse(sections)
             case .failure: return .internalServerError
             }
@@ -318,27 +318,6 @@ final class LocalControlServer: ObservableObject {
         guard let data = try? JSONEncoder().encode(value), let text = String(data: data, encoding: .utf8) else { return }
         for socket in sockets {
             socket.writeText(text)
-        }
-    }
-
-    /// Builds "Because you listened to…" shelves from local play history, mirroring
-    /// HomeView's own recommendation logic so the web UI's Home tab matches the phone's
-    /// personalization instead of showing a generic, non-personalized feed.
-    private static func buildRecommendations(seeds: [Track]) async throws -> [HomeRecommendationSection] {
-        guard !seeds.isEmpty else { return [] }
-        let radios = try await withThrowingTaskGroup(of: (Int, [Track]).self) { group -> [[Track]] in
-            for (index, seed) in seeds.enumerated() {
-                group.addTask {
-                    let mix = try await APIClient.shared.radio(videoId: seed.videoId, limit: 15)
-                    return (index, Array(mix.dropFirst()))
-                }
-            }
-            var results = Array(repeating: [Track](), count: seeds.count)
-            for try await (index, tracks) in group { results[index] = tracks }
-            return results
-        }
-        return zip(seeds, radios).compactMap { seed, tracks in
-            tracks.isEmpty ? nil : HomeRecommendationSection(title: "Because you listened to \(seed.title)", tracks: tracks)
         }
     }
 

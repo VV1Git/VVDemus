@@ -42,8 +42,15 @@ final class ListeningStatsStore: ObservableObject {
         events = decoded
     }
 
+    /// Encodes off the main thread — `record()` runs synchronously on every track change
+    /// (skip, autoplay, "next"), and after months of history this array is big enough that
+    /// encoding it inline was a real, avoidable hitch right as the next track starts loading.
     private func save() {
-        guard let data = try? JSONEncoder().encode(events) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        let snapshot = events
+        let url = fileURL
+        Task.detached(priority: .utility) {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            try? data.write(to: url, options: .atomic)
+        }
     }
 }

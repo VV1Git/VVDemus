@@ -1,11 +1,5 @@
 import SwiftUI
 
-private struct RecommendationSection: Identifiable {
-    let id = UUID()
-    let title: String
-    let tracks: [Track]
-}
-
 private enum ShortcutItem: Identifiable {
     case likedSongs
     case radio(RadioStation)
@@ -28,7 +22,7 @@ struct HomeView: View {
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var daylist = DaylistStore.shared
     @ObservedObject private var network = NetworkMonitor.shared
-    @State private var sections: [RecommendationSection] = []
+    @State private var sections: [RecommendationsBuilder.Section] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var path = NavigationPath()
@@ -200,29 +194,11 @@ struct HomeView: View {
         do {
             async let quickPicks = APIClient.shared.home()
 
-            let seeds = history.recentSeeds(3)
-            var built: [RecommendationSection] = []
-
-            if !seeds.isEmpty {
-                let radios = try await withThrowingTaskGroup(of: (Int, [Track]).self) { group -> [[Track]] in
-                    for (index, seed) in seeds.enumerated() {
-                        group.addTask {
-                            let mix = try await APIClient.shared.radio(videoId: seed.videoId, limit: 15)
-                            return (index, Array(mix.dropFirst()))
-                        }
-                    }
-                    var results = Array(repeating: [Track](), count: seeds.count)
-                    for try await (index, tracks) in group { results[index] = tracks }
-                    return results
-                }
-                for (seed, tracks) in zip(seeds, radios) where !tracks.isEmpty {
-                    built.append(RecommendationSection(title: "Because you listened to \(seed.title)", tracks: tracks))
-                }
-            }
+            var built = try await RecommendationsBuilder.build(seeds: history.recentSeeds(3))
 
             let picks = try await quickPicks
             if !picks.isEmpty {
-                built.append(RecommendationSection(title: "Quick Picks", tracks: picks))
+                built.append(RecommendationsBuilder.Section(title: "Quick Picks", tracks: picks))
             }
             sections = built
         } catch {
