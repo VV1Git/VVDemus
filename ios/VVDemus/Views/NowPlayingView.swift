@@ -6,6 +6,34 @@ struct NowPlayingView: View {
     @ObservedObject private var colorLoader = ArtworkColorLoader.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showQueue = false
+    /// How far the artwork has been dragged sideways, so it follows the finger before
+    /// snapping back — without that the gesture gives no sign it's being recognised.
+    @State private var artworkDrag: CGFloat = 0
+
+    /// Swiping the artwork changes track; swiping it down closes the screen. Both are
+    /// handled by one gesture that commits to whichever axis the drag actually favours, so
+    /// a sloppy diagonal can't trigger two things at once.
+    private var artworkGesture: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onChanged { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                // Damped, so the artwork clearly isn't going to be dragged off-screen.
+                artworkDrag = value.translation.width / 3
+            }
+            .onEnded { value in
+                artworkDrag = 0
+                let horizontal = value.translation.width
+                let vertical = value.translation.height
+                if abs(horizontal) > abs(vertical) {
+                    guard abs(horizontal) > 60 else { return }
+                    Haptics.impact()
+                    if horizontal < 0 { player.advance() } else { player.previous() }
+                } else if vertical > 80 {
+                    Haptics.impact()
+                    dismiss()
+                }
+            }
+    }
 
     var body: some View {
         ZStack {
@@ -23,6 +51,10 @@ struct NowPlayingView: View {
 
                 RemoteImage(url: player.currentTrack?.thumbnailUrl, size: 300, cornerRadius: 12)
                     .shadow(color: .black.opacity(0.4), radius: 20, y: 10)
+                    .offset(x: artworkDrag)
+                    .rotationEffect(.degrees(artworkDrag / 40))
+                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: artworkDrag)
+                    .gesture(artworkGesture)
 
                 titleRow
 
@@ -53,7 +85,10 @@ struct NowPlayingView: View {
                 Image(systemName: "chevron.down")
                     .font(.title3)
                     .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.pressable)
             Spacer()
             VStack(spacing: 2) {
                 Text("NOW PLAYING")
@@ -91,7 +126,7 @@ struct NowPlayingView: View {
                         .font(.title3)
                         .foregroundStyle(liked.isLiked(track) ? Theme.accent : .white)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
                 .padding(.top, 4)
             }
         }
@@ -165,7 +200,7 @@ struct NowPlayingView: View {
             .frame(width: 44)
         }
         .foregroundStyle(.white)
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .padding(.horizontal, 24)
     }
 

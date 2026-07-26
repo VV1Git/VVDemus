@@ -17,11 +17,35 @@ struct TrackRowActions: ViewModifier {
             // Swipe right (leading edge) to add to queue — matches Spotify's convention.
             .swipeActions(edge: .leading, allowsFullSwipe: true) {
                 Button {
+                    Haptics.impact()
                     player.addToQueue(track)
                 } label: {
                     Label("Queue", systemImage: "text.badge.plus")
                 }
                 .tint(Theme.accent)
+            }
+            // Swiping the other way reaches the two actions otherwise buried in the
+            // long-press menu. Like is full-swipeable because it's the one you reach for
+            // mid-song without wanting to look at the screen.
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                Button {
+                    Haptics.impact()
+                    liked.toggle(track)
+                } label: {
+                    Label(
+                        liked.isLiked(track) ? "Unlike" : "Like",
+                        systemImage: liked.isLiked(track) ? "heart.slash.fill" : "heart.fill"
+                    )
+                }
+                .tint(liked.isLiked(track) ? Theme.cardLight : .pink)
+
+                Button {
+                    Haptics.impact()
+                    player.playNext(track)
+                } label: {
+                    Label("Play Next", systemImage: "text.insert")
+                }
+                .tint(Theme.cardLight)
             }
             .contextMenu {
                 Button {

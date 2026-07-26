@@ -701,6 +701,10 @@ svg { display: block; }
   justify-content: flex-end;
 }
 
+.np-device-switcher {
+  position: relative;
+}
+
 .np-device {
   display: flex;
   align-items: center;
@@ -708,9 +712,46 @@ svg { display: block; }
   font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 6px;
 }
 
+.np-device:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+
 .np-device svg { width: 16px; height: 16px; }
+
+.np-device-menu {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  background: #282828;
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  min-width: 160px;
+  z-index: 20;
+}
+
+.np-device-menu.open { display: block; }
+
+.np-device-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.np-device-menu button:hover { background: rgba(255, 255, 255, 0.1); }
 
 /* ---------- responsive ---------- */
 
@@ -727,4 +768,129 @@ svg { display: block; }
   .card-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
   .detail-art { width: 120px; height: 120px; }
   .detail-title { font-size: 26px; }
+}
+
+/* Shown while the phone is resolving a stream — a quiet "working on it" instead of a
+   dead-looking transport bar. */
+.np-art.loading {
+  animation: np-art-pulse 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes np-art-pulse {
+  from { opacity: 0.35; }
+  to   { opacity: 0.8; }
+}
+
+/* ==========================================================================
+   Interaction feedback
+   --------------------------------------------------------------------------
+   Hover styles existed but almost nothing acknowledged an actual *click*, and
+   most state changes snapped instantly. Every control now eases into its hover
+   state and visibly gives when pressed, so a click that's still travelling to
+   the phone doesn't feel like it was ignored.
+
+   Grouped here rather than edited into each rule so the whole interaction
+   language stays consistent and adjustable in one place.
+   ========================================================================== */
+
+.icon-btn,
+.row-actions button,
+.np-play-btn,
+.play-btn,
+.queue-btn,
+.nav-item,
+.np-device,
+.np-device-menu button,
+.g-queue-btn,
+.detail-refresh {
+  transition: color 0.15s ease, background-color 0.15s ease, transform 0.12s ease,
+    opacity 0.15s ease, border-color 0.15s ease;
+}
+
+/* Icon buttons: lift slightly on hover, press in on click. */
+.icon-btn:hover,
+.row-actions button:hover { transform: scale(1.12); }
+
+.icon-btn:active,
+.row-actions button:active,
+.queue-btn:active,
+.detail-refresh:active { transform: scale(0.88); }
+
+/* The round play buttons already grew on hover; give them a press too. */
+.play-btn:active,
+.np-play-btn:active { transform: scale(0.93); }
+
+/* Rows and cards settle rather than jump, and dip when clicked. */
+.track-row,
+.grid-card,
+.radio-chip,
+.library-row,
+.lib-shortcut {
+  transition: background-color 0.15s ease, transform 0.12s ease;
+}
+
+.track-row:active,
+.radio-chip:active,
+.library-row:active,
+.lib-shortcut:active { transform: scale(0.99); }
+
+.grid-card:active { transform: scale(0.97); }
+
+.nav-item:active,
+.np-device:active,
+.np-device-menu button:active { transform: scale(0.96); }
+
+/* A disabled control shouldn't pretend to respond. */
+button[disabled]:hover,
+button[disabled]:active { transform: none; }
+
+/* Keyboard users get the same affordance as the mouse — the shortcuts added to
+   this remote make tabbing around it a realistic way to drive it. (Track rows and
+   grid cards are divs, not buttons, so they never take focus and are left out.) */
+.icon-btn:focus-visible,
+.row-actions button:focus-visible,
+.np-play-btn:focus-visible,
+.play-btn:focus-visible,
+.queue-btn:focus-visible,
+.nav-item:focus-visible,
+.np-device:focus-visible,
+.np-device-menu button:focus-visible,
+.library-row:focus-visible,
+.lib-shortcut:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Respect a system-level request for less movement: keep the colour changes,
+   drop the scaling. */
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn,
+  .row-actions button,
+  .np-play-btn,
+  .play-btn,
+  .queue-btn,
+  .nav-item,
+  .np-device,
+  .np-device-menu button,
+  .track-row,
+  .grid-card,
+  .radio-chip,
+  .library-row,
+  .lib-shortcut,
+  .g-queue-btn,
+  .detail-refresh {
+    transition: color 0.15s ease, background-color 0.15s ease;
+  }
+
+  .icon-btn:hover, .icon-btn:active,
+  .row-actions button:hover, .row-actions button:active,
+  .play-btn:hover, .play-btn:active,
+  .np-play-btn:hover, .np-play-btn:active,
+  .track-row:active, .grid-card:active, .radio-chip:active,
+  .library-row:active, .lib-shortcut:active,
+  .nav-item:active, .np-device:active, .np-device-menu button:active,
+  .np-art.loading {
+    transform: none;
+    animation: none;
+  }
 }

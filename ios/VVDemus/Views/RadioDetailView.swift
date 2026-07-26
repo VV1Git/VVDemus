@@ -112,13 +112,21 @@ struct RadioDetailView: View {
         try await APIClient.shared.radio(videoId: seedTrack.videoId, limit: 50)
     }
 
-    /// Shows the cached mix (if this radio was ever loaded before, by this device or via
-    /// the web remote control) immediately since `tracks` reads the cache directly, then
-    /// refreshes in the background — so a revisit still works offline instead of blocking
-    /// on a network call that can't succeed.
+    /// Fetches a mix only the first time a radio is opened; after that the cached list is
+    /// what you get, every time, until you ask for a new one with the refresh button.
+    ///
+    /// This used to re-fetch in the background whenever the cached mix was more than five
+    /// minutes old and quietly swap the result in. Because YouTube's radio endpoint returns
+    /// a different selection on every call, that meant a radio could rearrange itself, drop
+    /// songs, or gain new ones while you were reading it — with no way to get the previous
+    /// list back. Re-fetching is now always something the user asked for.
     private func load() async {
-        isLoading = tracks.isEmpty
         errorMessage = nil
+        guard tracks.isEmpty else {
+            isLoading = false
+            return
+        }
+        isLoading = true
         do {
             let fresh = try await fetchTracks()
             RadioCacheStore.shared.store(fresh, for: seedTrack.videoId)

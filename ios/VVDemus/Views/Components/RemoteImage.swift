@@ -24,6 +24,7 @@ struct RemoteImage: View {
     let url: String?
     var size: CGFloat = 48
     var cornerRadius: CGFloat = 4
+    @Environment(\.displayScale) private var displayScale
     @State private var uiImage: UIImage?
 
     var body: some View {
@@ -49,15 +50,55 @@ struct RemoteImage: View {
     private func load() async {
         uiImage = nil
         guard let url else { return }
-        if let cached = ImageCache.shared.image(for: url) {
+        let targetPixels = RemoteImage.targetPixelSize(for: size, displayScale: displayScale)
+        let requestURLString = RemoteImage.resizedThumbnailUrl(url, targetPixels: targetPixels)
+        let cacheKey = "\(requestURLString)"
+
+        if let cached = ImageCache.shared.image(for: cacheKey) {
             uiImage = cached
             return
         }
-        guard let requestURL = URL(string: url),
-              let (data, _) = try? await URLSession.shared.data(from: requestURL),
+        if let diskData = await DiskImageCache.shared.data(for: cacheKey), let image = UIImage(data: diskData) {
+            guard !Task.isCancelled else { return }
+            ImageCache.shared.store(image, for: cacheKey)
+            uiImage = image
+            return
+        }
+        guard let requestURL = URL(string: requestURLString),
+              let (data, _) = try? await NetworkSessions.image.data(from: requestURL),
               let image = UIImage(data: data) else { return }
         guard !Task.isCancelled else { return }
-        ImageCache.shared.store(image, for: url)
+        ImageCache.shared.store(image, for: cacheKey)
+        await DiskImageCache.shared.store(data, for: cacheKey)
         uiImage = image
+    }
+
+    /// The pixel size to actually request — the on-screen point size scaled for the
+    /// device's display scale, shrunk further under Data Saver. Avoids paying for (and
+    /// caching) full-resolution bytes for a 48pt row thumbnail.
+    static func targetPixelSize(for pointSize: CGFloat, displayScale: CGFloat) -> Int {
+        let dataSaver = UserDefaults.standard.bool(forKey: InnerTubeClient.dataSaverDefaultsKey)
+        let multiplier = dataSaver ? 0.75 : 1.0
+        return max(1, Int((pointSize * displayScale * multiplier).rounded(.up)))
+    }
+
+    /// YouTube's `yt3.googleusercontent.com` thumbnail URLs encode the requested pixel
+    /// size as a `=w{N}-h{N}-...` suffix that can be rewritten to any size — confirmed
+    /// empirically (a 544px source URL rewritten to `w48-h48` returns ~1.8KB instead of
+    /// ~83KB, the same image data just resized server-side). Falls back to the original
+    /// URL unchanged if it doesn't match the expected shape.
+    ///
+    /// The requested size is clamped to what the URL already advertises. Different
+    /// endpoints hand back very different sizes — search results arrive as 120px, radio
+    /// items as 544px — so a 300pt hero image on a 3x screen would otherwise ask a 120px
+    /// source for 900px and be served a blurry upscale at roughly six times the bytes of
+    /// the original.
+    static func resizedThumbnailUrl(_ url: String, targetPixels: Int) -> String {
+        guard let range = url.range(of: #"=w\d+-h\d+"#, options: .regularExpression) else { return url }
+        let sourceWidth = url[range]
+            .dropFirst(2)                                    // "=w"
+            .prefix { $0.isNumber }
+        let target = min(targetPixels, Int(sourceWidth) ?? targetPixels)
+        return url.replacingCharacters(in: range, with: "=w\(target)-h\(target)")
     }
 }

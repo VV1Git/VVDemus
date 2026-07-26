@@ -16,19 +16,21 @@ private enum ShortcutItem: Identifiable {
 
 struct HomeView: View {
     @ObservedObject var player: PlayerService
+    @ObservedObject var coordinator: NavigationCoordinator
     @ObservedObject private var history = PlayHistoryStore.shared
     @ObservedObject private var liked = LikedSongsStore.shared
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var daylist = DaylistStore.shared
     @ObservedObject private var network = NetworkMonitor.shared
-    @State private var sections: [RecommendationsBuilder.Section] = []
+    @ObservedObject private var feed = HomeFeedStore.shared
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var path = NavigationPath()
+
+    private var sections: [RecommendationsBuilder.Section] { feed.sections }
 
     var body: some View {
-        NavigationStack(path: $path) {
+        NavigationStack(path: $coordinator.homePath) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     HStack {
@@ -55,7 +57,7 @@ struct HomeView: View {
                             imageURL: daylist.tracks.first?.thumbnailUrl
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pressableCard)
                     .padding(.horizontal)
 
                     if !shortcuts.isEmpty {
@@ -102,11 +104,11 @@ struct HomeView: View {
                     StatsView(player: player)
                 }
             }
-            .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
+            .environment(\.openRadio) { track in coordinator.homePath.append(LibraryDestination.radio(track)) }
         }
         .task { await load() }
         .task { await daylist.refreshIfNeeded() }
-        .refreshable { await load() }
+        .refreshable { await load(forceRefresh: true) }
     }
 
     // MARK: - Shortcuts grid (Liked Songs, saved radios, playlists)
@@ -135,17 +137,17 @@ struct HomeView: View {
             NavigationLink(value: LibraryDestination.liked) {
                 ShortcutRow(title: "Liked Songs", imageURL: nil, systemImageFallback: "heart.fill")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressableCard)
         case .radio(let station):
             NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
                 ShortcutRow(title: station.title, imageURL: station.seedTrack.thumbnailUrl, systemImageFallback: "dot.radiowaves.left.and.right")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressableCard)
         case .playlist(let playlist):
             NavigationLink(value: LibraryDestination.playlist(playlist.id)) {
                 ShortcutRow(title: playlist.name, imageURL: playlist.tracks.first?.thumbnailUrl, systemImageFallback: "music.note.list")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressableCard)
         }
     }
 
@@ -164,13 +166,13 @@ struct HomeView: View {
                         NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
                             JumpBackInCard(title: station.title, subtitle: "Radio", badge: "Radio", imageURL: station.seedTrack.thumbnailUrl)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.pressableCard)
                     }
                     ForEach(playlists) { playlist in
                         NavigationLink(value: LibraryDestination.playlist(playlist.id)) {
                             JumpBackInCard(title: playlist.name, subtitle: "Playlist", badge: nil, imageURL: playlist.tracks.first?.thumbnailUrl)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.pressableCard)
                     }
                 }
                 .padding(.horizontal)
@@ -178,31 +180,29 @@ struct HomeView: View {
         }
     }
 
+    /// Uses the same time-of-day buckets as the daylist, so the header and the mix card
+    /// directly beneath it can't disagree — at 1am this read "Good morning" directly above
+    /// a card titled "Saturday Late Night Mix".
     private var greeting: String {
-        switch Calendar.current.component(.hour, from: Date()) {
-        case 0..<12: return "Good morning"
-        case 12..<18: return "Good afternoon"
-        default: return "Good evening"
+        switch DaylistStore.currentBucket {
+        case .morning: return "Good morning"
+        case .afternoon: return "Good afternoon"
+        case .evening: return "Good evening"
+        case .night: return "Good night"
         }
     }
 
     /// Builds "Because you listened to…" shelves from recent local play history, plus a
     /// generic Quick Picks shelf, mirroring Spotify's mix of personalized and general rows.
-    private func load() async {
-        isLoading = sections.isEmpty
+    /// Served from `HomeFeedStore`'s cache when it's recent enough, so returning to this
+    /// tab isn't worth six network round trips.
+    private func load(forceRefresh: Bool = false) async {
+        isLoading = feed.sections.isEmpty
         errorMessage = nil
         do {
-            async let quickPicks = APIClient.shared.home()
-
-            var built = try await RecommendationsBuilder.build(seeds: history.recentSeeds(3))
-
-            let picks = try await quickPicks
-            if !picks.isEmpty {
-                built.append(RecommendationsBuilder.Section(title: "Quick Picks", tracks: picks))
-            }
-            sections = built
+            _ = forceRefresh ? try await feed.refresh() : try await feed.refreshIfNeeded()
         } catch {
-            if sections.isEmpty {
+            if feed.sections.isEmpty {
                 errorMessage = "Couldn't load Home. Check your connection and try again."
             }
         }

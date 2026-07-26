@@ -15,12 +15,15 @@ struct HomeShelf: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 14) {
                     ForEach(tracks) { track in
-                        TrackCard(track: track, isActive: player.currentTrack?.id == track.id)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                player.play(track: track, context: tracks, contextTitle: title)
-                            }
-                            .trackActions(track: track, player: player)
+                        // A Button rather than `.onTapGesture` purely so the card gets
+                        // press feedback — a bare tap gesture gives none.
+                        Button {
+                            player.play(track: track, context: tracks, contextTitle: title)
+                        } label: {
+                            TrackCard(track: track, isActive: player.currentTrack?.id == track.id)
+                        }
+                        .buttonStyle(.pressableCard)
+                        .trackActions(track: track, player: player)
                     }
                 }
                 .padding(.horizontal)

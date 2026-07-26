@@ -31,7 +31,7 @@ struct TrackRow: View {
                 Image(systemName: liked.isLiked(track) ? "heart.fill" : "heart")
                     .foregroundStyle(liked.isLiked(track) ? Theme.accent : Theme.textSecondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
         }
         .padding(.horizontal)
         .padding(.vertical, 6)
@@ -54,7 +54,7 @@ struct TrackRow: View {
                 Image(systemName: "arrow.down.circle")
                     .foregroundStyle(Theme.textSecondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
         }
     }
 }

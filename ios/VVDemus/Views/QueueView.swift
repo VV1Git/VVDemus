@@ -2,51 +2,72 @@ import SwiftUI
 
 struct QueueView: View {
     @ObservedObject var player: PlayerService
+    @State private var path = NavigationPath()
 
     var body: some View {
-        List {
-            header
-                .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 16, trailing: 20))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Theme.background)
-
-            if let current = player.currentTrack {
-                nowPlayingRow(current)
-                    .listRowBackground(Theme.background)
+        NavigationStack(path: $path) {
+            List {
+                header
+                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 16, trailing: 20))
                     .listRowSeparator(.hidden)
-                    .moveDisabled(true)
-            }
-
-            if player.manualQueue.isEmpty && player.contextQueue.isEmpty {
-                Text("Queue is empty — autoplay will keep the music going.")
-                    .font(.footnote)
-                    .foregroundStyle(Theme.textSecondary)
                     .listRowBackground(Theme.background)
-                    .listRowSeparator(.hidden)
-            }
 
-            if !player.manualQueue.isEmpty {
-                Section("Next in Queue") {
-                    ForEach(player.manualQueue) { track in
-                        queueRow(track)
+                if let current = player.currentTrack {
+                    nowPlayingRow(current)
+                        .listRowBackground(Theme.background)
+                        .listRowSeparator(.hidden)
+                        .moveDisabled(true)
+                }
+
+                if player.manualQueue.isEmpty && player.contextQueue.isEmpty {
+                    Text("Queue is empty — autoplay will keep the music going.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.textSecondary)
+                        .listRowBackground(Theme.background)
+                        .listRowSeparator(.hidden)
+                }
+
+                if !player.manualQueue.isEmpty {
+                    Section("Next in Queue") {
+                        ForEach(player.manualQueue) { track in
+                            queueRow(track)
+                        }
+                        .onMove { player.moveInManualQueue(from: $0, to: $1) }
                     }
-                    .onMove { player.moveInManualQueue(from: $0, to: $1) }
+                }
+
+                if !player.contextQueue.isEmpty {
+                    Section(player.queueContextTitle.map { "Next from: \($0)" } ?? "Next Up") {
+                        ForEach(player.contextQueue) { track in
+                            queueRow(track)
+                        }
+                        .onMove { player.moveInContextQueue(from: $0, to: $1) }
+                    }
                 }
             }
-
-            if !player.contextQueue.isEmpty {
-                Section(player.queueContextTitle.map { "Next from: \($0)" } ?? "Next Up") {
-                    ForEach(player.contextQueue) { track in
-                        queueRow(track)
-                    }
-                    .onMove { player.moveInContextQueue(from: $0, to: $1) }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Theme.background)
+            .environment(\.editMode, .constant(.active))
+            .navigationBarHidden(true)
+            .navigationDestination(for: LibraryDestination.self) { destination in
+                switch destination {
+                case .liked:
+                    LikedSongsView(player: player)
+                case .playlist(let id):
+                    PlaylistDetailView(playlistId: id, player: player)
+                case .radio(let seed):
+                    RadioDetailView(seedTrack: seed, player: player)
+                case .daylist:
+                    DaylistDetailView(player: player)
+                case .downloads:
+                    DownloadsView(player: player)
+                case .stats:
+                    StatsView(player: player)
                 }
             }
+            .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(Theme.background)
-        .environment(\.editMode, .constant(.active))
     }
 
     private func queueRow(_ track: Track) -> some View {
@@ -55,6 +76,7 @@ struct QueueView: View {
             .listRowSeparatorTint(Theme.card)
             .contentShape(Rectangle())
             .onTapGesture { player.skipTo(track) }
+            .trackActions(track: track, player: player)
             // Swipe left (trailing edge) to remove — matches Spotify's convention.
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                 Button(role: .destructive) {
@@ -102,7 +124,7 @@ struct QueueView: View {
                         .foregroundStyle(.black)
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
         }
     }
 }

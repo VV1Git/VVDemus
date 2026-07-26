@@ -56,7 +56,7 @@ struct MixDetailHeader: View {
                         .font(.title3)
                         .foregroundStyle(Theme.accent)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
 
                 Spacer()
 
@@ -72,7 +72,7 @@ struct MixDetailHeader: View {
                             .foregroundStyle(.black)
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
             }
             .padding(.horizontal)
         }
@@ -95,7 +95,7 @@ struct MixDetailHeader: View {
                     .foregroundStyle(.white)
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .disabled(tracks.isEmpty || isFullyDownloaded || isDownloadingAny)
     }
 

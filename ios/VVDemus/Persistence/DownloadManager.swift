@@ -43,8 +43,14 @@ final class DownloadManager: NSObject, ObservableObject {
 
     func localFileURL(for track: Track) -> URL? {
         guard downloadedTracks.contains(where: { $0.id == track.id }) else { return nil }
+        return localFileURL(forVideoId: track.videoId)
+    }
+
+    /// Used by LocalControlServer's `/api/audio/local/:videoId` route, which only has a
+    /// videoId (from the URL path) to work with, not a full `Track`.
+    func localFileURL(forVideoId videoId: String) -> URL? {
         for ext in ["m4a", "mp4"] {
-            let url = downloadsDirectory.appendingPathComponent("\(track.videoId).\(ext)")
+            let url = downloadsDirectory.appendingPathComponent("\(videoId).\(ext)")
             if FileManager.default.fileExists(atPath: url.path) { return url }
         }
         return nil
@@ -66,6 +72,21 @@ final class DownloadManager: NSObject, ObservableObject {
                 progress[track.id] = nil
                 errorMessage = "Couldn't download \"\(track.title)\"."
             }
+        }
+        prewarmArtwork(for: track)
+    }
+
+    /// So a downloaded track's own lock-screen artwork never has to hit the network at
+    /// playback time — pre-fetches it once, at download time, into the same disk cache
+    /// `PlayerService`/`RemoteImage` check first.
+    private func prewarmArtwork(for track: Track) {
+        guard let thumbnailUrl = track.thumbnailUrl else { return }
+        Task {
+            let key = PlayerService.artworkCacheKey(for: thumbnailUrl)
+            if await DiskImageCache.shared.data(for: key) != nil { return }
+            guard let url = URL(string: key),
+                  let (data, _) = try? await NetworkSessions.image.data(from: url) else { return }
+            await DiskImageCache.shared.store(data, for: key)
         }
     }
 
@@ -117,7 +138,9 @@ extension DownloadManager: URLSessionDownloadDelegate {
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard totalBytesExpectedToWrite > 0, let track = pendingDestinations[downloadTask.taskIdentifier]?.track else { return }
+        guard let track = pendingDestinations[downloadTask.taskIdentifier]?.track else { return }
+        NetworkByteCounter.shared.record(bytesWritten, for: .download)
+        guard totalBytesExpectedToWrite > 0 else { return }
         progress[track.id] = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
     }
 

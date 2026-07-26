@@ -9,7 +9,9 @@ struct LibraryView: View {
     @State private var newPlaylistName = ""
     @State private var path = NavigationPath()
     @AppStorage(InnerTubeClient.dataSaverDefaultsKey) private var dataSaverEnabled = false
+    @AppStorage(LocalControlServer.defaultsKey) private var connectEnabled = true
     @ObservedObject private var controlServer = LocalControlServer.shared
+    @ObservedObject private var byteCounter = NetworkByteCounter.shared
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -106,15 +108,42 @@ struct LibraryView: View {
                         .tint(Theme.accent)
                         .listRowBackground(Theme.background)
                 } footer: {
-                    Text("Streams at a lower audio bitrate to use noticeably less cellular data, at the cost of some sound quality.")
+                    Text("Streams at a lower audio bitrate and requests smaller artwork and recommendation batches to use noticeably less cellular data, at the cost of some sound/image quality. Doesn't protect against the rare fallback to a heavier video-based stream format if the low-data one fails.")
+                }
+
+                Section {
+                    ForEach(NetworkByteCounter.Category.allCases) { category in
+                        HStack {
+                            Text(category.rawValue)
+                                .foregroundStyle(Theme.textSecondary)
+                            Spacer()
+                            Text(Self.formattedBytes(byteCounter.bytes[category] ?? 0))
+                                .foregroundStyle(.white)
+                                .font(.system(.footnote, design: .monospaced))
+                        }
+                        .listRowBackground(Theme.background)
+                    }
+                    Button("Reset Counters") { byteCounter.reset() }
+                        .listRowBackground(Theme.background)
+                    Button("Clear Image Cache") {
+                        Task { await DiskImageCache.shared.clear() }
+                    }
+                    .listRowBackground(Theme.background)
+                } header: {
+                    Text("Network Usage (this session)")
+                } footer: {
+                    Text("Doesn't include live-streaming playback bytes — AVPlayer manages that networking internally, so compare cellular usage in iOS Settings for a full before/after picture.")
                 }
 
                 Section {
                     Toggle(
-                        "Remote Control",
+                        "VVDemus Connect",
                         isOn: Binding(
-                            get: { controlServer.isRunning },
-                            set: { $0 ? controlServer.start() : controlServer.stop() }
+                            get: { connectEnabled },
+                            set: { newValue in
+                                connectEnabled = newValue
+                                newValue ? controlServer.start() : controlServer.stop()
+                            }
                         )
                     )
                     .tint(Theme.accent)
@@ -133,7 +162,7 @@ struct LibraryView: View {
                         .listRowBackground(Theme.background)
                     }
                 } footer: {
-                    Text("Lets a browser on the same WiFi network see and control what's playing — no account or pairing needed, so only turn this on when you're on a network you trust.")
+                    Text("Lets a browser on the same WiFi network see what's playing and control it — or play it through the computer's own speakers instead. No account or pairing needed, so only turn this on when you're on a network you trust.")
                 }
             }
             .listStyle(.plain)
@@ -176,5 +205,9 @@ struct LibraryView: View {
                 }
             }
         }
+    }
+
+    private static func formattedBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }

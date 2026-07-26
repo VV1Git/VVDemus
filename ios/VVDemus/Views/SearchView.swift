@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SearchView: View {
     @ObservedObject var player: PlayerService
+    @ObservedObject var coordinator: NavigationCoordinator
     @State private var query = ""
     @State private var results: [Track] = []
     @State private var isLoading = false
@@ -11,19 +12,27 @@ struct SearchView: View {
     var body: some View {
         NavigationStack(path: $path) {
             Group {
-                if results.isEmpty && !query.trimmingCharacters(in: .whitespaces).isEmpty && !isLoading {
+                if isLoading && results.isEmpty {
+                    ProgressView()
+                        .tint(.white)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if results.isEmpty && !query.trimmingCharacters(in: .whitespaces).isEmpty && !isLoading {
                     Text("No results for \"\(query)\"")
                         .foregroundStyle(Theme.textSecondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.largeTitle)
-                            .foregroundStyle(Theme.textSecondary)
-                        Text("Search songs and artists")
-                            .foregroundStyle(Theme.textSecondary)
+                    if recentSearches.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.largeTitle)
+                                .foregroundStyle(Theme.textSecondary)
+                            Text("Search songs and artists")
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        recentSearchList
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List {
                         ForEach(results) { track in
@@ -56,7 +65,10 @@ struct SearchView: View {
                     StatsView(player: player)
                 }
             }
-            .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
+            .environment(\.openRadio) { track in
+                coordinator.homePath.append(LibraryDestination.radio(track))
+                coordinator.selectedTab = .home
+            }
         }
         .searchable(text: $query, prompt: "Songs, artists")
         .onChange(of: query) { _, newValue in
@@ -69,6 +81,63 @@ struct SearchView: View {
         }
     }
 
+    // MARK: - Recent searches
+
+    /// Stored as a JSON array in a single defaults key. Re-running a past search is both
+    /// the fastest way back to something you were just listening to and a nudge away from
+    /// retyping a query character by character — every keystroke of which used to fire its
+    /// own search request once the debounce elapsed.
+    @AppStorage("recent_searches_v1") private var recentSearchesJSON = "[]"
+    private static let recentSearchLimit = 8
+
+    private var recentSearches: [String] {
+        (try? JSONDecoder().decode([String].self, from: Data(recentSearchesJSON.utf8))) ?? []
+    }
+
+    private var recentSearchList: some View {
+        List {
+            Section {
+                ForEach(recentSearches, id: \.self) { term in
+                    Button {
+                        query = term
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundStyle(Theme.textSecondary)
+                            Text(term)
+                                .foregroundStyle(.white)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .listRowBackground(Theme.background)
+                    .listRowSeparatorTint(Theme.card)
+                }
+                .onDelete { offsets in
+                    var terms = recentSearches
+                    terms.remove(atOffsets: offsets)
+                    saveRecentSearches(terms)
+                }
+            } header: {
+                Text("Recent searches")
+                    .foregroundStyle(Theme.textSecondary)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+    }
+
+    private func rememberSearch(_ term: String) {
+        var terms = recentSearches.filter { $0.caseInsensitiveCompare(term) != .orderedSame }
+        terms.insert(term, at: 0)
+        saveRecentSearches(Array(terms.prefix(Self.recentSearchLimit)))
+    }
+
+    private func saveRecentSearches(_ terms: [String]) {
+        guard let data = try? JSONEncoder().encode(terms) else { return }
+        recentSearchesJSON = String(decoding: data, as: UTF8.self)
+    }
+
     private func runSearch(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
@@ -78,6 +147,9 @@ struct SearchView: View {
         isLoading = true
         do {
             results = try await APIClient.shared.search(trimmed)
+            // Only remembered once it actually returned something, so half-typed queries
+            // that happened to match nothing don't clutter the list.
+            if !results.isEmpty { rememberSearch(trimmed) }
         } catch {
             results = []
         }

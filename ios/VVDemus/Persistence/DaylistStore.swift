@@ -40,7 +40,7 @@ final class DaylistStore: ObservableObject {
             let bucket = Self.currentBucket
             let seeds = PlayHistoryStore.shared.recentSeeds(3)
 
-            async let moodResults = APIClient.shared.search(bucket.searchQuery, limit: 15)
+            async let moodResults = APIClient.shared.search(bucket.searchQuery, limit: InnerTubeClient.dataSaverLimit(default: 15))
 
             var pool: [Track] = []
             var seen = Set<String>()
@@ -49,7 +49,7 @@ final class DaylistStore: ObservableObject {
                 let radioLists = try await withThrowingTaskGroup(of: [Track].self) { group -> [[Track]] in
                     for seed in seeds {
                         group.addTask {
-                            let mix = try await APIClient.shared.radio(videoId: seed.videoId, limit: 10)
+                            let mix = try await APIClient.shared.radio(videoId: seed.videoId, limit: InnerTubeClient.dataSaverLimit(default: 10))
                             return Array(mix.dropFirst())
                         }
                     }

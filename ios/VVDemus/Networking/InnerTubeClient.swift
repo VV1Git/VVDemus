@@ -20,6 +20,14 @@ enum InnerTubeClient {
 
     static let dataSaverDefaultsKey = "data_saver_enabled"
 
+    /// Halves batch-fetch sizes (recommendation shelves, Daylist, autoplay refill) under
+    /// Data Saver — previously Data Saver only changed streaming bitrate and left these
+    /// fixed constants untouched, even though a smaller radio/recommendation payload is a
+    /// real, easy data saving with no audible quality cost.
+    static func dataSaverLimit(default defaultLimit: Int) -> Int {
+        UserDefaults.standard.bool(forKey: dataSaverDefaultsKey) ? max(1, defaultLimit / 2) : defaultLimit
+    }
+
     private static var clientVersion: String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd"
@@ -39,7 +47,7 @@ enum InnerTubeClient {
             "params": songsFilterParams,
         ]
         let json = try await post(
-            url: "https://music.youtube.com/youtubei/v1/search?alt=json&key=\(webRemixAPIKey)",
+            url: "https://music.youtube.com/youtubei/v1/search?alt=json&prettyPrint=false&key=\(webRemixAPIKey)",
             userAgent: webUserAgent,
             origin: "https://music.youtube.com",
             body: body
@@ -61,12 +69,26 @@ enum InnerTubeClient {
 
     /// No personalized "home" endpoint without signing in, so this mirrors what the
     /// old backend did: a handful of broad seed searches, deduplicated.
+    ///
+    /// The searches run concurrently — they're independent, and run one after another they
+    /// made Home's first paint wait on three round trips in a row. Results are reassembled
+    /// in seed order afterwards so the shelf doesn't reshuffle itself between loads.
     static func home() async throws -> [Track] {
         let seeds = ["top hits 2026", "chill mix", "trending music"]
+        let perSeed = dataSaverLimit(default: 10)
+        let lists = try await withThrowingTaskGroup(of: (Int, [Track]).self) { group -> [[Track]] in
+            for (index, seed) in seeds.enumerated() {
+                group.addTask { (index, try await search(query: seed, limit: perSeed)) }
+            }
+            var results = Array(repeating: [Track](), count: seeds.count)
+            for try await (index, tracks) in group { results[index] = tracks }
+            return results
+        }
+
         var seen = Set<String>()
         var tracks: [Track] = []
-        for seed in seeds {
-            for track in try await search(query: seed, limit: 10) where !seen.contains(track.id) {
+        for list in lists {
+            for track in list where !seen.contains(track.id) {
                 seen.insert(track.id)
                 tracks.append(track)
             }
@@ -90,7 +112,7 @@ enum InnerTubeClient {
             "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
         ]
         let json = try await post(
-            url: "https://music.youtube.com/youtubei/v1/next?alt=json&key=\(webRemixAPIKey)",
+            url: "https://music.youtube.com/youtubei/v1/next?alt=json&prettyPrint=false&key=\(webRemixAPIKey)",
             userAgent: webUserAgent,
             origin: "https://music.youtube.com",
             body: body
@@ -293,7 +315,7 @@ enum InnerTubeClient {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkSessions.api.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw APIError.server("YouTube request failed")
         }

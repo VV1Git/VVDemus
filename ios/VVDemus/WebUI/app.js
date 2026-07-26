@@ -1,7 +1,44 @@
+// Identifies this tab to the phone. Kept in sessionStorage rather than a plain variable
+// so it survives a reload: the phone records which client owns "This Computer", and a
+// reloaded tab that still has the same id silently reclaims casting. Without this, any
+// reload (or navigating away and back) left the phone casting to a tab that no longer
+// considered itself the cast tab — no audio anywhere, progress frozen, and no fallback
+// either, since a socket was still connected.
+const CLIENT_ID = (() => {
+  let id = sessionStorage.getItem("vvdemus_client_id");
+  if (!id) {
+    id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    sessionStorage.setItem("vvdemus_client_id", id);
+  }
+  return id;
+})();
+
 const state = {
   current: null,
   likedIds: new Set(),
+  // True only for the tab the phone currently names as the cast client. Derived from
+  // every state snapshot rather than set once on click, so a tab that loses ownership
+  // (another tab took over, or the phone was picked) stops producing sound on its own —
+  // two tabs both believing they were casting used to play the same track twice, and
+  // fire two /api/next calls at the end of it.
+  isCastTab: false,
+  loadedVideoId: null,
+  loadedTrackEpoch: null,
+  lastReportAt: 0,
+  // Set when the browser refuses a programmatic play() for lack of a user gesture (the
+  // reclaim-after-reload case); cleared once any click lets us try again.
+  needsGesture: false,
+  last: null,
+  // Last known queue/liked contents, kept so broadcasts that omit them (because they
+  // haven't changed) can be filled back in — see mergeOmittedQueues.
+  lastQueues: {},
+  // Latest playback epoch seen from the phone; echoed back with progress reports.
+  epoch: null,
+  failedSrc: null,
+  failedAt: 0,
 };
+
+const audioEl = document.getElementById("np-audio");
 
 // The track list + header info currently shown in the generic detail view
 // (playlist / radio / daylist / liked / downloads) — Play/Shuffle/Refresh act on this.
@@ -47,6 +84,25 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+/// YouTube hands back thumbnail URLs at whatever size it picked — usually 544px square,
+/// ~50KB each — and this page was rendering them into 32-56px slots. A full page of
+/// results cost nearly 2MB of artwork to display a few hundred KB worth of pixels. The
+/// `=w{N}-h{N}` suffix in the URL is a server-side resize (the iOS app relies on the same
+/// trick), so ask for what's actually going to be drawn.
+function art(url, cssPixels) {
+  if (!url) return "";
+  const match = /=w(\d+)-h\d+/.exec(url);
+  if (!match) return url;
+  // Capped at 2x: beyond that the extra bytes buy nothing visible on any real display.
+  const wanted = Math.ceil(cssPixels * Math.min(window.devicePixelRatio || 1, 2));
+  // Never ask for more than the URL already offers. These come back at wildly different
+  // sizes depending on the endpoint (search gives 120px, radio gives 544px), and asking a
+  // 120px source for 340px doesn't add detail — it upscales server-side and costs six
+  // times the bytes.
+  const target = Math.min(wanted, Number(match[1]));
+  return url.replace(/=w\d+-h\d+/, `=w${target}-h${target}`);
+}
+
 // ---------- view switching ----------
 
 function showView(name) {
@@ -73,7 +129,7 @@ function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
   row.className = "track-row" + (state.current && state.current.videoId === track.videoId ? " active" : "");
 
   const img = document.createElement("img");
-  img.src = track.thumbnailUrl || "";
+  img.src = art(track.thumbnailUrl, 44); // .track-row img is 44px
   row.appendChild(img);
 
   const meta = document.createElement("div");
@@ -127,7 +183,34 @@ function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
   return row;
 }
 
+/// Everything a rendered row actually displays: the tracks themselves, which one is
+/// playing, and which are liked. If none of that moved, the existing DOM is already
+/// correct.
+/// `scope` distinguishes two different screens that happen to hold the same tracks — the
+/// rows would look identical, but their click handlers are bound to different contexts
+/// (which playlist a track was played "from"), so reusing the DOM across them would play
+/// the right song from the wrong list.
+function listSignature(tracks, scope) {
+  const current = state.current ? state.current.videoId : "";
+  return (
+    (scope || "") +
+    "|" +
+    current +
+    "|" +
+    (tracks || []).map((t) => t.videoId + (state.likedIds.has(t.videoId) ? "1" : "0")).join(",")
+  );
+}
+
+/// Skips the rebuild when nothing changed. The queue lists are re-rendered from every
+/// state broadcast — once a second — and blowing away `innerHTML` each time meant the
+/// queue you were reading was destroyed and recreated under the cursor five times a
+/// second: scroll position jumped, hover states flickered, and a click could land on a
+/// row that no longer existed by the time it registered.
 function renderList(container, tracks, opts) {
+  const signature = listSignature(tracks, opts && opts.scope);
+  if (container.dataset.sig === signature) return;
+  container.dataset.sig = signature;
+
   container.innerHTML = "";
   if (!tracks || tracks.length === 0) {
     const empty = document.createElement("div");
@@ -151,6 +234,7 @@ function openDetail(tracks, { title, subtitle, badge, imageURL, kind, seedTrack,
   document.getElementById("detail-refresh").style.display = showRefresh ? "flex" : "none";
 
   renderList(document.getElementById("detail-list"), tracks, {
+    scope: `${kind || "detail"}:${title}`,
     onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: title }).then(refreshState),
   });
   showView("detail");
@@ -192,7 +276,7 @@ function openRadioDetail(seedTrack, tracks) {
     title: `${seedTrack.title} Radio`,
     subtitle: radioSubtitle(seedTrack, tracks),
     badge: "Radio",
-    imageURL: seedTrack.thumbnailUrl,
+    imageURL: art(seedTrack.thumbnailUrl, 180),
     kind: "radio",
     seedTrack,
     showRefresh: true,
@@ -205,7 +289,7 @@ async function openDaylistDetail() {
     title: daylist.title || "Daylist",
     subtitle: `${daylist.tracks.length} songs`,
     badge: "Made for you",
-    imageURL: daylist.tracks[0] ? daylist.tracks[0].thumbnailUrl : null,
+    imageURL: daylist.tracks[0] ? art(daylist.tracks[0].thumbnailUrl, 180) : null,
     kind: "daylist",
     showRefresh: true,
   });
@@ -216,7 +300,7 @@ async function openPlaylistDetail(playlist) {
     title: playlist.name,
     subtitle: `${playlist.tracks.length} songs`,
     badge: "Playlist",
-    imageURL: playlist.tracks[0] ? playlist.tracks[0].thumbnailUrl : null,
+    imageURL: playlist.tracks[0] ? art(playlist.tracks[0].thumbnailUrl, 180) : null,
     kind: "playlist",
   });
 }
@@ -252,11 +336,213 @@ document.querySelectorAll(".lib-shortcut").forEach((btn) => {
   };
 });
 
+// ---------- device switching (VVDemus Connect) ----------
+
+document.getElementById("np-device-btn").onclick = (e) => {
+  e.stopPropagation();
+  document.getElementById("np-device-menu").classList.toggle("open");
+};
+document.addEventListener("click", () => {
+  document.getElementById("np-device-menu").classList.remove("open");
+});
+// A single silent-frame WAV, used only to "unlock" the audio element synchronously
+// inside the click handler below. Browsers only allow an <audio> element to
+// autoplay/programmatically play if that permission was earned by a play() call made as
+// a direct, synchronous result of a user gesture — a play() call made later (after even
+// one `await`, e.g. waiting on the /api/device POST or the follow-up state fetch) is
+// treated as unrelated to the click and silently blocked. Playing this tiny clip right
+// in the click handler earns that permission for the *element*, so swapping its `src` to
+// the real track a moment later (once the server has resolved it) and calling play()
+// again keeps working without needing a fresh gesture each time.
+const SILENT_UNLOCK_SRC =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+
+// The unlock clip has zero audio samples, so it fires `ended` almost immediately after
+// play() — misreading that as the *real* track finishing was what caused an unwanted
+// /api/next (changing the song right when switching to "computer"). A boolean flag to
+// tell the two apart turned out to still be timing-dependent: whether the flag had
+// already been cleared (by the real track loading) depended on which happened first,
+// the flag clear or the clip's `ended` finally firing — and that race could go either
+// way. Instead, the "next track" listener is only ever *attached* once a real track is
+// loaded, and detached right before the unlock clip plays — so the clip's `ended` event
+// has nothing listening for it at all, regardless of exactly when it fires.
+function handleRealTrackEnded() {
+  if (state.isCastTab) post("/api/next").then(refreshState);
+}
+
+/// Fully lets go of whatever the element was playing. `removeAttribute("src")` alone does
+/// *not* do this — the already-selected resource stays loaded and playable, so a later
+/// play() (notably the silent-clip unlock when casting is picked back up) would resume the
+/// old audio for a moment and report it to the phone as though it were the current track.
+/// `load()` runs the resource selection algorithm again on an empty src, which aborts it.
+function releaseAudioElement() {
+  audioEl.pause();
+  audioEl.removeAttribute("src");
+  audioEl.load();
+  state.loadedVideoId = null;
+  state.loadedTrackEpoch = null;
+}
+
+function unlockAudioElementForGesture() {
+  try {
+    audioEl.removeEventListener("ended", handleRealTrackEnded);
+    audioEl.src = SILENT_UNLOCK_SRC;
+    const p = audioEl.play();
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) {
+    /* ignore — worst case the later real play() attempt is blocked and silent */
+  }
+}
+
+document.querySelectorAll("#np-device-menu button").forEach((btn) => {
+  btn.onclick = async (e) => {
+    e.stopPropagation();
+    document.getElementById("np-device-menu").classList.remove("open");
+    const device = btn.dataset.device;
+    state.isCastTab = device === "computer";
+    state.needsGesture = false;
+    if (state.isCastTab) {
+      unlockAudioElementForGesture();
+    } else {
+      releaseAudioElement();
+    }
+    // clientId is what makes the phone able to name *this* tab as the cast client.
+    await post("/api/device", { device, clientId: CLIENT_ID });
+    refreshState();
+  };
+});
+
+/// play() is rejected when the browser hasn't been given a user gesture for this element
+/// — which is exactly the situation after reclaiming casting on page load. Rather than
+/// failing silently, arm a one-shot retry on the next click anywhere and say so in the
+/// device label.
+function playCastAudio() {
+  const p = audioEl.play();
+  if (p && p.catch) p.catch(() => armGestureRetry());
+}
+
+function armGestureRetry() {
+  if (state.needsGesture) return;
+  state.needsGesture = true;
+  renderDeviceLabel();
+  const retry = () => {
+    document.removeEventListener("pointerdown", retry, true);
+    state.needsGesture = false;
+    renderDeviceLabel();
+    if (state.isCastTab && audioEl.getAttribute("src")) playCastAudio();
+  };
+  document.addEventListener("pointerdown", retry, true);
+}
+
+function renderDeviceLabel() {
+  const s = state.last;
+  const label = document.getElementById("np-device-label");
+  if (!s || s.activeDevice !== "computer") {
+    label.textContent = "Playing on iPhone";
+  } else if (!state.isCastTab) {
+    label.textContent = "Playing on another computer";
+  } else if (state.needsGesture) {
+    label.textContent = "Click anywhere to resume";
+  } else {
+    label.textContent = "Playing on This Computer";
+  }
+}
+
+/// Keeps this tab's <audio> element in sync with the server's playback state whenever
+/// this tab is the one that actually chose "This Computer" — a no-op for every other tab
+/// (or when the phone is the active device), and idempotent so it can be called from the
+/// periodic state broadcast, an explicit refresh, and a pushed "command" message alike
+/// without ever double-applying a play/pause toggle.
+function syncCastAudio(s) {
+  const videoId = s.currentTrack ? s.currentTrack.videoId : null;
+  // Ownership comes from the phone, not from whatever this tab last clicked — that's what
+  // lets a reloaded tab pick casting back up, and what makes a tab that lost ownership
+  // shut up instead of playing over the tab that took it.
+  state.isCastTab = s.activeDevice === "computer" && !!s.castClientId && s.castClientId === CLIENT_ID;
+
+  if (!state.isCastTab || !videoId) {
+    if (state.loadedVideoId) releaseAudioElement();
+    return;
+  }
+  // A changed trackLoadEpoch with an unchanged videoId means the phone restarted the
+  // track that's already playing — the computer has to start over too, or the two sit at
+  // visibly different positions in the same song.
+  if (state.loadedVideoId !== videoId || state.loadedTrackEpoch !== s.trackLoadEpoch) {
+    // The phone resolves streamUrl asynchronously after a device switch (or a new track
+    // starting), so a snapshot can name the new track while streamUrl is still empty —
+    // or, worse, still holds the *previous* track's URL. `streamVideoId` says which track
+    // the URL was resolved for; anything else means "not ready yet", and loading it would
+    // leave this computer playing one track behind the phone with nothing to correct it.
+    if (!s.streamUrl || s.streamVideoId !== videoId) return;
+    // Don't hammer a URL that just failed to load; let the next track (or a re-resolve
+    // after a device switch) get a fresh one instead of retrying every broadcast tick.
+    if (s.streamUrl === state.failedSrc && Date.now() - state.failedAt < 5000) return;
+    audioEl.src = s.streamUrl;
+    // Explicit, because re-assigning the *same* URL (the restart-current-track case) is
+    // not guaranteed to start the media load algorithm over on its own.
+    audioEl.load();
+    audioEl.currentTime = s.progress || 0;
+    state.loadedVideoId = videoId;
+    state.loadedTrackEpoch = s.trackLoadEpoch;
+    // Idempotent — the DOM ignores adding the exact same listener function twice — so
+    // it's safe to call this on every real-track load rather than tracking separately
+    // whether it's already attached.
+    audioEl.addEventListener("ended", handleRealTrackEnded);
+  }
+  if (s.isPlaying && audioEl.paused) playCastAudio();
+  if (!s.isPlaying && !audioEl.paused) audioEl.pause();
+}
+
+audioEl.addEventListener("error", () => {
+  // Lets the next state sync retry the load (e.g. a transiently expired/failed stream
+  // URL) instead of leaving this videoId permanently marked "loaded" with nothing
+  // actually playing. The URL that failed is remembered so the retry is throttled rather
+  // than firing on every broadcast tick.
+  if (!state.isCastTab) return;
+  state.failedSrc = audioEl.getAttribute("src");
+  state.failedAt = Date.now();
+  state.loadedVideoId = null;
+});
+
+audioEl.addEventListener("timeupdate", () => {
+  // No loaded track means there's nothing meaningful to report — and an untagged report
+  // is one the phone will (correctly) throw away anyway.
+  if (!state.isCastTab || !state.loadedVideoId || audioEl.currentSrc === SILENT_UNLOCK_SRC) return;
+  // Swapping `src` for a new track doesn't reset the element instantly: for a moment
+  // `loadedVideoId` is already the new track while `currentTime` still reads the old
+  // resource's position. Reporting that pairing told the phone the new track was already
+  // N seconds in, and the phone then handed that back as the position to resume from —
+  // so the track started N seconds late. readyState drops to HAVE_NOTHING during the
+  // swap, which is precisely the window to stay quiet through.
+  if (audioEl.readyState < 1) return;
+  const now = Date.now();
+  if (now - state.lastReportAt < 900) return;
+  state.lastReportAt = now;
+  post("/api/playback/report", {
+    // Tagged so the phone can discard reports about a track it has already moved on from,
+    // or about playback as it was before its latest instruction (see playbackEpoch).
+    videoId: state.loadedVideoId,
+    epoch: state.epoch,
+    progress: audioEl.currentTime,
+    duration: isFinite(audioEl.duration) ? audioEl.duration : 0,
+    isPlaying: !audioEl.paused,
+  });
+});
+
 // ---------- now playing ----------
 
 function renderNowPlaying(s) {
+  mergeOmittedQueues(s);
   state.current = s.currentTrack;
-  document.getElementById("np-art").src = s.currentTrack ? s.currentTrack.thumbnailUrl || "" : "";
+  state.last = s;
+  state.epoch = s.playbackEpoch;
+  syncCastAudio(s); // sets state.isCastTab, which the label depends on
+  renderDeviceLabel();
+  const npArt = document.getElementById("np-art");
+  npArt.src = s.currentTrack ? art(s.currentTrack.thumbnailUrl, 56) : "";
+  // The phone resolving a stream can take a second or two; without any sign of it, the
+  // remote just looked frozen between pressing play and hearing anything.
+  npArt.classList.toggle("loading", !!s.isLoading);
   document.getElementById("np-title").textContent = s.currentTrack ? s.currentTrack.title : "Nothing playing";
   document.getElementById("np-artist").textContent = s.currentTrack ? s.currentTrack.artist : "";
   document.getElementById("np-play-icon").style.display = s.isPlaying ? "none" : "block";
@@ -293,6 +579,19 @@ function renderNowPlaying(s) {
   });
 }
 
+/// The phone leaves the queue and liked list out of a periodic broadcast when they haven't
+/// changed (they're most of a snapshot's size and almost never move). Absent means "same as
+/// last time", so fill them back in from the last snapshot that carried them.
+function mergeOmittedQueues(s) {
+  for (const field of ["manualQueue", "contextQueue", "likedVideoIds"]) {
+    if (s[field] == null) {
+      s[field] = state.lastQueues[field] || [];
+    } else {
+      state.lastQueues[field] = s[field];
+    }
+  }
+}
+
 async function refreshState() {
   const s = await api("/api/state");
   renderNowPlaying(s);
@@ -311,12 +610,62 @@ document.getElementById("np-like").onclick = async () => {
 };
 
 const seekEl = document.getElementById("np-seek");
-seekEl.addEventListener("mousedown", () => (seekEl.dragging = true));
-seekEl.addEventListener("touchstart", () => (seekEl.dragging = true));
+seekEl.addEventListener("pointerdown", () => (seekEl.dragging = true));
+// Without these, starting a drag and then releasing outside the slider (or letting the
+// window lose focus mid-drag) left `dragging` stuck true forever — and while it's true
+// the progress bar stops accepting updates from the phone, so the whole seek bar and
+// elapsed time silently froze until the page was reloaded.
+["pointercancel", "blur"].forEach((ev) => seekEl.addEventListener(ev, () => (seekEl.dragging = false)));
+// Live feedback while scrubbing, instead of the elapsed time sitting still until release.
+seekEl.addEventListener("input", () => {
+  document.getElementById("np-elapsed").textContent = fmtTime(Number(seekEl.value));
+});
 seekEl.addEventListener("change", async () => {
-  await post("/api/seek", { seconds: Number(seekEl.value) });
+  const seconds = Number(seekEl.value);
+  if (state.isCastTab && audioEl.src) audioEl.currentTime = seconds;
+  await post("/api/seek", { seconds });
   seekEl.dragging = false;
   refreshState();
+});
+
+// ---------- keyboard control ----------
+
+/// A remote you drive from across the room is far more useful from the keyboard than by
+/// aiming at small buttons. Typing in the search box (or any other field) is left alone.
+document.addEventListener("keydown", (e) => {
+  const el = document.activeElement;
+  const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+  if (typing) {
+    if (e.key === "Escape") el.blur();
+    return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  const seekBy = (delta) => {
+    const target = Math.max(0, Math.min(Number(seekEl.max) || 0, (state.last ? state.last.progress : 0) + delta));
+    if (state.isCastTab && audioEl.src) audioEl.currentTime = target;
+    post("/api/seek", { seconds: target }).then(refreshState);
+  };
+
+  switch (e.key) {
+    case " ":
+      e.preventDefault(); // otherwise the page scrolls
+      post("/api/toggle").then(refreshState);
+      break;
+    case "ArrowRight": e.preventDefault(); seekBy(10); break;
+    case "ArrowLeft": e.preventDefault(); seekBy(-10); break;
+    case "n": case "N": post("/api/next").then(refreshState); break;
+    case "p": case "P": post("/api/previous").then(refreshState); break;
+    case "s": case "S": post("/api/shuffle").then(refreshState); break;
+    case "l": case "L":
+      if (state.current) post("/api/library/liked/toggle", { track: state.current }).then(refreshState);
+      break;
+    case "/":
+      e.preventDefault();
+      showView("search");
+      document.getElementById("global-search").focus();
+      break;
+  }
 });
 
 // ---------- home ----------
@@ -326,7 +675,7 @@ function gridTrackCard(track, tracks, contextTitle) {
   card.className = "grid-card";
   card.innerHTML = `
     <div class="g-art-wrap">
-      <img src="${track.thumbnailUrl || ""}" alt="">
+      <img src="${art(track.thumbnailUrl, 170)}" alt="" loading="lazy">
       <button class="g-queue-btn" title="Add to queue">${ICONS.add}</button>
     </div>
     <div class="g-title">${escapeHtml(track.title)}</div>
@@ -348,7 +697,7 @@ async function loadHomeRadios() {
     const chip = document.createElement("div");
     chip.className = "radio-chip";
     chip.innerHTML = `
-      <img src="${station.seedTrack.thumbnailUrl || ""}" alt="">
+      <img src="${art(station.seedTrack.thumbnailUrl, 64)}" alt="" loading="lazy">
       <span class="r-title">${escapeHtml(station.seedTrack.title)} Radio</span>
     `;
     chip.onclick = async () => {
@@ -402,6 +751,7 @@ function runSearch(q) {
   searchTimer = setTimeout(async () => {
     const tracks = await api(`/api/search?q=${encodeURIComponent(q)}`);
     renderList(document.getElementById("search-list"), tracks, {
+      scope: `search:${q}`,
       onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: "Search" }).then(refreshState),
     });
   }, 350);
@@ -431,7 +781,7 @@ async function loadLibraryList() {
       const row = document.createElement("button");
       row.className = "library-row";
       row.innerHTML = `
-        <span class="lib-icon"><img src="${station.seedTrack.thumbnailUrl || ""}" alt=""></span>
+        <span class="lib-icon"><img src="${art(station.seedTrack.thumbnailUrl, 32)}" alt="" loading="lazy"></span>
         <span class="track-title-sm">${escapeHtml(station.seedTrack.title)} Radio</span>
       `;
       row.onclick = async () => {
@@ -458,9 +808,9 @@ async function loadLibraryList() {
     playlists.forEach((p) => {
       const row = document.createElement("button");
       row.className = "library-row";
-      const art = p.tracks[0] ? p.tracks[0].thumbnailUrl : null;
+      const cover = p.tracks[0] ? art(p.tracks[0].thumbnailUrl, 32) : null;
       row.innerHTML = `
-        <span class="lib-icon">${art ? `<img src="${art}" alt="">` : ICONS.note}</span>
+        <span class="lib-icon">${cover ? `<img src="${cover}" alt="" loading="lazy">` : ICONS.note}</span>
         <span class="track-title-sm">${escapeHtml(p.name)}<span class="row-sub">${p.tracks.length} songs</span></span>
       `;
       row.onclick = () => {
@@ -490,10 +840,16 @@ function connectWebSocket() {
   ws.onopen = () => {
     // Lets the server tell this connection apart from one that silently died (closed
     // laptop lid, WiFi drop) without a clean close ever reaching it — see
-    // LocalControlServer's socketLastSeen/pruneStaleSockets.
-    heartbeat = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) ws.send("ping");
-    }, 15000);
+    // LocalControlServer's socketLastSeen/pruneStaleSockets. Every frame carries this
+    // tab's id so the phone knows whether the socket belonging to the *casting* tab in
+    // particular is still alive, which is what the fall-back-to-iPhone decision hangs on.
+    // Sent immediately on connect too, not just on the 15s heartbeat, so a reconnect is
+    // re-attributed well inside that grace period.
+    const hello = () => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(`hello:${CLIENT_ID}`);
+    };
+    hello();
+    heartbeat = setInterval(hello, 15000);
   };
   ws.onmessage = (event) => {
     try {
@@ -506,6 +862,16 @@ function connectWebSocket() {
         }
       } else if (msg.type === "state") {
         renderNowPlaying(msg.state);
+      } else if (msg.type === "command" && state.isCastTab) {
+        // Toggle/seek issued from the phone (lock screen, app UI) while this tab is
+        // casting — for seek, apply the exact position; for toggle, just resync from
+        // the definitive state rather than blindly flipping, so this can't double-apply
+        // if the same command also arrives via the tab's own POST -> refreshState path.
+        if (msg.action === "seek" && typeof msg.seconds === "number" && audioEl.src) {
+          audioEl.currentTime = msg.seconds;
+        } else if (msg.action === "toggle") {
+          refreshState();
+        }
       }
     } catch (e) {
       /* ignore malformed frame */
