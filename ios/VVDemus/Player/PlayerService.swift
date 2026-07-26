@@ -44,6 +44,18 @@ final class PlayerService: ObservableObject {
         let url: String
     }
 
+    /// The track queued after the current one, with its stream URL already resolved, sent
+    /// to the casting browser so it can carry on by itself if this phone isn't reachable
+    /// when the current track ends.
+    ///
+    /// Without it the browser is a dumb terminal: at the end of every track it has to ask
+    /// this phone for the next URL, so a phone that's asleep or off the network at that
+    /// exact moment stops the music — the failure looked like "it played fine, then died
+    /// between songs". Only resolved while casting, since that's the only time anything
+    /// reads it.
+    @Published private(set) var upNextStream: ExternalStream?
+    @Published private(set) var upNextTrack: Track?
+
     /// Bumped every time the phone changes what playback *should* be doing — a new track,
     /// a seek, a play/pause, a device switch. The browser echoes back the epoch it is
     /// reporting under, and reports from an older epoch are discarded.
@@ -89,6 +101,7 @@ final class PlayerService: ObservableObject {
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var loadTask: Task<Void, Never>?
+    private var prefetchTask: Task<Void, Never>?
     private var artworkTask: Task<Void, Never>?
     /// Bounded so this doesn't grow for the entire app session — lock-screen artwork only
     /// ever needs the current (and maybe just-previous) track, so a handful of entries is
@@ -257,6 +270,7 @@ final class PlayerService: ObservableObject {
     func toggleShuffle() {
         isShuffling.toggle()
         contextQueue = isShuffling ? orderedContextQueue.shuffled() : orderedContextQueue
+        prefetchUpNextForComputer()
     }
 
     // MARK: - Queue manipulation
@@ -269,6 +283,7 @@ final class PlayerService: ObservableObject {
         contextQueue.removeAll { $0.id == track.id }
         orderedContextQueue.removeAll { $0.id == track.id }
         manualQueue.append(track)
+        prefetchUpNextForComputer()
     }
 
     func playNext(_ track: Track) {
@@ -276,12 +291,14 @@ final class PlayerService: ObservableObject {
         contextQueue.removeAll { $0.id == track.id }
         orderedContextQueue.removeAll { $0.id == track.id }
         manualQueue.insert(track, at: 0)
+        prefetchUpNextForComputer()
     }
 
     func removeFromQueue(_ track: Track) {
         manualQueue.removeAll { $0.id == track.id }
         contextQueue.removeAll { $0.id == track.id }
         orderedContextQueue.removeAll { $0.id == track.id }
+        prefetchUpNextForComputer()
     }
 
     func moveInManualQueue(from source: IndexSet, to destination: Int) {
@@ -361,6 +378,7 @@ final class PlayerService: ObservableObject {
         case .computer:
             player.pause()
             isResumingAfterDeviceSwitch = false
+            prefetchUpNextForComputer()
             // The currently-playing track (if any) needs its stream URL resolved for the
             // browser too — only a *new* track load did this before, so switching devices
             // mid-playback left the browser with nothing to actually play.
@@ -379,6 +397,9 @@ final class PlayerService: ObservableObject {
             }
         case .iphone:
             externalStream = nil
+            upNextStream = nil
+            upNextTrack = nil
+            prefetchTask?.cancel()
             guard let track = currentTrack else { return }
             isResumingAfterDeviceSwitch = true
             loadTask?.cancel()
@@ -584,12 +605,107 @@ final class PlayerService: ObservableObject {
                 externalStream = ExternalStream(videoId: track.videoId, url: urlString)
                 isLoading = false
                 isPlaying = true
+                prefetchUpNextForComputer()
             } catch {
                 guard !Task.isCancelled else { return }
                 isLoading = false
                 errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
             }
         }
+    }
+
+    // MARK: - Playing on past a disconnection
+
+    /// Whatever plays after the current track, if it's already decided.
+    private var nextQueuedTrack: Track? { manualQueue.first ?? contextQueue.first }
+
+    /// Resolves the next track's stream URL ahead of time so the casting browser holds a
+    /// usable URL before it needs one.
+    ///
+    /// Only while casting: on this phone AVPlayer does its own buffering and a brief
+    /// network gap between tracks is survivable, whereas the browser has no other way to
+    /// find out what comes next. Costs one extra player request per track, which is the
+    /// price of the music not stopping every time the phone's connection hiccups.
+    ///
+    /// Autoplay's radio-derived next track deliberately isn't prefetched — that needs a
+    /// whole radio fetch to even know what the track is, which is far too much work to do
+    /// speculatively on every track change.
+    private func prefetchUpNextForComputer() {
+        guard activeDevice == .computer, let next = nextQueuedTrack else {
+            upNextStream = nil
+            upNextTrack = nil
+            return
+        }
+        guard upNextStream?.videoId != next.videoId else { return }
+        upNextTrack = next
+        upNextStream = nil
+        prefetchTask?.cancel()
+        prefetchTask = Task {
+            guard let urlString = try? await resolveComputerStreamUrl(for: next) else { return }
+            guard !Task.isCancelled, nextQueuedTrack?.videoId == next.videoId else { return }
+            upNextStream = ExternalStream(videoId: next.videoId, url: urlString)
+        }
+    }
+
+    /// Accepts the browser's account of what it's actually playing.
+    ///
+    /// If this phone was unreachable when a track ended, the browser moved on by itself
+    /// using the prefetched URL — so the browser, not the phone, knows what's really
+    /// coming out of the speakers. Rather than dragging it back to whatever this phone
+    /// still had selected, the phone catches up: the device producing audio wins.
+    ///
+    /// Deliberately does not go through `load()`: the audio is already playing over there,
+    /// and reloading would restart the track. `trackLoadEpoch` is left alone for the same
+    /// reason — bumping it is the signal that tells the browser to start a track over.
+    func adoptExternalPlayback(videoId: String, progress: Double) {
+        guard activeDevice == .computer else { return }
+        guard currentTrack?.videoId != videoId else {
+            self.progress = progress
+            return
+        }
+
+        // Consume the queue up to and including the adopted track, so what plays next
+        // follows on from where the browser actually got to.
+        if let index = manualQueue.firstIndex(where: { $0.videoId == videoId }) {
+            let adopted = manualQueue[index]
+            manualQueue.removeFirst(index + 1)
+            finishAdopting(adopted, progress: progress)
+        } else if let index = contextQueue.firstIndex(where: { $0.videoId == videoId }) {
+            let adopted = contextQueue[index]
+            let skipped = contextQueue.prefix(index + 1).map(\.id)
+            contextQueue.removeFirst(index + 1)
+            orderedContextQueue.removeAll { skipped.contains($0.id) }
+            finishAdopting(adopted, progress: progress)
+        }
+        // A track that isn't in either queue can't be reconciled — the phone keeps its own
+        // idea of the queue and the next state broadcast pulls the browser back into line.
+    }
+
+    private func finishAdopting(_ track: Track, progress: Double) {
+        recordListeningStats()
+        if let outgoing = currentTrack {
+            backStack.append(outgoing)
+            if backStack.count > 30 { backStack.removeFirst(backStack.count - 30) }
+        }
+        currentTrack = track
+        self.progress = progress
+        duration = 0
+        isLoading = false
+        isPlaying = true
+        PlayHistoryStore.shared.record(track)
+        // The browser already holds a working URL for this track (it's playing it); this
+        // just brings the phone's own record back in step, without disturbing playback.
+        externalStream = upNextStream?.videoId == track.videoId ? upNextStream : nil
+        updateNowPlayingInfo()
+        if externalStream == nil {
+            loadTask?.cancel()
+            loadTask = Task {
+                guard let urlString = try? await resolveComputerStreamUrl(for: track),
+                      !Task.isCancelled, currentTrack?.videoId == track.videoId else { return }
+                externalStream = ExternalStream(videoId: track.videoId, url: urlString)
+            }
+        }
+        prefetchUpNextForComputer()
     }
 
     /// What the browser's `<audio>` element should load for `track` while it's the active

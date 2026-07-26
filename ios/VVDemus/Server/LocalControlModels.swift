@@ -52,6 +52,10 @@ struct StateSnapshot: Codable {
     /// track already playing, which the videoId alone can't distinguish. See
     /// `PlayerService.trackLoadEpoch`.
     let trackLoadEpoch: Int
+    /// What plays next, with its stream URL already resolved, so a casting browser can
+    /// carry on by itself if the phone is unreachable when the current track ends.
+    let nextTrack: Track?
+    let nextStreamUrl: String?
 
     /// Identifies the contents of the heavy fields, so an unchanged one can be left out of
     /// the next broadcast.
@@ -64,6 +68,9 @@ struct StateSnapshot: Codable {
         return hasher.finalize()
     }
 
+    /// Note that `nextTrack`/`nextStreamUrl` are kept even in a trimmed broadcast: they
+    /// are small, and they're the browser's only lifeline if the phone drops off between
+    /// this broadcast and the end of the current track.
     func withoutQueues() -> StateSnapshot {
         StateSnapshot(
             isPlaying: isPlaying,
@@ -82,9 +89,21 @@ struct StateSnapshot: Codable {
             streamVideoId: streamVideoId,
             castClientId: castClientId,
             playbackEpoch: playbackEpoch,
-            trackLoadEpoch: trackLoadEpoch
+            trackLoadEpoch: trackLoadEpoch,
+            nextTrack: nextTrack,
+            nextStreamUrl: nextStreamUrl
         )
     }
+}
+
+/// The browser telling the phone what it is *actually* playing, after having moved on by
+/// itself while the phone was unreachable.
+struct AdoptPlaybackBody: Decodable {
+    let videoId: String
+    let progress: Double
+    /// Identifies the tab, so a browser that kept playing through an outage can be handed
+    /// casting back rather than silenced. See `LocalControlServer.mayReclaimCasting`.
+    let clientId: String?
 }
 
 /// A command relayed from the phone to whichever browser is the active playback device,

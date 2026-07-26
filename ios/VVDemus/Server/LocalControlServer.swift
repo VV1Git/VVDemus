@@ -55,6 +55,14 @@ final class LocalControlServer: ObservableObject {
     /// which looked like switching to "computer" instantly bouncing back to the phone.
     private let computerFallbackGrace: TimeInterval = 6
     private var castClientMissingSince: Date?
+    /// The tab that was casting before an *automatic* fallback to the phone, and when that
+    /// happened. A browser that kept playing on its own through the outage can reclaim
+    /// playback when it reconnects — the phone only took over because it assumed the
+    /// browser had died, and the device actually producing sound should win. Deliberately
+    /// not honoured after the user chose the phone themselves.
+    private var lastCastClientId: String?
+    private var autoFallbackAt: Date?
+    private let reclaimWindow: TimeInterval = 120
     /// When the casting browser last told us where playback had got to. A browser that is
     /// genuinely playing reports about once a second, so silence here means playback has
     /// stopped over there whatever the socket says — a laptop that sleeps or drops off
@@ -218,7 +226,30 @@ final class LocalControlServer: ObservableObject {
                 self.castClientId = body.device == .computer ? body.clientId : nil
                 self.castClientMissingSince = nil
                 self.lastComputerReportAt = Date()
+                // A deliberate choice, so nothing may quietly undo it later.
+                self.autoFallbackAt = nil
+                self.lastCastClientId = nil
                 PlayerService.shared.setActiveDevice(body.device)
+            }
+            return .ok(.text("ok"))
+        }
+        // The browser reporting that it moved on without us — see
+        // `PlayerService.adoptExternalPlayback`.
+        server.POST["/api/playback/adopt"] = { [weak self] request in
+            guard let self, let body: AdoptPlaybackBody = self.decodeBody(request) else { return .badRequest(.text("bad body")) }
+            self.onMain {
+                self.lastComputerReportAt = Date()
+                // The browser never stopped playing; if we'd given up on it and pulled
+                // playback back to the phone, hand it straight back rather than cutting
+                // off audio that's been running the whole time.
+                if PlayerService.shared.activeDevice == .iphone, self.mayReclaimCasting(body.clientId) {
+                    self.castClientId = body.clientId
+                    self.castClientMissingSince = nil
+                    self.autoFallbackAt = nil
+                    self.lastCastClientId = nil
+                    PlayerService.shared.setActiveDevice(.computer)
+                }
+                PlayerService.shared.adoptExternalPlayback(videoId: body.videoId, progress: body.progress)
             }
             return .ok(.text("ok"))
         }
@@ -503,7 +534,9 @@ final class LocalControlServer: ObservableObject {
             streamVideoId: player.externalStream?.videoId,
             castClientId: player.activeDevice == .computer ? castClientId : nil,
             playbackEpoch: player.playbackEpoch,
-            trackLoadEpoch: player.trackLoadEpoch
+            trackLoadEpoch: player.trackLoadEpoch,
+            nextTrack: player.activeDevice == .computer ? player.upNextTrack : nil,
+            nextStreamUrl: player.activeDevice == .computer ? player.upNextStream?.url : nil
         )
     }
 
@@ -602,10 +635,19 @@ final class LocalControlServer: ObservableObject {
     }
 
     private func fallBackToPhone() {
+        lastCastClientId = castClientId
+        autoFallbackAt = Date()
         PlayerService.shared.setActiveDevice(.iphone)
         castClientId = nil
         castClientMissingSince = nil
         lastSeenTrackLoadEpoch = nil
+    }
+
+    /// Whether `clientId` is the tab we just took playback away from, recently enough that
+    /// it's plausibly still playing the same song.
+    private func mayReclaimCasting(_ clientId: String?) -> Bool {
+        guard let clientId, clientId == lastCastClientId, let autoFallbackAt else { return false }
+        return Date().timeIntervalSince(autoFallbackAt) < reclaimWindow
     }
 
     private var castClientIsConnected: Bool {

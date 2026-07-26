@@ -36,6 +36,14 @@ const state = {
   epoch: null,
   failedSrc: null,
   failedAt: 0,
+  // What the phone says plays next, with a resolved URL — this tab's lifeline if the
+  // phone goes away mid-song.
+  upNext: null,
+  // Set when this tab advanced on its own because the phone was unreachable; cleared once
+  // the phone has accepted our account of what's playing.
+  playedWhileDisconnected: null,
+  reconcileAttempts: 0,
+  reconciling: false,
 };
 
 const audioEl = document.getElementById("np-audio");
@@ -366,8 +374,70 @@ const SILENT_UNLOCK_SRC =
 // way. Instead, the "next track" listener is only ever *attached* once a real track is
 // loaded, and detached right before the unlock clip plays — so the clip's `ended` event
 // has nothing listening for it at all, regardless of exactly when it fires.
-function handleRealTrackEnded() {
-  if (state.isCastTab) post("/api/next").then(refreshState);
+/// End of a real track while this tab is casting.
+///
+/// Normally the phone decides what plays next. But if it's asleep, off the network, or
+/// otherwise unreachable at this exact moment, that request fails and the music simply
+/// stops — which is why playback used to die *between* songs rather than during one.
+/// So: ask the phone first, and if it doesn't answer, play the track it already told us
+/// was coming (`upNext`, sent with its stream URL resolved ahead of time) and reconcile
+/// once the phone is back.
+async function handleRealTrackEnded() {
+  if (!state.isCastTab) return;
+  try {
+    await post("/api/next");
+    refreshState();
+  } catch (e) {
+    playUpNextLocally();
+  }
+}
+
+function playUpNextLocally() {
+  const next = state.upNext;
+  if (!next || !next.track || !next.streamUrl) {
+    // Nothing prefetched — the queue ran out, or the phone dropped before it could tell
+    // us. Genuinely nothing to play; the phone will resync when it returns.
+    return;
+  }
+  audioEl.src = next.streamUrl;
+  audioEl.load();
+  state.loadedVideoId = next.track.videoId;
+  state.loadedTrackEpoch = null; // no longer tracking the phone's load generation
+  state.upNext = null;
+  // Remembered so the phone can be told what really happened once it answers again.
+  state.playedWhileDisconnected = next.track.videoId;
+  audioEl.addEventListener("ended", handleRealTrackEnded);
+  playCastAudio();
+  renderDeviceLabel();
+}
+
+/// Tells the phone what this tab is actually playing after having moved on without it.
+/// Until the phone accepts it, incoming state is not allowed to reload the audio element
+/// — otherwise the phone's stale idea of the current track would yank the browser back to
+/// a song it finished minutes ago.
+async function reconcileAfterDisconnection() {
+  if (!state.playedWhileDisconnected || state.reconciling) return;
+  state.reconciling = true;
+  try {
+    await post("/api/playback/adopt", {
+      videoId: state.playedWhileDisconnected,
+      progress: audioEl.currentTime || 0,
+      clientId: CLIENT_ID,
+    });
+    state.playedWhileDisconnected = null;
+    state.reconcileAttempts = 0;
+    refreshState();
+  } catch (e) {
+    // Still unreachable. Keep playing and retry on the next state that gets through, but
+    // don't hold this tab out of sync forever if the phone simply won't have it.
+    state.reconcileAttempts = (state.reconcileAttempts || 0) + 1;
+    if (state.reconcileAttempts > 8) {
+      state.playedWhileDisconnected = null;
+      state.reconcileAttempts = 0;
+    }
+  } finally {
+    state.reconciling = false;
+  }
 }
 
 /// Fully lets go of whatever the element was playing. `removeAttribute("src")` alone does
@@ -441,6 +511,8 @@ function renderDeviceLabel() {
     label.textContent = "Playing on iPhone";
   } else if (!state.isCastTab) {
     label.textContent = "Playing on another computer";
+  } else if (state.playedWhileDisconnected) {
+    label.textContent = "Playing on This Computer (phone offline)";
   } else if (state.needsGesture) {
     label.textContent = "Click anywhere to resume";
   } else {
@@ -461,12 +533,26 @@ function syncCastAudio(s) {
   state.isCastTab = s.activeDevice === "computer" && !!s.castClientId && s.castClientId === CLIENT_ID;
 
   if (!state.isCastTab || !videoId) {
+    // If this tab kept playing through an outage, don't go quiet just because the phone
+    // gave up on us and took playback back — it did that believing we had stopped. Ask
+    // for it back first; only fall silent if the phone refuses.
+    if (state.playedWhileDisconnected) {
+      reconcileAfterDisconnection();
+      return;
+    }
     if (state.loadedVideoId) releaseAudioElement();
     return;
   }
   // A changed trackLoadEpoch with an unchanged videoId means the phone restarted the
   // track that's already playing — the computer has to start over too, or the two sit at
   // visibly different positions in the same song.
+  // We got ahead of the phone while it was away. Until it accepts what we're actually
+  // playing, its idea of the current track is out of date — reloading from it here would
+  // interrupt real audio to go back to a finished song. The device making the sound wins.
+  if (state.playedWhileDisconnected) {
+    reconcileAfterDisconnection();
+    return;
+  }
   if (state.loadedVideoId !== videoId || state.loadedTrackEpoch !== s.trackLoadEpoch) {
     // The phone resolves streamUrl asynchronously after a device switch (or a new track
     // starting), so a snapshot can name the new track while streamUrl is still empty —
@@ -533,6 +619,7 @@ audioEl.addEventListener("timeupdate", () => {
 
 function renderNowPlaying(s) {
   mergeOmittedQueues(s);
+  state.upNext = s.nextTrack && s.nextStreamUrl ? { track: s.nextTrack, streamUrl: s.nextStreamUrl } : null;
   state.current = s.currentTrack;
   state.last = s;
   state.epoch = s.playbackEpoch;
@@ -850,6 +937,8 @@ function connectWebSocket() {
     };
     hello();
     heartbeat = setInterval(hello, 15000);
+    // Back in touch: if this tab kept playing without the phone, square that up now.
+    reconcileAfterDisconnection();
   };
   ws.onmessage = (event) => {
     try {
