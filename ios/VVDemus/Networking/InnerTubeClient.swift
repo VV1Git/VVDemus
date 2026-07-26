@@ -88,7 +88,9 @@ enum InnerTubeClient {
         var seen = Set<String>()
         var tracks: [Track] = []
         for list in lists {
-            for track in list where !seen.contains(track.id) {
+            // "chill mix" in particular returns hour-long lounge compilations that read
+            // as ordinary songs until they take over the queue.
+            for track in list.excludingLongFormMixes() where !seen.contains(track.id) {
                 seen.insert(track.id)
                 tracks.append(track)
             }
@@ -122,6 +124,10 @@ enum InnerTubeClient {
         var tracks: [Track] = []
         for item in items {
             if let track = parseWatchItem(item["playlistPanelVideoRenderer"]) {
+                // The seed (always first) is kept whatever its length — starting a radio
+                // from a long mix is a deliberate choice. Everything after it is a
+                // recommendation, and an hour-long one derails the rest of the queue.
+                guard tracks.isEmpty || !track.isLongFormMix else { continue }
                 tracks.append(track)
                 if tracks.count >= limit { break }
             }
@@ -296,9 +302,13 @@ enum InnerTubeClient {
         return result
     }
 
+    /// Requires an actual `m:ss` / `h:mm:ss` shape. Accepting a bare number meant the
+    /// release year that appears in the same run of metadata ("Daft Punk • Discovery •
+    /// 2001") was read as a duration — so Digital Love was a 33-minute track, and every
+    /// seek bar, mix length and listening-stats cap derived from it was wrong.
     private static func parseDuration(_ text: String) -> Int? {
         let parts = text.split(separator: ":")
-        guard !parts.isEmpty, parts.allSatisfy({ Int($0) != nil }) else { return nil }
+        guard parts.count >= 2, parts.allSatisfy({ Int($0) != nil }) else { return nil }
         return parts.compactMap { Int($0) }.reduce(0) { $0 * 60 + $1 }
     }
 

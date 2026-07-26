@@ -6,7 +6,7 @@ import Foundation
 final class RadioCacheStore: ObservableObject {
     static let shared = RadioCacheStore()
 
-    private let key = "radio_track_cache_v1"
+    private let key = "radio_track_cache_v2" // v1 entries hold years-as-durations
     private let limit = 20
     private var cache: [String: [Track]] = [:]
     private var order: [String] = []

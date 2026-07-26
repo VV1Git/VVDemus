@@ -502,7 +502,9 @@ final class PlayerService: ObservableObject {
                 }
                 guard !Task.isCancelled else { return }
                 let recent = Set(PlayHistoryStore.shared.recentSeeds(recentRadioAvoidCount).map(\.id))
-                let fresh = mix.filter { $0.id != seed.id && !recent.contains($0.id) }
+                let fresh = mix
+                    .excludingLongFormMixes()
+                    .filter { $0.id != seed.id && !recent.contains($0.id) }
                 guard let next = fresh.first else {
                     isLoading = false
                     isPlaying = false

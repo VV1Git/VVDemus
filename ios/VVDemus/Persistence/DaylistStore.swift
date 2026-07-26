@@ -14,7 +14,9 @@ final class DaylistStore: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published var errorMessage: String?
 
-    private let key = "daylist_v1"
+    /// Bumped to v2 to discard mixes built before hour-long compilations were filtered
+    /// out (and before release years were being misread as track durations).
+    private let key = "daylist_v2"
 
     private struct Snapshot: Codable {
         let title: String
@@ -69,6 +71,11 @@ final class DaylistStore: ObservableObject {
                 seen.insert(track.id)
                 pool.append(track)
             }
+
+            // The mood queries these are built from ("morning chill mix", "late night
+            // vibes") are exactly the phrasing that surfaces hour-long meditation and
+            // lounge compilations, which then sit in the daylist looking like songs.
+            pool = pool.excludingLongFormMixes()
 
             guard !pool.isEmpty else {
                 throw APIError.server("No recommendations available right now.")

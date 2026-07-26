@@ -48,7 +48,8 @@ enum RecommendationsBuilder {
             return results
         }
         return zip(seeds, radios).compactMap { seed, tracks in
-            tracks.isEmpty ? nil : Section(title: "Because you listened to \(seed.title)", tracks: tracks)
+            let songs = tracks.excludingLongFormMixes()
+            return songs.isEmpty ? nil : Section(title: "Because you listened to \(seed.title)", tracks: songs)
         }
     }
 }
@@ -68,7 +69,7 @@ final class HomeFeedStore: ObservableObject {
     @Published private(set) var isLoading = false
     private(set) var generatedAt: Date?
 
-    private let key = "home_feed_v1"
+    private let key = "home_feed_v2" // v1 shelves predate the long-form mix filter
     private let freshness: TimeInterval = 30 * 60
     /// Shared so that Home appearing and the web remote asking at the same moment produce
     /// one fetch between them, not two.
