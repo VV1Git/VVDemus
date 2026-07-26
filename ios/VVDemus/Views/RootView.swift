@@ -58,10 +58,31 @@ struct RootView: View {
         // closes that gap.
         .onChange(of: player.isPlaying) { _, _ in updateBackgroundKeepAlive() }
         .onChange(of: controlServer.isRunning) { _, _ in updateBackgroundKeepAlive() }
+        // Handing playback to (or taking it back from) a browser changes whether this
+        // phone is making any sound of its own, which is the whole basis of the decision
+        // below — and it can happen at any time from the web remote, including while the
+        // screen is already locked.
+        .onChange(of: player.activeDevice) { _, _ in updateBackgroundKeepAlive() }
     }
 
+    /// iOS only honours the `audio` background mode while the app is *actually* producing
+    /// audio. `isPlaying` alone doesn't mean this phone is: while casting it reflects the
+    /// browser's playback, reported back over the network, with this phone's own player
+    /// paused and silent.
+    private var phoneIsProducingAudio: Bool {
+        player.isPlaying && player.activeDevice == .iphone
+    }
+
+    /// Keeps the process (and so VVDemus Connect's server) alive through a screen lock
+    /// whenever nothing else is holding it up.
+    ///
+    /// This used to key off `!player.isPlaying`, which meant that casting to a computer —
+    /// the one situation where the remote connection matters most — looked like "audio is
+    /// playing, no need to do anything", while in reality the phone was silent. Locking
+    /// the phone then let iOS suspend the app about thirty seconds later, killing the
+    /// server, the browser's connection, and the music with it.
     private func updateBackgroundKeepAlive() {
-        let shouldKeepAlive = scenePhase == .background && controlServer.isRunning && !player.isPlaying
+        let shouldKeepAlive = scenePhase == .background && controlServer.isRunning && !phoneIsProducingAudio
         if shouldKeepAlive {
             BackgroundKeepAlive.shared.start()
         } else {

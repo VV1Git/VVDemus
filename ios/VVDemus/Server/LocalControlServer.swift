@@ -71,6 +71,9 @@ final class LocalControlServer: ObservableObject {
     /// Lets the periodic broadcast skip re-sending queue contents that haven't moved.
     private var lastBroadcastQueueFingerprint: Int?
     private var needsFullBroadcast = true
+    /// When the 1Hz broadcast last ran, used to notice that the app was suspended.
+    private var lastBroadcastTickAt: Date?
+    private let suspensionGapThreshold: TimeInterval = 5
     private var broadcastTimer: Timer?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
@@ -133,6 +136,7 @@ final class LocalControlServer: ObservableObject {
         castClientMissingSince = nil
         lastComputerReportAt = nil
         lastSeenTrackLoadEpoch = nil
+        lastBroadcastTickAt = nil
         isRunning = false
     }
 
@@ -515,6 +519,7 @@ final class LocalControlServer: ObservableObject {
     }
 
     private func broadcastState() {
+        forgiveSuspensionGap()
         pruneStaleSockets()
         guard !sockets.isEmpty else { return }
         let snapshot = stateSnapshot()
@@ -525,6 +530,28 @@ final class LocalControlServer: ObservableObject {
         lastBroadcastQueueFingerprint = fingerprint
         needsFullBroadcast = false
         broadcast(StateMessage(state: sendFull ? snapshot : snapshot.withoutQueues()))
+    }
+
+    /// This timer is supposed to fire every second. A much longer gap means the app wasn't
+    /// running — iOS suspended or throttled it — rather than that anything went wrong with
+    /// the browser.
+    ///
+    /// Every staleness clock here is wall-clock based, so after such a gap they all read as
+    /// long overdue at once: the first tick on waking would decide the casting browser had
+    /// gone silent and haul playback back to the phone, cutting off a computer that had
+    /// been playing happily the whole time. The clocks are reset instead, giving clients
+    /// the same grace they'd get from a fresh start.
+    private func forgiveSuspensionGap() {
+        defer { lastBroadcastTickAt = Date() }
+        guard let lastBroadcastTickAt else { return }
+        let gap = Date().timeIntervalSince(lastBroadcastTickAt)
+        guard gap > suspensionGapThreshold else { return }
+        NSLog("[LocalControlServer] resumed after a %.0fs gap — resetting staleness clocks", gap)
+        lastComputerReportAt = Date()
+        castClientMissingSince = nil
+        for session in sockets {
+            socketLastSeen[session] = Date()
+        }
     }
 
     private func pruneStaleSockets() {
