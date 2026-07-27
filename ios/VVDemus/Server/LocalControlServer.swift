@@ -430,6 +430,19 @@ final class LocalControlServer: ObservableObject {
             return self.jsonResponse(self.onMain { RadioHistoryStore.shared.stations })
         }
 
+        // Downloading is phone-side storage, so the remote can only ask for it — which is
+        // all the iOS long-press menu does too.
+        server.POST["/api/library/download"] = { [weak self] request in
+            guard let self, let body: TrackOnlyBody = self.decodeBody(request) else { return .badRequest(.text("bad body")) }
+            self.onMain { DownloadManager.shared.download(body.track) }
+            return .ok(.text("ok"))
+        }
+        server.POST["/api/library/download/remove"] = { [weak self] request in
+            guard let self, let body: TrackOnlyBody = self.decodeBody(request) else { return .badRequest(.text("bad body")) }
+            self.onMain { DownloadManager.shared.remove(body.track) }
+            return .ok(.text("ok"))
+        }
+
         server.GET["/api/library/downloads"] = { [weak self] _ in
             guard let self else { return .internalServerError }
             return self.jsonResponse(self.onMain { DownloadManager.shared.downloadedTracks })

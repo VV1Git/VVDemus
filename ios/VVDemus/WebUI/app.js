@@ -130,6 +130,243 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
 
 document.getElementById("open-queue").onclick = () => showView("queue");
 
+// ---------- right-click track menu ----------
+
+/// The web counterpart of the app's long-press menu. Everything here already existed as an
+/// endpoint; the remote just had no way to reach most of it, so adding a song to a playlist
+/// or opening its radio meant picking up the phone.
+const contextMenuEl = document.getElementById("context-menu");
+
+const MENU_ICONS = {
+  playNext: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 6h11v2H3zm0 5h11v2H3zm0 5h7v2H3zm13-8 6 4-6 4z"/></svg>',
+  queue: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 6h13v2H3zm0 5h13v2H3zm0 5h9v2H3zm15-6h2v3h3v2h-3v3h-2v-3h-3v-2h3z"/></svg>',
+  radio: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM7.8 6.3 6.4 4.9a10 10 0 0 0 0 14.2l1.4-1.4a8 8 0 0 1 0-11.4zm8.4 0a8 8 0 0 1 0 11.4l1.4 1.4a10 10 0 0 0 0-14.2zM9.9 8.4 8.5 7a7 7 0 0 0 0 10l1.4-1.4a5 5 0 0 1 0-7.2zm4.2 0a5 5 0 0 1 0 7.2l1.4 1.4a7 7 0 0 0 0-10z"/></svg>',
+  playlist: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5h12v2H3zm0 4h12v2H3zm0 4h8v2H3zm14-4h2v4h4v2h-4v4h-2v-4h-4v-2h4z"/></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11 3h2v9l3.5-3.5 1.4 1.4L12 16 6.1 9.9l1.4-1.4L11 12zM5 18h14v2H5z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 3h8l1 2h4v2H3V5h4zM5 8h14l-1 12H6z"/></svg>',
+  back: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg>',
+};
+
+/// Downloaded state isn't part of the periodic state broadcast (it changes rarely and the
+/// list can be long), so it's fetched when a menu opens and cached briefly.
+let downloadsCache = { ids: new Set(), at: 0 };
+
+async function downloadedIds() {
+  if (Date.now() - downloadsCache.at < 15000) return downloadsCache.ids;
+  try {
+    const tracks = await api("/api/library/downloads");
+    downloadsCache = { ids: new Set(tracks.map((t) => t.videoId)), at: Date.now() };
+  } catch (e) {
+    /* keep whatever we had */
+  }
+  return downloadsCache.ids;
+}
+
+function closeContextMenu() {
+  contextMenuEl.classList.remove("open");
+  contextMenuEl.setAttribute("aria-hidden", "true");
+  contextMenuEl.innerHTML = "";
+}
+
+document.addEventListener("click", closeContextMenu);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeContextMenu();
+});
+window.addEventListener("blur", closeContextMenu);
+// Capture phase: the menu is fixed-positioned, so it would otherwise hang in place while
+// the list behind it scrolls away.
+document.addEventListener("scroll", closeContextMenu, true);
+window.addEventListener("resize", closeContextMenu);
+
+function menuButton(label, icon, onClick, { liked } = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.setAttribute("role", "menuitem");
+  button.innerHTML = `${icon}<span></span>`;
+  button.querySelector("span").textContent = label;
+  if (liked) button.classList.add("liked");
+  button.onclick = async (e) => {
+    e.stopPropagation();
+    closeContextMenu();
+    await onClick();
+  };
+  return button;
+}
+
+function menuSeparator() {
+  const el = document.createElement("div");
+  el.className = "context-menu-separator";
+  return el;
+}
+
+/// Positions the menu at the cursor, pulled back inside the viewport when it would
+/// otherwise overhang — right-clicking a row near the bottom of the window is the norm,
+/// not the exception.
+function placeContextMenu(x, y) {
+  contextMenuEl.classList.add("open");
+  contextMenuEl.setAttribute("aria-hidden", "false");
+  contextMenuEl.style.left = "0px";
+  contextMenuEl.style.top = "0px";
+  const rect = contextMenuEl.getBoundingClientRect();
+  const left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
+  const top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8));
+  contextMenuEl.style.left = `${left}px`;
+  contextMenuEl.style.top = `${top}px`;
+}
+
+async function openTrackMenu(event, track, { onRemove, removeLabel } = {}) {
+  event.preventDefault();
+  event.stopPropagation();
+  contextMenuEl.innerHTML = "";
+
+  const title = document.createElement("div");
+  title.className = "context-menu-title";
+  title.textContent = `${track.title} — ${track.artist}`;
+  contextMenuEl.appendChild(title);
+
+  contextMenuEl.appendChild(menuButton("Play Next", MENU_ICONS.playNext, () =>
+    post("/api/queue/play-next", { track }).then(refreshState)));
+  contextMenuEl.appendChild(menuButton("Add to Queue", MENU_ICONS.queue, () =>
+    post("/api/queue/add", { track }).then(refreshState)));
+
+  contextMenuEl.appendChild(menuSeparator());
+
+  contextMenuEl.appendChild(menuButton("Go to Radio", MENU_ICONS.radio, async () => {
+    const tracks = await api(`/api/radio?videoId=${encodeURIComponent(track.videoId)}`);
+    openRadioDetail(track, tracks);
+  }));
+
+  const isLiked = state.likedIds.has(track.videoId);
+  contextMenuEl.appendChild(menuButton(
+    isLiked ? "Remove from Liked Songs" : "Save to Liked Songs",
+    isLiked ? ICONS.heartFilled : ICONS.heartOutline,
+    () => post("/api/library/liked/toggle", { track }).then(refreshState),
+    { liked: isLiked }
+  ));
+
+  // Rendered immediately with a placeholder rather than awaited, so the menu appears
+  // under the cursor at once instead of after a round trip.
+  const playlistButton = menuButton("Add to Playlist", MENU_ICONS.playlist, () => {});
+  playlistButton.onclick = (e) => {
+    e.stopPropagation();
+    showPlaylistPicker(track);
+  };
+  contextMenuEl.appendChild(playlistButton);
+
+  const downloadSlot = document.createElement("div");
+  contextMenuEl.appendChild(downloadSlot);
+
+  if (onRemove) {
+    contextMenuEl.appendChild(menuSeparator());
+    contextMenuEl.appendChild(menuButton(removeLabel || "Remove from Queue", MENU_ICONS.trash, () => onRemove(track)));
+  }
+
+  placeContextMenu(event.clientX, event.clientY);
+
+  const downloaded = await downloadedIds();
+  if (!contextMenuEl.classList.contains("open")) return; // closed while we waited
+  downloadSlot.appendChild(
+    downloaded.has(track.videoId)
+      ? menuButton("Remove Download", MENU_ICONS.trash, async () => {
+          await post("/api/library/download/remove", { track });
+          downloadsCache.at = 0;
+        })
+      : menuButton("Download", MENU_ICONS.download, async () => {
+          await post("/api/library/download", { track });
+          downloadsCache.at = 0;
+        })
+  );
+  placeContextMenu(event.clientX, event.clientY); // re-clamp now that it's taller
+}
+
+/// Second level of the menu, shown in place rather than as a flyout — a nested submenu
+/// that has to track the cursor is far more code and far easier to get wrong.
+async function showPlaylistPicker(track) {
+  contextMenuEl.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.className = "context-menu-header";
+  header.textContent = "Add to playlist";
+  contextMenuEl.appendChild(header);
+
+  const back = menuButton("Back", MENU_ICONS.back, () => {});
+  back.onclick = (e) => {
+    e.stopPropagation();
+    openTrackMenu(
+      { preventDefault() {}, stopPropagation() {}, clientX: lastMenuPosition.x, clientY: lastMenuPosition.y },
+      track
+    );
+  };
+  contextMenuEl.appendChild(back);
+  contextMenuEl.appendChild(menuSeparator());
+
+  const listSlot = document.createElement("div");
+  contextMenuEl.appendChild(listSlot);
+
+  const newRow = document.createElement("div");
+  const newInput = document.createElement("input");
+  newInput.type = "text";
+  newInput.placeholder = "New playlist name…";
+  newInput.onclick = (e) => e.stopPropagation();
+  newInput.onkeydown = async (e) => {
+    e.stopPropagation();
+    if (e.key !== "Enter") return;
+    const name = newInput.value.trim();
+    if (!name) return;
+    closeContextMenu();
+    await post("/api/library/playlists/create", { name });
+    // create doesn't hand back an id, so find the playlist it just made by name.
+    const playlists = await api("/api/library/playlists");
+    const created = playlists.find((p) => p.name === name);
+    if (created) await post(`/api/library/playlists/${created.id}/add`, { track });
+    loadLibraryList();
+  };
+  newRow.appendChild(newInput);
+  contextMenuEl.appendChild(newRow);
+
+  placeContextMenu(lastMenuPosition.x, lastMenuPosition.y);
+
+  let playlists = [];
+  try {
+    playlists = await api("/api/library/playlists");
+  } catch (e) {
+    /* offline — the new-playlist field still works once the phone is back */
+  }
+  if (!contextMenuEl.classList.contains("open")) return;
+  playlists.forEach((playlist) => {
+    listSlot.appendChild(
+      menuButton(playlist.name, MENU_ICONS.playlist, async () => {
+        await post(`/api/library/playlists/${playlist.id}/add`, { track });
+        loadLibraryList();
+      })
+    );
+  });
+  placeContextMenu(lastMenuPosition.x, lastMenuPosition.y);
+  newInput.focus();
+}
+
+/// Remembered so the picker (and the way back out of it) can reopen in the same spot.
+let lastMenuPosition = { x: 0, y: 0 };
+
+function attachTrackMenu(element, track, opts) {
+  element.addEventListener("contextmenu", (e) => {
+    lastMenuPosition = { x: e.clientX, y: e.clientY };
+    openTrackMenu(e, track, opts);
+  });
+  // Touch equivalent, for driving the remote from a tablet.
+  let longPress = null;
+  element.addEventListener("touchstart", (e) => {
+    const touch = e.touches[0];
+    longPress = setTimeout(() => {
+      lastMenuPosition = { x: touch.clientX, y: touch.clientY };
+      openTrackMenu({ preventDefault() {}, stopPropagation() {}, clientX: touch.clientX, clientY: touch.clientY }, track, opts);
+    }, 500);
+  }, { passive: true });
+  ["touchend", "touchmove", "touchcancel"].forEach((ev) =>
+    element.addEventListener(ev, () => clearTimeout(longPress), { passive: true })
+  );
+}
+
 // ---------- track row rendering ----------
 
 function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
@@ -188,6 +425,7 @@ function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
 
   row.appendChild(actions);
   row.onclick = () => onPlay && onPlay(track);
+  attachTrackMenu(row, track, showRemove ? { onRemove, removeLabel: "Remove from Queue" } : {});
   return row;
 }
 
@@ -773,6 +1011,7 @@ function gridTrackCard(track, tracks, contextTitle) {
     post("/api/queue/add", { track });
   };
   card.onclick = () => post("/api/play", { track, context: tracks, contextTitle }).then(refreshState);
+  attachTrackMenu(card, track);
   return card;
 }
 
