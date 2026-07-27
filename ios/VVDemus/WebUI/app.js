@@ -44,6 +44,8 @@ const state = {
   playedWhileDisconnected: null,
   reconcileAttempts: 0,
   reconciling: false,
+  // Last library shape seen from the phone; a change reloads the sidebar.
+  librarySignature: null,
 };
 
 const audioEl = document.getElementById("np-audio");
@@ -373,9 +375,18 @@ function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
   const row = document.createElement("div");
   row.className = "track-row" + (state.current && state.current.videoId === track.videoId ? " active" : "");
 
+  const artwork = document.createElement("div");
+  artwork.className = "track-art";
   const img = document.createElement("img");
   img.src = art(track.thumbnailUrl, 44); // .track-row img is 44px
-  row.appendChild(img);
+  artwork.appendChild(img);
+  // Animated bars over the artwork of whatever is playing — a green title alone was easy
+  // to miss, especially in a long radio where several rows look alike.
+  const bars = document.createElement("span");
+  bars.className = "playing-bars";
+  bars.innerHTML = "<i></i><i></i><i></i>";
+  artwork.appendChild(bars);
+  row.appendChild(artwork);
 
   const meta = document.createElement("div");
   meta.className = "track-meta";
@@ -479,11 +490,16 @@ function openDetail(tracks, { title, subtitle, badge, imageURL, kind, seedTrack,
   document.getElementById("detail-art").innerHTML = imageURL ? `<img src="${imageURL}" alt="">` : "";
   document.getElementById("detail-refresh").style.display = showRefresh ? "flex" : "none";
 
-  renderList(document.getElementById("detail-list"), tracks, {
-    scope: `${kind || "detail"}:${title}`,
-    onPlay: (t) =>
-      post("/api/play", { track: t, context: tracks, contextTitle: title, contextSeed: detail.seedTrack }).then(refreshState),
-  });
+  // Kept so the open list can be re-rendered when the playing track changes — otherwise
+  // the highlight is frozen at whatever was playing when the view was opened, which is
+  // why starting a radio never showed which song was playing.
+  detail.rerender = () =>
+    renderList(document.getElementById("detail-list"), tracks, {
+      scope: `${kind || "detail"}:${title}`,
+      onPlay: (t) =>
+        post("/api/play", { track: t, context: tracks, contextTitle: title, contextSeed: detail.seedTrack }).then(refreshState),
+    });
+  detail.rerender();
   showView("detail");
 }
 
@@ -923,6 +939,19 @@ function renderNowPlaying(s) {
   document.getElementById("context-queue-title").textContent = s.queueContextTitle
     ? `Next from: ${s.queueContextTitle}`
     : "Next Up";
+  // Freezes the equalizer bars while paused, so the marker still shows where you are.
+  document.body.classList.toggle("playback-paused", !s.isPlaying);
+
+  // renderList no-ops when nothing changed, so this is only work when it matters.
+  if (detail.rerender) detail.rerender();
+
+  // A radio started from anywhere — this tab, the phone, or autoplay — shows up in the
+  // sidebar as soon as the phone reports its library changed shape.
+  if (state.librarySignature !== null && s.librarySignature !== state.librarySignature) {
+    loadLibraryList();
+  }
+  state.librarySignature = s.librarySignature;
+
   renderList(document.getElementById("context-queue-list"), s.contextQueue, {
     onPlay: (t) => post("/api/queue/skip-to", { track: t }),
     showRemove: true,

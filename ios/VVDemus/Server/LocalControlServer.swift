@@ -567,8 +567,21 @@ final class LocalControlServer: ObservableObject {
             playbackEpoch: player.playbackEpoch,
             trackLoadEpoch: player.trackLoadEpoch,
             nextTrack: player.activeDevice == .computer ? player.upNextTrack : nil,
-            nextStreamUrl: player.activeDevice == .computer ? player.upNextStream?.url : nil
+            nextStreamUrl: player.activeDevice == .computer ? player.upNextStream?.url : nil,
+            librarySignature: Self.librarySignature()
         )
+    }
+
+    /// Cheap fingerprint of the library's shape. Deliberately only ids and counts — the
+    /// point is to tell the remote *that* something changed, not to ship the contents on
+    /// every broadcast.
+    @MainActor
+    private static func librarySignature() -> Int {
+        var hasher = Hasher()
+        hasher.combine(RadioHistoryStore.shared.stations.map(\.seedTrack.videoId))
+        hasher.combine(PlaylistStore.shared.playlists.map { "\($0.id)-\($0.tracks.count)" })
+        hasher.combine(DownloadManager.shared.downloadedTracks.count)
+        return hasher.finalize()
     }
 
     private func broadcastCommand(_ command: PlayerService.PlaybackCommand) {
@@ -662,7 +675,11 @@ final class LocalControlServer: ObservableObject {
             fallBackToPhone()
             return
         }
-        guard !castClientIsConnected else {
+        // The socket being gone is, on its own, no more trustworthy than reports being
+        // stale: locking the phone can drop the connection for a moment while the browser
+        // carries on playing perfectly well, and reacting to that produced the same jump
+        // to the phone and back. Both signals have to agree the browser is gone.
+        guard !castClientIsConnected, !browserIsStillReporting else {
             castClientMissingSince = nil
             return
         }
@@ -707,6 +724,14 @@ final class LocalControlServer: ObservableObject {
         // to the computer. A tab whose heartbeat is still arriving is demonstrably alive
         // and still has the audio; only when that stops too is it really gone.
         return castClientHeartbeatAge < castHeartbeatTimeout
+    }
+
+    /// Whether progress reports are still arriving. HTTP can keep working while a
+    /// WebSocket is down (and reconnecting), so this is the independent second opinion on
+    /// whether the browser is still there.
+    private var browserIsStillReporting: Bool {
+        guard let lastComputerReportAt else { return false }
+        return Date().timeIntervalSince(lastComputerReportAt) < computerReportTimeout
     }
 
     private var castClientHeartbeatAge: TimeInterval {

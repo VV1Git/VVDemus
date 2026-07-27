@@ -56,6 +56,10 @@ struct StateSnapshot: Codable {
     /// carry on by itself if the phone is unreachable when the current track ends.
     let nextTrack: Track?
     let nextStreamUrl: String?
+    /// Changes whenever the library's shape does — radio stations, playlists, downloads.
+    /// The web remote reloads its sidebar when this moves, so a radio you just started
+    /// appears under Radio straight away instead of only after a page reload.
+    let librarySignature: Int
 
     /// Identifies the contents of the heavy fields, so an unchanged one can be left out of
     /// the next broadcast.
@@ -91,7 +95,8 @@ struct StateSnapshot: Codable {
             playbackEpoch: playbackEpoch,
             trackLoadEpoch: trackLoadEpoch,
             nextTrack: nextTrack,
-            nextStreamUrl: nextStreamUrl
+            nextStreamUrl: nextStreamUrl,
+            librarySignature: librarySignature
         )
     }
 }

@@ -5,10 +5,21 @@ struct TrackRow: View {
     var isActive: Bool = false
     @ObservedObject private var liked = LikedSongsStore.shared
     @ObservedObject private var downloads = DownloadManager.shared
+    /// Observed directly rather than passed in, so every existing call site keeps working.
+    @ObservedObject private var player = PlayerService.shared
 
     var body: some View {
         HStack(spacing: 12) {
-            RemoteImage(url: track.thumbnailUrl, size: 48)
+            ZStack {
+                RemoteImage(url: track.thumbnailUrl, size: 48)
+                if isActive {
+                    // A green title on its own was easy to miss halfway down a radio.
+                    EqualizerBars(isAnimating: player.isPlaying)
+                        .frame(width: 48, height: 48)
+                        .background(Color.black.opacity(0.55))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
@@ -56,5 +67,30 @@ struct TrackRow: View {
             }
             .buttonStyle(.pressable)
         }
+    }
+}
+
+
+/// Three bars that rise and fall while something is playing, and hold still when paused.
+private struct EqualizerBars: View {
+    let isAnimating: Bool
+    @State private var raised = false
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(0..<3, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Theme.accent)
+                    .frame(width: 3, height: raised ? 16 : 6)
+                    .animation(
+                        isAnimating
+                            ? .easeInOut(duration: 0.45).repeatForever(autoreverses: true).delay(Double(index) * 0.15)
+                            : .default,
+                        value: raised
+                    )
+            }
+        }
+        .frame(height: 18)
+        .onAppear { raised = true }
     }
 }

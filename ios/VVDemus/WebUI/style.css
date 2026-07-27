@@ -534,6 +534,13 @@ svg { display: block; }
 
 .track-row:hover { background: rgba(255,255,255,0.06); }
 
+.track-art {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+}
+
 .track-row img {
   width: 44px;
   height: 44px;
@@ -989,4 +996,46 @@ button[disabled]:active { transform: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .context-menu button { transition: none; }
+}
+
+/* ---------- now-playing indicator ---------- */
+
+/* Sits over the artwork of the playing row. Hidden unless the row is active, so the
+   markup can be identical for every row. */
+.playing-bars {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  padding-bottom: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+}
+
+.track-row.active .playing-bars { display: flex; }
+
+.playing-bars i {
+  width: 3px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 1px;
+  transform-origin: bottom;
+  animation: playing-bar 0.9s ease-in-out infinite alternate;
+}
+
+.playing-bars i:nth-child(2) { animation-delay: 0.3s; }
+.playing-bars i:nth-child(3) { animation-delay: 0.6s; }
+
+@keyframes playing-bar {
+  from { transform: scaleY(0.35); }
+  to   { transform: scaleY(1); }
+}
+
+/* Paused: keep the marker so you can still see where you are, but stop the animation. */
+body.playback-paused .playing-bars i { animation-play-state: paused; }
+
+@media (prefers-reduced-motion: reduce) {
+  .playing-bars i { animation: none; transform: scaleY(0.7); }
 }
