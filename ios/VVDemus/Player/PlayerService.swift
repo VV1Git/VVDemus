@@ -781,14 +781,20 @@ final class PlayerService: ObservableObject {
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
         }
-        let item = PlayerService.makePlayerItem(for: url)
-        activeResourceLoader = item.resourceLoader
-        itemStatusObservation = item.item.observe(\.status, options: [.new]) { playerItem, _ in
+        // Unpacked into its own binding because `makePlayerItem` returns a pair. The
+        // end-of-track observer below was registered against the *pair* rather than the
+        // player item, which silently compiles (`object:` takes `Any?`) but can never
+        // match the notification AVFoundation posts — so nothing ever advanced when a
+        // track finished on this phone, in the foreground or otherwise. Playback simply
+        // sat at the end of the song.
+        let (playerItem, resourceLoader) = PlayerService.makePlayerItem(for: url)
+        activeResourceLoader = resourceLoader
+        itemStatusObservation = playerItem.observe(\.status, options: [.new]) { playerItem, _ in
             if playerItem.status == .failed {
                 NSLog("[PlayerService] AVPlayerItem failed: %@", playerItem.error?.localizedDescription ?? "unknown")
             }
         }
-        player.replaceCurrentItem(with: item.item)
+        player.replaceCurrentItem(with: playerItem)
         if resumeAt > 0 {
             player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
             progress = resumeAt
@@ -805,7 +811,7 @@ final class PlayerService: ObservableObject {
 
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
-            object: item,
+            object: playerItem,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.advance() }
