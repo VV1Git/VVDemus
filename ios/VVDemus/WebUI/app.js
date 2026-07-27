@@ -742,6 +742,20 @@ function armGestureRetry() {
   document.addEventListener("pointerdown", retry, true);
 }
 
+/// Puts the current track in the browser tab, so the song is readable from the tab strip
+/// with the remote in the background — which is where it spends most of its time.
+/// Rewritten only when it actually changes: this runs on every state broadcast, and
+/// assigning document.title once a second makes the tab flicker in some browsers.
+function renderDocumentTitle(s) {
+  const track = s && s.currentTrack;
+  const next = !track
+    ? "Spotify"
+    : s.isPlaying
+      ? `${track.title} • ${track.artist}`
+      : `${track.title} • ${track.artist} — paused`;
+  if (document.title !== next) document.title = next;
+}
+
 function renderDeviceLabel() {
   const s = state.last;
   const label = document.getElementById("np-device-label");
@@ -863,6 +877,7 @@ function renderNowPlaying(s) {
   state.epoch = s.playbackEpoch;
   syncCastAudio(s); // sets state.isCastTab, which the label depends on
   renderDeviceLabel();
+  renderDocumentTitle(s);
   const npArt = document.getElementById("np-art");
   npArt.src = s.currentTrack ? art(s.currentTrack.thumbnailUrl, 56) : "";
   // The phone resolving a stream can take a second or two; without any sign of it, the
