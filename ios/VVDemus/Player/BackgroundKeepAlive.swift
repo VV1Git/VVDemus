@@ -48,8 +48,10 @@ final class BackgroundKeepAlive {
               let url = Bundle.main.url(forResource: "silence", withExtension: "m4a") else { return }
         // The session can have been deactivated while the app sat paused in the
         // background; without reactivating it here `play()` silently does nothing and the
-        // app is suspended anyway.
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // app is suspended anyway. Reasserted through PlayerService so the mixing option
+        // used while casting is preserved — otherwise this clip would grab the output
+        // route back and pull AirPods away from the computer.
+        PlayerService.configureAudioSession(casting: PlayerService.shared.activeDevice == .computer)
         guard let audioPlayer = try? AVAudioPlayer(contentsOf: url) else { return }
         audioPlayer.numberOfLoops = -1
         audioPlayer.volume = 0.01

@@ -46,6 +46,10 @@ const state = {
   reconciling: false,
   // Last library shape seen from the phone; a change reloads the sidebar.
   librarySignature: null,
+  // Until this moment, play/pause events from the element are our own doing rather than
+  // the operating system's.
+  ignoreEchoUntil: 0,
+  mediaSessionTrack: null,
 };
 
 const audioEl = document.getElementById("np-audio");
@@ -711,6 +715,7 @@ async function reconcileAfterDisconnection() {
 /// old audio for a moment and report it to the phone as though it were the current track.
 /// `load()` runs the resource selection algorithm again on an empty src, which aborts it.
 function releaseAudioElement() {
+  suppressPlaybackEcho();
   audioEl.pause();
   audioEl.removeAttribute("src");
   audioEl.load();
@@ -752,6 +757,7 @@ document.querySelectorAll("#np-device-menu button").forEach((btn) => {
 /// failing silently, arm a one-shot retry on the next click anywhere and say so in the
 /// device label.
 function playCastAudio() {
+  suppressPlaybackEcho();
   const p = audioEl.play();
   if (p && p.catch) p.catch(() => armGestureRetry());
 }
@@ -842,6 +848,7 @@ function syncCastAudio(s) {
     // Don't hammer a URL that just failed to load; let the next track (or a re-resolve
     // after a device switch) get a fresh one instead of retrying every broadcast tick.
     if (s.streamUrl === state.failedSrc && Date.now() - state.failedAt < 5000) return;
+    suppressPlaybackEcho();
     audioEl.src = s.streamUrl;
     // Explicit, because re-assigning the *same* URL (the restart-current-track case) is
     // not guaranteed to start the media load algorithm over on its own.
@@ -855,8 +862,38 @@ function syncCastAudio(s) {
     audioEl.addEventListener("ended", handleRealTrackEnded);
   }
   if (s.isPlaying && audioEl.paused) playCastAudio();
-  if (!s.isPlaying && !audioEl.paused) audioEl.pause();
+  if (!s.isPlaying && !audioEl.paused) {
+    suppressPlaybackEcho();
+    audioEl.pause();
+  }
 }
+
+/// Changing `src`, or starting/stopping playback ourselves, makes the element fire the
+/// same play/pause events the operating system's controls do. This marks a short window
+/// in which those events are known to be our own doing.
+function suppressPlaybackEcho() {
+  state.ignoreEchoUntil = Date.now() + 1200;
+}
+
+/// macOS Control Center, the media keys and the Touch Bar all act on the <audio> element
+/// directly — the phone never hears about it. So the next state broadcast, still saying
+/// "playing", would find the element paused and start it again: pressing pause stopped
+/// the music for a moment and then it carried on.
+///
+/// Instead, a play/pause that disagrees with what the phone believes is treated as a
+/// genuine instruction and sent on, so the phone becomes the one source of truth again.
+function onPlaybackEcho(nowPlaying) {
+  if (!state.isCastTab || audioEl.ended) return;
+  if (Date.now() < (state.ignoreEchoUntil || 0)) return;
+  // Mid-load the element reports paused without anyone having asked for it.
+  if (audioEl.readyState < 2) return;
+  const phoneThinksPlaying = state.last ? state.last.isPlaying : false;
+  if (phoneThinksPlaying === nowPlaying) return;
+  post("/api/toggle").then(refreshState).catch(() => {});
+}
+
+audioEl.addEventListener("pause", () => onPlaybackEcho(false));
+audioEl.addEventListener("play", () => onPlaybackEcho(true));
 
 audioEl.addEventListener("error", () => {
   // Lets the next state sync retry the load (e.g. a transiently expired/failed stream
@@ -893,6 +930,86 @@ audioEl.addEventListener("timeupdate", () => {
     isPlaying: !audioEl.paused,
   });
 });
+
+// ---------- macOS / OS media controls ----------
+
+/// Registers this tab with the operating system's media controls, so Control Center, the
+/// media keys, the Touch Bar and the lock screen can drive playback — and show what's on.
+///
+/// Without this the OS could only reach the raw <audio> element: pause worked for a
+/// moment before the next state broadcast undid it, and skip/rewind did nothing at all
+/// because there is nothing in the element itself to skip to. Each control is mapped to
+/// the same endpoint the on-screen buttons use, so the phone stays the source of truth.
+function setupMediaSession() {
+  if (!("mediaSession" in navigator)) return;
+  const handlers = {
+    play: () => post("/api/toggle").then(refreshState),
+    pause: () => post("/api/toggle").then(refreshState),
+    nexttrack: () => post("/api/next").then(refreshState),
+    previoustrack: () => post("/api/previous").then(refreshState),
+    seekto: (details) => {
+      if (typeof details.seekTime !== "number") return;
+      suppressPlaybackEcho();
+      audioEl.currentTime = details.seekTime;
+      post("/api/seek", { seconds: details.seekTime }).then(refreshState);
+    },
+    seekforward: (d) => seekRelative(d.seekOffset || 10),
+    seekbackward: (d) => seekRelative(-(d.seekOffset || 10)),
+    stop: () => post("/api/toggle").then(refreshState),
+  };
+  for (const [action, handler] of Object.entries(handlers)) {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler);
+    } catch (e) {
+      /* not every browser supports every action */
+    }
+  }
+}
+
+function seekRelative(delta) {
+  const target = Math.max(0, (state.last ? state.last.progress : 0) + delta);
+  suppressPlaybackEcho();
+  if (audioEl.src) audioEl.currentTime = target;
+  post("/api/seek", { seconds: target }).then(refreshState);
+}
+
+/// Feeds the OS the track details it displays next to those controls. Only rebuilt when
+/// the track changes — MediaMetadata triggers an artwork fetch, so doing this on every
+/// state broadcast would re-download the artwork once a second.
+function renderMediaSession(s) {
+  if (!("mediaSession" in navigator)) return;
+  const track = state.isCastTab ? s.currentTrack : null;
+  if (!track) {
+    navigator.mediaSession.metadata = null;
+    navigator.mediaSession.playbackState = "none";
+    state.mediaSessionTrack = null;
+    return;
+  }
+  if (state.mediaSessionTrack !== track.videoId) {
+    state.mediaSessionTrack = track.videoId;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: track.title,
+      artist: track.artist,
+      album: track.album || "",
+      artwork: track.thumbnailUrl
+        ? [{ src: art(track.thumbnailUrl, 256), sizes: "256x256", type: "image/jpeg" }]
+        : [],
+    });
+  }
+  navigator.mediaSession.playbackState = s.isPlaying ? "playing" : "paused";
+  // Drives the scrubber in Control Center.
+  if (navigator.mediaSession.setPositionState && isFinite(s.duration) && s.duration > 0) {
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: s.duration,
+        position: Math.min(Math.max(s.progress, 0), s.duration),
+        playbackRate: 1,
+      });
+    } catch (e) {
+      /* position outside duration during a track change */
+    }
+  }
+}
 
 // ---------- now playing ----------
 
@@ -939,6 +1056,8 @@ function renderNowPlaying(s) {
   document.getElementById("context-queue-title").textContent = s.queueContextTitle
     ? `Next from: ${s.queueContextTitle}`
     : "Next Up";
+  renderMediaSession(s);
+
   // Freezes the equalizer bars while paused, so the marker still shows where you are.
   document.body.classList.toggle("playback-paused", !s.isPlaying);
 
@@ -1269,6 +1388,7 @@ function connectWebSocket() {
 
 // ---------- init ----------
 
+setupMediaSession();
 loadHome();
 loadLibraryList();
 refreshState();

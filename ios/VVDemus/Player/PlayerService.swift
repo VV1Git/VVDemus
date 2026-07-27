@@ -380,6 +380,7 @@ final class PlayerService: ObservableObject {
         guard device != activeDevice else { return }
         activeDevice = device
         bumpPlaybackEpoch()
+        Self.configureAudioSession(casting: device == .computer)
         switch device {
         case .computer:
             player.pause()
@@ -745,6 +746,25 @@ final class PlayerService: ObservableObject {
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = forwardBufferDuration
         return (item, loader)
+    }
+
+    /// While the computer is the one making sound, this phone's session is set to mix
+    /// rather than take the output route for itself. It is still playing audio in the
+    /// background — the near-silent keep-alive clip that holds the server up — and a phone
+    /// holding the route is what keeps AirPods paired to it instead of following the Mac.
+    /// Mixing keeps the background-audio entitlement (the category is still `.playback`)
+    /// without claiming to be what you're listening to.
+    ///
+    /// Note that automatic AirPods switching is the operating system's own heuristic; this
+    /// removes a reason for it to stay put, but can't force the change.
+    static func configureAudioSession(casting: Bool) {
+        let session = AVAudioSession.sharedInstance()
+        if casting {
+            try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        } else {
+            try? session.setCategory(.playback, mode: .default)
+        }
+        try? session.setActive(true)
     }
 
     /// Left to its own devices AVFoundation happily pulls a whole progressive audio file
