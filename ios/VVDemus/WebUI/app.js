@@ -50,6 +50,8 @@ const state = {
   // the operating system's.
   ignoreEchoUntil: 0,
   mediaSessionTrack: null,
+  // A play/pause relayed to the phone that we haven't seen come back yet.
+  pendingPlayIntent: null,
 };
 
 const audioEl = document.getElementById("np-audio");
@@ -724,6 +726,7 @@ function releaseAudioElement() {
 }
 
 function unlockAudioElementForGesture() {
+  suppressPlaybackEcho();
   try {
     audioEl.removeEventListener("ended", handleRealTrackEnded);
     audioEl.src = SILENT_UNLOCK_SRC;
@@ -861,8 +864,9 @@ function syncCastAudio(s) {
     // whether it's already attached.
     audioEl.addEventListener("ended", handleRealTrackEnded);
   }
-  if (s.isPlaying && audioEl.paused) playCastAudio();
-  if (!s.isPlaying && !audioEl.paused) {
+  const shouldPlay = desiredPlayState(s);
+  if (shouldPlay && audioEl.paused) playCastAudio();
+  if (!shouldPlay && !audioEl.paused) {
     suppressPlaybackEcho();
     audioEl.pause();
   }
@@ -884,12 +888,48 @@ function suppressPlaybackEcho() {
 /// genuine instruction and sent on, so the phone becomes the one source of truth again.
 function onPlaybackEcho(nowPlaying) {
   if (!state.isCastTab || audioEl.ended) return;
+  // The silent clip played to unlock autoplay is our own doing, not the user's — reading
+  // its play event as intent started a paused track playing on handover.
+  if (audioEl.currentSrc === SILENT_UNLOCK_SRC) return;
   if (Date.now() < (state.ignoreEchoUntil || 0)) return;
-  // Mid-load the element reports paused without anyone having asked for it.
-  if (audioEl.readyState < 2) return;
-  const phoneThinksPlaying = state.last ? state.last.isPlaying : false;
-  if (phoneThinksPlaying === nowPlaying) return;
+  // Nothing loaded yet — the element reports paused without anyone having asked for it.
+  if (!audioEl.getAttribute("src")) return;
+  // Only skip when we positively know the phone already agrees. With no state yet,
+  // swallowing the instruction would leave the audio running after the OS paused it.
+  if (state.last && state.last.isPlaying === nowPlaying) return;
+
+  // Hold on to what was asked for until the phone reflects it. Telling the phone isn't
+  // instant, and a state broadcast arriving in the meantime still says "playing" — which
+  // would restart the audio a moment after it was paused. That half-second of sound is
+  // enough to stop AirPods handing over to the Mac, since the handover waits for the
+  // current device to actually go quiet.
+  state.pendingPlayIntent = { playing: nowPlaying, at: Date.now() };
   post("/api/toggle").then(refreshState).catch(() => {});
+}
+
+/// What playback *should* be doing: normally whatever the phone says, but an instruction
+/// we've just relayed and are still waiting to see reflected wins until it lands.
+function desiredPlayState(s) {
+  const pending = state.pendingPlayIntent;
+  if (!pending) return s.isPlaying;
+  if (s.isPlaying === pending.playing) {
+    state.pendingPlayIntent = null;
+    return s.isPlaying;
+  }
+  const age = Date.now() - pending.at;
+  if (age > 2500 && !pending.retried) {
+    // The request can simply have been lost. Ask again rather than letting audio the OS
+    // stopped spring back to life — this failing towards "starts playing on its own" is
+    // exactly what breaks an AirPods handover.
+    pending.retried = true;
+    pending.at = Date.now();
+    post("/api/toggle").then(refreshState).catch(() => {});
+  } else if (age > 5000) {
+    // Give up rather than diverge from the phone indefinitely.
+    state.pendingPlayIntent = null;
+    return s.isPlaying;
+  }
+  return pending.playing;
 }
 
 audioEl.addEventListener("pause", () => onPlaybackEcho(false));
