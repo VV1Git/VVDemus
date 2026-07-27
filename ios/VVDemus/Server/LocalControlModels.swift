@@ -165,6 +165,9 @@ struct PlayRequestBody: Decodable {
     let track: Track
     let context: [Track]?
     let contextTitle: String?
+    /// The track a radio was built from, when the browser is playing out of a radio — so
+    /// the station gets filed under Your Radio exactly as it would from the phone.
+    let contextSeed: Track?
 }
 
 struct SeekRequestBody: Decodable {

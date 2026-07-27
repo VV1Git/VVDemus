@@ -249,7 +249,13 @@ final class PlayerService: ObservableObject {
     // MARK: - Playback entry points
 
     /// Play `track`, queuing up whatever comes after it in `context` (the list it was tapped from).
-    func play(track: Track, context: [Track] = [], contextTitle: String? = nil) {
+    ///
+    /// `contextSeed` is the track a radio was generated from, when the context is a radio.
+    /// Passing it here is what files the station under Your Radio — previously that only
+    /// happened via the Play button on a radio's own screen, so tapping a song inside a
+    /// radio, or starting one from the web remote, left no trace of the station at all.
+    func play(track: Track, context: [Track] = [], contextTitle: String? = nil, contextSeed: Track? = nil) {
+        if let contextSeed { RadioHistoryStore.shared.record(seed: contextSeed) }
         manualQueue = []
         isShuffling = false
         if let index = context.firstIndex(where: { $0.id == track.id }) {
@@ -534,6 +540,8 @@ final class PlayerService: ObservableObject {
                 orderedContextQueue = Array(fresh.dropFirst())
                 contextQueue = isShuffling ? orderedContextQueue.shuffled() : orderedContextQueue
                 queueContextTitle = "\(seed.title) Radio"
+                // Autoplay rolling into a radio counts as listening to it.
+                RadioHistoryStore.shared.record(seed: seed)
                 load(next)
             } catch {
                 guard !Task.isCancelled else { return }

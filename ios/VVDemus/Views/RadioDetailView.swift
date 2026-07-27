@@ -63,7 +63,7 @@ struct RadioDetailView: View {
                             .listRowBackground(Theme.background)
                             .listRowSeparatorTint(Theme.card)
                             .onTapGesture {
-                                player.play(track: track, context: tracks, contextTitle: title)
+                                player.play(track: track, context: tracks, contextTitle: title, contextSeed: seedTrack)
                             }
                             .trackActions(track: track, player: player)
                     }
@@ -104,8 +104,7 @@ struct RadioDetailView: View {
     private func playAll(shuffled: Bool) {
         guard !tracks.isEmpty else { return }
         let ordered = shuffled ? tracks.shuffled() : tracks
-        player.play(track: ordered[0], context: ordered, contextTitle: title)
-        RadioHistoryStore.shared.record(seed: seedTrack)
+        player.play(track: ordered[0], context: ordered, contextTitle: title, contextSeed: seedTrack)
     }
 
     private func fetchTracks() async throws -> [Track] {

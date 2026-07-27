@@ -481,20 +481,31 @@ function openDetail(tracks, { title, subtitle, badge, imageURL, kind, seedTrack,
 
   renderList(document.getElementById("detail-list"), tracks, {
     scope: `${kind || "detail"}:${title}`,
-    onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: title }).then(refreshState),
+    onPlay: (t) =>
+      post("/api/play", { track: t, context: tracks, contextTitle: title, contextSeed: detail.seedTrack }).then(refreshState),
   });
   showView("detail");
 }
 
 document.getElementById("detail-play").onclick = () => {
   if (!detail.tracks.length) return;
-  post("/api/play", { track: detail.tracks[0], context: detail.tracks, contextTitle: detail.title }).then(refreshState);
+  post("/api/play", {
+    track: detail.tracks[0],
+    context: detail.tracks,
+    contextTitle: detail.title,
+    contextSeed: detail.seedTrack,
+  }).then(refreshState);
 };
 
 document.getElementById("detail-shuffle").onclick = () => {
   if (!detail.tracks.length) return;
   const shuffled = [...detail.tracks].sort(() => Math.random() - 0.5);
-  post("/api/play", { track: shuffled[0], context: shuffled, contextTitle: detail.title }).then(refreshState);
+  post("/api/play", {
+    track: shuffled[0],
+    context: shuffled,
+    contextTitle: detail.title,
+    contextSeed: detail.seedTrack,
+  }).then(refreshState);
 };
 
 document.getElementById("detail-refresh").onclick = async () => {

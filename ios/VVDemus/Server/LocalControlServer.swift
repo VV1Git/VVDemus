@@ -203,7 +203,12 @@ final class LocalControlServer: ObservableObject {
         server.POST["/api/play"] = { [weak self] request in
             guard let self, let body: PlayRequestBody = self.decodeBody(request) else { return .badRequest(.text("bad body")) }
             self.onMain {
-                PlayerService.shared.play(track: body.track, context: body.context ?? [], contextTitle: body.contextTitle)
+                PlayerService.shared.play(
+                    track: body.track,
+                    context: body.context ?? [],
+                    contextTitle: body.contextTitle,
+                    contextSeed: body.contextSeed
+                )
             }
             return .ok(.text("ok"))
         }
