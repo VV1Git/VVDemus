@@ -81,12 +81,33 @@ struct RootView: View {
     /// playing, no need to do anything", while in reality the phone was silent. Locking
     /// the phone then let iOS suspend the app about thirty seconds later, killing the
     /// server, the browser's connection, and the music with it.
+    /// While the computer is playing, this phone holds a near-silent audio session purely
+    /// to stay alive. The moment playback is paused, that leaves the phone as the only
+    /// device making any sound at all — which is precisely the cue AirPods use to decide
+    /// you've moved back to it. Pausing on the Mac would pause, and then the AirPods would
+    /// hop to the phone.
+    ///
+    /// So when the computer is the active device and nothing is playing, the phone lets
+    /// the audio route go entirely. Nothing is playing anywhere, so it has no business
+    /// claiming it.
+    private var shouldHoldAudioSession: Bool {
+        if player.activeDevice == .computer && !player.isPlaying { return false }
+        return !phoneIsProducingAudio
+    }
+
     private func updateBackgroundKeepAlive() {
-        let shouldKeepAlive = scenePhase == .background && controlServer.isRunning && !phoneIsProducingAudio
+        let shouldKeepAlive = scenePhase == .background && controlServer.isRunning && shouldHoldAudioSession
         if shouldKeepAlive {
             BackgroundKeepAlive.shared.start()
         } else {
-            BackgroundKeepAlive.shared.stop()
+            // Releasing the session (rather than merely stopping the clip) is what actually
+            // hands the route back — a still-active session keeps the phone in the running
+            // as far as automatic switching is concerned. Only safe because this branch
+            // means the phone isn't playing anything of its own.
+            BackgroundKeepAlive.shared.stop(releasingSession: !phoneIsProducingAudio)
+            // Buys a fresh window of life for the server now that audio isn't holding it
+            // up, so pausing doesn't immediately cost the remote its connection.
+            if scenePhase == .background { controlServer.renewBackgroundTask() }
         }
     }
 }

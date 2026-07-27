@@ -114,6 +114,20 @@ final class LocalControlServer: ObservableObject {
         }
     }
 
+    /// Starts a fresh background window. Used when the keep-alive audio is deliberately
+    /// given up while backgrounded, so the server isn't left with whatever remained of the
+    /// original grace period.
+    func renewBackgroundTask() {
+        guard isRunning else { return }
+        let previous = backgroundTask
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "VVDemusConnect") { [weak self] in
+            guard let self else { return }
+            UIApplication.shared.endBackgroundTask(self.backgroundTask)
+            self.backgroundTask = .invalid
+        }
+        if previous != .invalid { UIApplication.shared.endBackgroundTask(previous) }
+    }
+
     func applicationWillEnterForeground() {
         guard backgroundTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(backgroundTask)

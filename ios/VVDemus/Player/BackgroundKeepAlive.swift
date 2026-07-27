@@ -35,10 +35,17 @@ final class BackgroundKeepAlive {
         startPlayer()
     }
 
-    func stop() {
+    /// - Parameter releasingSession: also deactivate the audio session, handing the output
+    ///   route back to whatever else is playing. Stopping the clip alone leaves the session
+    ///   active, which is enough for the phone to still be considered an audio device in
+    ///   use — and enough to pull AirPods back from a Mac. Must only be true when this
+    ///   phone genuinely isn't playing anything.
+    func stop(releasingSession: Bool = false) {
         shouldBeRunning = false
         player?.stop()
         player = nil
+        guard releasingSession else { return }
+        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
     var isRunning: Bool { player?.isPlaying ?? false }
