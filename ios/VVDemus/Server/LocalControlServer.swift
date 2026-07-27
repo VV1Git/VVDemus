@@ -82,6 +82,15 @@ final class LocalControlServer: ObservableObject {
     /// When the 1Hz broadcast last ran, used to notice that the app was suspended.
     private var lastBroadcastTickAt: Date?
     private let suspensionGapThreshold: TimeInterval = 5
+    /// The last time this app's own timing was unreliable — a missed broadcast tick, or
+    /// being sent to the background. Every staleness check here measures wall-clock time,
+    /// so during and just after such a moment they all read as overdue at once and would
+    /// blame the browser for the phone's own stall.
+    private var lastIrregularTickAt: Date?
+    private let tickSettlingPeriod: TimeInterval = 10
+    /// How long the casting tab's WebSocket heartbeat may be silent before the tab counts
+    /// as genuinely gone. The client pings every 15s.
+    private let castHeartbeatTimeout: TimeInterval = 20
     private var broadcastTimer: Timer?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
@@ -94,6 +103,9 @@ final class LocalControlServer: ObservableObject {
     /// buys a further, one-time ~30s grace window on top of that for whichever of the two
     /// is already covering the moment backgrounding happens.
     func applicationDidEnterBackground() {
+        // Backgrounding stalls the run loop briefly; anything measured in wall-clock time
+        // across that moment is not evidence about the browser.
+        lastIrregularTickAt = Date()
         guard isRunning, backgroundTask == .invalid else { return }
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "VVDemusConnect") { [weak self] in
             guard let self else { return }
@@ -303,7 +315,7 @@ final class LocalControlServer: ObservableObject {
 
         server.GET["/api/search"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            let query = request.queryParams.first(where: { $0.0 == "q" })?.1 ?? ""
+            let query = Self.queryValue(request, "q")
             guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return self.jsonResponse([Track]()) }
             switch self.awaitAsync({ try await APIClient.shared.search(query) }) {
             case .success(let tracks): return self.jsonResponse(tracks)
@@ -324,7 +336,8 @@ final class LocalControlServer: ObservableObject {
 
         server.GET["/api/radio"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard let videoId = request.queryParams.first(where: { $0.0 == "videoId" })?.1 else {
+            let videoId = Self.queryValue(request, "videoId")
+            guard !videoId.isEmpty else {
                 return .badRequest(.text("missing videoId"))
             }
             // Serve the same cached mix the phone would show, so opening a radio from
@@ -591,6 +604,9 @@ final class LocalControlServer: ObservableObject {
         defer { lastBroadcastTickAt = Date() }
         guard let lastBroadcastTickAt else { return }
         let gap = Date().timeIntervalSince(lastBroadcastTickAt)
+        // This timer is supposed to fire every second. Even a couple of seconds of drift
+        // means the run loop was held up, which is exactly when these checks misfire.
+        if gap > 2 { lastIrregularTickAt = Date() }
         guard gap > suspensionGapThreshold else { return }
         NSLog("[LocalControlServer] resumed after a %.0fs gap — resetting staleness clocks", gap)
         lastComputerReportAt = Date()
@@ -627,6 +643,11 @@ final class LocalControlServer: ObservableObject {
         if lastSeenTrackLoadEpoch != trackLoadEpoch {
             lastSeenTrackLoadEpoch = trackLoadEpoch
             lastComputerReportAt = Date()
+        }
+        // Don't judge the browser on measurements taken across a stall of our own.
+        if let lastIrregularTickAt, Date().timeIntervalSince(lastIrregularTickAt) < tickSettlingPeriod {
+            castClientMissingSince = nil
+            return
         }
         // Silence while playback is supposed to be running is conclusive on its own — the
         // timeout is already a generous window, so no further grace is added on top; the
@@ -674,7 +695,20 @@ final class LocalControlServer: ObservableObject {
     private var computerIsReportingPlayback: Bool {
         guard PlayerService.shared.isPlaying else { return true }
         guard let lastComputerReportAt else { return true }
-        return Date().timeIntervalSince(lastComputerReportAt) < computerReportTimeout
+        guard Date().timeIntervalSince(lastComputerReportAt) >= computerReportTimeout else { return true }
+        // Progress reports have stopped — but that alone was too eager. Locking the phone
+        // interrupts its own networking for a moment, and taking playback back on the
+        // strength of that produced a very visible switch to the phone and straight back
+        // to the computer. A tab whose heartbeat is still arriving is demonstrably alive
+        // and still has the audio; only when that stops too is it really gone.
+        return castClientHeartbeatAge < castHeartbeatTimeout
+    }
+
+    private var castClientHeartbeatAge: TimeInterval {
+        guard let castClientId,
+              let session = sockets.first(where: { socketClientIds[$0] == castClientId }),
+              let seen = socketLastSeen[session] else { return .greatestFiniteMagnitude }
+        return Date().timeIntervalSince(seen)
     }
 
     /// Frames are `hello:<clientId>` (sent on connect and with every heartbeat).
@@ -713,6 +747,20 @@ final class LocalControlServer: ObservableObject {
             return .notFound
         }
         return .ok(.data(data, contentType: contentType))
+    }
+
+    /// Reads a query parameter, undoing Swifter's mangling of it.
+    ///
+    /// Swifter percent-encodes the whole request path *again* before handing it to
+    /// `URLComponents`, so an already-encoded `%20` becomes `%2520` and parses back out as
+    /// the literal text "%20". Search terms therefore reached YouTube as one run-together
+    /// token — "beauty%20and%20a%20beat" — which is why multi-word searches for well-known
+    /// songs returned unrelated tracks while single distinctive words seemed fine, and why
+    /// adding the artist's name appeared to "fix" it (a longer query still matched
+    /// something by luck).
+    private static func queryValue(_ request: HttpRequest, _ name: String) -> String {
+        guard let raw = request.queryParams.first(where: { $0.0 == name })?.1 else { return "" }
+        return raw.removingPercentEncoding ?? raw
     }
 
     private func decodeBody<T: Decodable>(_ request: HttpRequest) -> T? {
