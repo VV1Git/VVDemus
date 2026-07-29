@@ -2,11 +2,21 @@ import AVFoundation
 import SwiftUI
 
 struct RootView: View {
-    @StateObject private var player = PlayerService.shared
+    // `@ObservedObject`, not `@StateObject`: this view does not create or own the player,
+    // it observes a singleton. `@StateObject` means "I own this", which is untrue here.
+    @ObservedObject private var player = PlayerService.shared
     @StateObject private var coordinator = NavigationCoordinator()
     @ObservedObject private var controlServer = LocalControlServer.shared
     @State private var showNowPlaying = false
+    /// Height of the mini player, exported so each tab can inset its own content by it.
+    /// Without the inset the bar simply covers the last row of every list — it's an
+    /// overlay, so nothing underneath knows it's there.
+    static let miniPlayerHeight: CGFloat = 56
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    /// The system tab bar is shorter in compact height (landscape iPhone).
+    private var tabBarHeight: CGFloat { verticalSizeClass == .compact ? 32 : 49 }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -27,7 +37,11 @@ struct RootView: View {
 
             if player.currentTrack != nil {
                 MiniPlayerBar(player: player) { showNowPlaying = true }
-                    .padding(.bottom, 49)
+                    // Sits directly above the tab bar. The height is read from the safe
+                    // area rather than hardcoded to 49 — that constant is the portrait tab
+                    // bar, and in landscape the real one is shorter, leaving the bar
+                    // floating in mid-air.
+                    .padding(.bottom, tabBarHeight)
             }
         }
         .fullScreenCover(isPresented: $showNowPlaying) {
@@ -37,6 +51,10 @@ struct RootView: View {
             if UserDefaults.standard.bool(forKey: LocalControlServer.defaultsKey) {
                 LocalControlServer.shared.start()
             }
+            // Downloads now run in a system-owned background session, so some may have
+            // been finishing (or finished) while the app wasn't running. Pick their
+            // progress back up rather than showing them stalled at zero.
+            DownloadManager.shared.resumeInFlightDownloads()
         }
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
@@ -44,7 +62,9 @@ struct RootView: View {
                 LocalControlServer.shared.applicationDidEnterBackground()
             case .active:
                 LocalControlServer.shared.applicationWillEnterForeground()
-                try? AVAudioSession.sharedInstance().setActive(true)
+                // Deliberately does not reactivate the audio session. Foregrounding the
+                // app to browse shouldn't stop the podcast the user is listening to; the
+                // session is claimed when playback actually starts.
             default:
                 break
             }
@@ -65,46 +85,19 @@ struct RootView: View {
         .onChange(of: player.activeDevice) { _, _ in updateBackgroundKeepAlive() }
     }
 
-    /// iOS only honours the `audio` background mode while the app is *actually* producing
-    /// audio. `isPlaying` alone doesn't mean this phone is: while casting it reflects the
-    /// browser's playback, reported back over the network, with this phone's own player
-    /// paused and silent.
-    private var phoneIsProducingAudio: Bool {
-        player.isPlaying && player.activeDevice == .iphone
-    }
-
-    /// Keeps the process (and so VVDemus Connect's server) alive through a screen lock
-    /// whenever nothing else is holding it up.
-    ///
-    /// This used to key off `!player.isPlaying`, which meant that casting to a computer —
-    /// the one situation where the remote connection matters most — looked like "audio is
-    /// playing, no need to do anything", while in reality the phone was silent. Locking
-    /// the phone then let iOS suspend the app about thirty seconds later, killing the
-    /// server, the browser's connection, and the music with it.
-    /// While the computer is playing, this phone holds a near-silent audio session purely
-    /// to stay alive. The moment playback is paused, that leaves the phone as the only
-    /// device making any sound at all — which is precisely the cue AirPods use to decide
-    /// you've moved back to it. Pausing on the Mac would pause, and then the AirPods would
-    /// hop to the phone.
-    ///
-    /// So when the computer is the active device and nothing is playing, the phone lets
-    /// the audio route go entirely. Nothing is playing anywhere, so it has no business
-    /// claiming it.
-    private var shouldHoldAudioSession: Bool {
-        if player.activeDevice == .computer && !player.isPlaying { return false }
-        return !phoneIsProducingAudio
-    }
-
     private func updateBackgroundKeepAlive() {
-        let shouldKeepAlive = scenePhase == .background && controlServer.isRunning && shouldHoldAudioSession
-        if shouldKeepAlive {
+        let decision = BackgroundAudioPolicy.decide(
+            .init(
+                isBackgrounded: scenePhase == .background,
+                isPlaying: player.isPlaying,
+                activeDevice: player.activeDevice,
+                isConnectServerRunning: controlServer.isRunning
+            )
+        )
+        if decision.runKeepAlive {
             BackgroundKeepAlive.shared.start()
         } else {
-            // Releasing the session (rather than merely stopping the clip) is what actually
-            // hands the route back — a still-active session keeps the phone in the running
-            // as far as automatic switching is concerned. Only safe because this branch
-            // means the phone isn't playing anything of its own.
-            BackgroundKeepAlive.shared.stop(releasingSession: !phoneIsProducingAudio)
+            BackgroundKeepAlive.shared.stop(releasingSession: decision.releaseSession)
             // Buys a fresh window of life for the server now that audio isn't holding it
             // up, so pausing doesn't immediately cost the remote its connection.
             if scenePhase == .background { controlServer.renewBackgroundTask() }

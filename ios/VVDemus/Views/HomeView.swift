@@ -84,7 +84,7 @@ struct HomeView: View {
                         }
                     }
                 }
-                .padding(.bottom, 110)
+                .miniPlayerInset()
             }
             .background(Theme.background)
             .navigationBarHidden(true)

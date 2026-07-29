@@ -9,6 +9,8 @@ struct NowPlayingView: View {
     /// How far the artwork has been dragged sideways, so it follows the finger before
     /// snapping back — without that the gesture gives no sign it's being recognised.
     @State private var artworkDrag: CGFloat = 0
+    /// Where the user's finger is while dragging the scrubber; nil when not scrubbing.
+    @State private var scrubPosition: Double?
 
     /// Swiping the artwork changes track; swiping it down closes the screen. Both are
     /// handled by one gesture that commits to whichever axis the drag actually favours, so
@@ -43,6 +45,13 @@ struct NowPlayingView: View {
                 endPoint: .bottom
             )
             .ignoresSafeArea()
+            .animation(.easeInOut(duration: 0.4), value: player.currentTrack?.thumbnailUrl)
+            // Loading is driven from here rather than from inside the gradient's argument:
+            // reading a colour is pure, fetching one is not, and this body re-evaluates
+            // twice a second while playing.
+            .task(id: player.currentTrack?.thumbnailUrl) {
+                await colorLoader.prepare(for: player.currentTrack)
+            }
 
             VStack(spacing: 24) {
                 header
@@ -64,6 +73,13 @@ struct NowPlayingView: View {
                         .foregroundStyle(.red)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
+                        // Dismissable. Only a track load cleared this, and the two
+                        // device-switch failures ("Couldn't hand off…", "Couldn't resume…")
+                        // don't load anything — so their message sat under the artwork
+                        // indefinitely with no way to get rid of it.
+                        .contentShape(Rectangle())
+                        .onTapGesture { player.errorMessage = nil }
+                        .accessibilityHint("Tap to dismiss")
                 }
 
                 progressSection
@@ -133,16 +149,31 @@ struct NowPlayingView: View {
         .padding(.horizontal)
     }
 
+    /// Scrubbing is held locally until the drag ends.
+    ///
+    /// Binding `value:` straight to `seek(to:)` issued a seek on every touch delta — dozens
+    /// a second — while the player's own periodic observer wrote `progress` back from the
+    /// pre-seek position in between, so the thumb fought the finger and jumped around.
     private var progressSection: some View {
         VStack(spacing: 4) {
             Slider(
-                value: Binding(get: { player.progress }, set: { player.seek(to: $0) }),
-                in: 0...max(player.duration, 1)
+                value: Binding(
+                    get: { scrubPosition ?? player.progress },
+                    set: { scrubPosition = $0 }
+                ),
+                in: 0...max(player.duration, 1),
+                onEditingChanged: { editing in
+                    guard !editing else { return }
+                    if let target = scrubPosition { player.seek(to: target) }
+                    scrubPosition = nil
+                }
             )
             .tint(.white)
+            .accessibilityLabel("Playback position")
+            .accessibilityValue(format(scrubPosition ?? player.progress))
 
             HStack {
-                Text(format(player.progress))
+                Text(format(scrubPosition ?? player.progress))
                 Spacer()
                 Text(format(player.duration))
             }
@@ -165,6 +196,7 @@ struct NowPlayingView: View {
                 .foregroundStyle(player.isShuffling ? Theme.accent : .white)
             }
             .frame(width: 44)
+            .accessibilityLabel(player.isShuffling ? "Shuffle on" : "Shuffle off")
 
             Spacer()
 
@@ -172,6 +204,7 @@ struct NowPlayingView: View {
                 Button { player.previous() } label: {
                     Image(systemName: "backward.fill").font(.title2)
                 }
+                .accessibilityLabel("Previous track")
 
                 Button { player.togglePlayPause() } label: {
                     ZStack {
@@ -185,10 +218,12 @@ struct NowPlayingView: View {
                         }
                     }
                 }
+                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 
                 Button { player.advance() } label: {
                     Image(systemName: "forward.fill").font(.title2)
                 }
+                .accessibilityLabel("Next track")
             }
 
             Spacer()
@@ -198,6 +233,7 @@ struct NowPlayingView: View {
                     .font(.title3)
             }
             .frame(width: 44)
+            .accessibilityLabel("Queue")
         }
         .foregroundStyle(.white)
         .buttonStyle(.pressable)

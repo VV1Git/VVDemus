@@ -135,8 +135,7 @@ final class DaylistStore: ObservableObject {
     // MARK: - Persistence
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+        guard let snapshot = DefaultsSnapshot.load(Snapshot.self, forKey: key) else { return }
         title = snapshot.title
         tracks = snapshot.tracks
         generatedAt = snapshot.generatedAt

@@ -69,6 +69,7 @@ struct RadioDetailView: View {
                     }
                 }
                 .listStyle(.plain)
+                .miniPlayerInset()
                 .scrollContentBackground(.hidden)
                 .background(Theme.background)
             }
@@ -80,13 +81,18 @@ struct RadioDetailView: View {
                 Button {
                     Task { await refresh() }
                 } label: {
-                    if isRefreshing {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
+                    // The glyph always defines the item's bounds and the spinner is drawn
+                    // inside them, so the size is identical in both states. Swapping the
+                    // two outright resized the toolbar item — measured at 23.00×27.33 for
+                    // the glyph against 20.00×20.00 for the spinner — which shifted the
+                    // sort button beside it and changed the navigation bar's content
+                    // height mid-animation. `MiniPlayerBar` already guards the same defect.
+                    Image(systemName: "arrow.clockwise")
+                        .opacity(isRefreshing ? 0 : 1)
+                        .overlay { if isRefreshing { ProgressView() } }
                 }
                 .disabled(isRefreshing)
+                .accessibilityLabel(isRefreshing ? "Refreshing" : "Refresh")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {

@@ -46,6 +46,7 @@ struct DownloadsView: View {
                     }
                 }
                 .listStyle(.plain)
+                .miniPlayerInset()
                 .scrollContentBackground(.hidden)
             }
         }

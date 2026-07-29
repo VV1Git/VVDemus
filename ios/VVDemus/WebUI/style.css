@@ -1039,3 +1039,23 @@ body.playback-paused .playing-bars i { animation-play-state: paused; }
 @media (prefers-reduced-motion: reduce) {
   .playing-bars i { animation: none; transform: scaleY(0.7); }
 }
+
+/* Shown when the phone stops answering — a frozen page that still says "Playing on
+   iPhone" while every click silently fails is indistinguishable from a hung app. */
+body.phone-unreachable::before {
+  content: "Can't reach your iPhone — reconnecting…";
+  /* Purely informational: without this the strip is hit-testable and swallows clicks on
+     the top half of the search field, and paints over the context menu. */
+  pointer-events: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 999;
+  padding: 8px 16px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #101010;
+  background: #f0c040;
+}

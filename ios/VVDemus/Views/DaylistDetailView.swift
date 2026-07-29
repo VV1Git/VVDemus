@@ -48,6 +48,7 @@ struct DaylistDetailView: View {
                     }
                 }
                 .listStyle(.plain)
+                .miniPlayerInset()
                 .scrollContentBackground(.hidden)
                 .background(Theme.background)
             }
@@ -59,13 +60,13 @@ struct DaylistDetailView: View {
                 Button {
                     Task { await store.refresh() }
                 } label: {
-                    if store.isRefreshing {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
+                    // Constant bounds in both states — see the note in RadioDetailView.
+                    Image(systemName: "arrow.clockwise")
+                        .opacity(store.isRefreshing ? 0 : 1)
+                        .overlay { if store.isRefreshing { ProgressView() } }
                 }
                 .disabled(store.isRefreshing)
+                .accessibilityLabel(store.isRefreshing ? "Refreshing" : "Refresh")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {

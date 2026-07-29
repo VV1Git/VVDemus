@@ -25,9 +25,14 @@ final class PlayHistoryStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let decoded = try? JSONDecoder().decode([Track].self, from: data) else { return }
-        tracks = decoded
+        guard let decoded = DefaultsSnapshot.load([Track].self, forKey: key) else { return }
+        // Deduped on the way *out* as well as on the way in. `record` keeps the live array
+        // unique, but a blob written by an older build (or restored from a backup) can
+        // contain the same videoId twice — and `recentSeeds` feeds those straight into
+        // `RecommendationsBuilder`, where a duplicate key used to trap and crash the app
+        // on every visit to Home.
+        var seen = Set<String>()
+        tracks = decoded.filter { seen.insert($0.id).inserted }
     }
 
     private func save() {

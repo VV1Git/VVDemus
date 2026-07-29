@@ -21,22 +21,37 @@ enum RecommendationsBuilder {
         // Home load — is reused rather than fetched again. These shelves are built from the
         // same seeds the rest of the app is already pulling mixes for, so without this the
         // same ~36KB response was being paid for several times over.
+        // `uniquingKeysWith` rather than `uniqueKeysWithValues`: the latter is a *trap*, not
+        // an error, on a duplicate key. `PlayHistoryStore.record` dedupes on the way in but
+        // `load()` doesn't, so any persisted history containing the same videoId twice — an
+        // older build, a restored backup — crashed the app every single time Home appeared,
+        // with no way out but deleting the app.
         let cached = await MainActor.run {
-            Dictionary(uniqueKeysWithValues: seeds.map { seed in
-                (seed.videoId, RadioCacheStore.shared.isFresh(seed.videoId, within: cacheFreshness)
-                    ? RadioCacheStore.shared.tracks(for: seed.videoId)
-                    : nil)
-            })
+            Dictionary(
+                seeds.map { seed in
+                    (seed.videoId, RadioCacheStore.shared.isFresh(seed.videoId, within: cacheFreshness)
+                        ? RadioCacheStore.shared.tracks(for: seed.videoId)
+                        : nil)
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
         }
 
-        let radios = try await withThrowingTaskGroup(of: (Int, [Track]).self) { group -> [[Track]] in
+        // Each child returns its own failure instead of throwing, because
+        // `for try await` rethrows the first error and cancels every sibling: one flaky
+        // seed radio meant the whole Home feed vanished, on exactly the poor connection
+        // where a partial feed matters most. A shelf that failed is simply left empty and
+        // filtered out below; only a total wipeout is worth reporting.
+        let radios = await withTaskGroup(of: (Int, [Track]).self) { group -> [[Track]] in
             for (index, seed) in seeds.enumerated() {
                 if let hit = cached[seed.videoId] ?? nil, !hit.isEmpty {
                     group.addTask { (index, Array(hit.dropFirst())) }
                     continue
                 }
                 group.addTask {
-                    let mix = try await APIClient.shared.radio(videoId: seed.videoId, limit: perSeedLimit)
+                    guard let mix = try? await APIClient.shared.radio(videoId: seed.videoId, limit: perSeedLimit) else {
+                        return (index, [])
+                    }
                     // Never overwrites an existing mix: these shelves fetch a short slice,
                     // and writing it through would shrink the radio's own screen to match.
                     await MainActor.run { RadioCacheStore.shared.storeIfAbsent(mix, for: seed.videoId) }
@@ -44,8 +59,12 @@ enum RecommendationsBuilder {
                 }
             }
             var results = Array(repeating: [Track](), count: seeds.count)
-            for try await (index, tracks) in group { results[index] = tracks }
+            for await (index, tracks) in group { results[index] = tracks }
             return results
+        }
+        // Every seed failed — that's a real error (offline), not a thin feed.
+        if radios.allSatisfy(\.isEmpty) {
+            throw APIError.server("Couldn't load recommendations.")
         }
         return zip(seeds, radios).compactMap { seed, tracks in
             let songs = tracks.excludingLongFormMixes()
@@ -122,8 +141,7 @@ final class HomeFeedStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+        guard let snapshot = DefaultsSnapshot.load(Snapshot.self, forKey: key) else { return }
         sections = snapshot.sections
         generatedAt = snapshot.generatedAt
     }

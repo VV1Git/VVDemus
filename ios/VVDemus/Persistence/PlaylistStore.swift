@@ -48,8 +48,7 @@ final class PlaylistStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let decoded = try? JSONDecoder().decode([Playlist].self, from: data) else { return }
+        guard let decoded = DefaultsSnapshot.load([Playlist].self, forKey: key) else { return }
         playlists = decoded
     }
 

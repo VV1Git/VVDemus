@@ -44,6 +44,7 @@ struct SearchView: View {
                         }
                     }
                     .listStyle(.plain)
+                    .miniPlayerInset()
                     .scrollContentBackground(.hidden)
                 }
             }
@@ -124,6 +125,7 @@ struct SearchView: View {
             }
         }
         .listStyle(.plain)
+        .miniPlayerInset()
         .scrollContentBackground(.hidden)
     }
 
@@ -151,8 +153,13 @@ struct SearchView: View {
             // that happened to match nothing don't clutter the list.
             if !results.isEmpty { rememberSearch(trimmed) }
         } catch {
+            // A cancelled task is the *next* keystroke arriving, not a failed search.
+            // Clearing here made the visible results vanish and "No results" flash whenever
+            // a request was superseded more than 350ms in.
+            guard !Task.isCancelled else { return }
             results = []
         }
+        guard !Task.isCancelled else { return }
         isLoading = false
     }
 }

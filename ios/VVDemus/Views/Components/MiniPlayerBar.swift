@@ -26,23 +26,29 @@ struct MiniPlayerBar: View {
 
                     Spacer(minLength: 4)
 
-                    if player.isLoading {
-                        ProgressView().tint(.white)
-                    } else {
-                        Button {
-                            player.togglePlayPause()
-                        } label: {
-                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.title3)
-                                .foregroundStyle(.white)
-                                // Generous tap target without making the bar taller — the
-                                // icon alone is well under the 44pt minimum.
-                                .frame(width: 40, height: 40)
-                                .contentShape(Rectangle())
+                    // The button keeps its slot while loading rather than being swapped
+                    // for a bare spinner: the spinner's intrinsic width differs from the
+                    // button's, so the whole bar reflowed on every track change, and a tap
+                    // during that window fell through to the bar's own tap gesture and
+                    // threw the user into the full-screen player.
+                    Button {
+                        player.togglePlayPause()
+                    } label: {
+                        ZStack {
+                            if player.isLoading {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(.white)
+                            }
                         }
-                        .buttonStyle(.pressable)
-                        .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.pressable)
+                    .disabled(player.isLoading)
+                    .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 
                     // Skipping is the single most common thing to want from the mini
                     // player, and previously meant opening the full Now Playing screen
@@ -53,7 +59,7 @@ struct MiniPlayerBar: View {
                         Image(systemName: "forward.fill")
                             .font(.subheadline)
                             .foregroundStyle(.white)
-                            .frame(width: 36, height: 40)
+                            .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.pressable)
@@ -72,6 +78,7 @@ struct MiniPlayerBar: View {
                 }
             )
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .task(id: track.thumbnailUrl) { await colorLoader.prepare(for: track) }
             .padding(.horizontal, 8)
             .contentShape(Rectangle())
             .onTapGesture { onExpand() }

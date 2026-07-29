@@ -26,6 +26,7 @@ struct LikedSongsView: View {
                     }
                 }
                 .listStyle(.plain)
+                .miniPlayerInset()
                 .scrollContentBackground(.hidden)
             }
         }

@@ -34,6 +34,15 @@ const state = {
   lastQueues: {},
   // Latest playback epoch seen from the phone; echoed back with progress reports.
   epoch: null,
+  // The highest epochs actually applied to the UI, so an out-of-order snapshot arriving
+  // from the slower of the two transports can be dropped rather than rewinding the page
+  // to a state the phone has already moved past. See isStaleSnapshot.
+  appliedEpoch: null,
+  appliedTrackLoadEpoch: null,
+  // Which run of the phone app the epochs above belong to; they mean nothing across a
+  // restart. See isStaleSnapshot.
+  serverInstanceId: null,
+  lastAppliedAt: 0,
   failedSrc: null,
   failedAt: 0,
   // What the phone says plays next, with a resolved URL — this tab's lifeline if the
@@ -52,6 +61,9 @@ const state = {
   mediaSessionTrack: null,
   // A play/pause relayed to the phone that we haven't seen come back yet.
   pendingPlayIntent: null,
+  // Whether the phone is currently answering at all, so the page can say so instead of
+  // freezing on a stale snapshot while every click quietly fails.
+  phoneUnreachable: false,
 };
 
 const audioEl = document.getElementById("np-audio");
@@ -79,19 +91,44 @@ function fmtTime(seconds) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-async function api(path, options) {
-  const res = await fetch(path, options);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
-  const contentType = res.headers.get("content-type") || "";
-  return contentType.includes("application/json") ? res.json() : res.text();
+// How long to wait for the phone before treating it as unreachable.
+//
+// Every request needs one. Without a timeout, a phone that is asleep or off the network
+// doesn't refuse the connection — the TCP handshake just retransmits, so `fetch` stays
+// pending for thirty to ninety seconds before rejecting. That matters most at the end of
+// a track: the whole prefetched-next-track mechanism lives in the `catch` of
+// `/api/next`, so instead of continuing seamlessly the music went silent for a minute
+// first — the exact failure the prefetch was built to prevent.
+const REQUEST_TIMEOUT_MS = 2000;
+/// For requests where the phone itself has to hit the network before it can answer —
+/// search, Home, a radio fetch, a daylist rebuild. These routinely take several seconds,
+/// and holding them to the transport deadline made a perfectly healthy phone look broken:
+/// empty search results, a permanently blank Home, and Refresh buttons that did nothing.
+const CONTENT_TIMEOUT_MS = 20000;
+
+async function api(path, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(path, { ...options, signal: controller.signal });
+    if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+    const contentType = res.headers.get("content-type") || "";
+    return contentType.includes("application/json") ? res.json() : res.text();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-function post(path, body) {
-  return api(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body ?? {}),
-  });
+function post(path, body, timeoutMs) {
+  return api(
+    path,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    },
+    timeoutMs
+  );
 }
 
 function escapeHtml(text) {
@@ -240,7 +277,7 @@ async function openTrackMenu(event, track, { onRemove, removeLabel } = {}) {
   contextMenuEl.appendChild(menuSeparator());
 
   contextMenuEl.appendChild(menuButton("Go to Radio", MENU_ICONS.radio, async () => {
-    const tracks = await api(`/api/radio?videoId=${encodeURIComponent(track.videoId)}`);
+    const tracks = await api(`/api/radio?videoId=${encodeURIComponent(track.videoId)}`, {}, CONTENT_TIMEOUT_MS);
     openRadioDetail(track, tracks);
   }));
 
@@ -532,10 +569,10 @@ document.getElementById("detail-shuffle").onclick = () => {
 
 document.getElementById("detail-refresh").onclick = async () => {
   if (detail.kind === "radio" && detail.seedTrack) {
-    const tracks = await post("/api/radio/refresh", { videoId: detail.seedTrack.videoId });
+    const tracks = await post("/api/radio/refresh", { videoId: detail.seedTrack.videoId }, CONTENT_TIMEOUT_MS);
     openRadioDetail(detail.seedTrack, tracks);
   } else if (detail.kind === "daylist") {
-    await post("/api/library/daylist/refresh");
+    await post("/api/library/daylist/refresh", {}, CONTENT_TIMEOUT_MS);
     await openDaylistDetail();
   }
 };
@@ -656,7 +693,12 @@ const SILENT_UNLOCK_SRC =
 async function handleRealTrackEnded() {
   if (!state.isCastTab) return;
   try {
-    await post("/api/next");
+    // Deliberately a tight timeout: this is the one request where waiting is worse than
+    // failing. If the phone can't answer inside a second and a half, the prefetched next
+    // track is right here and playing it immediately is strictly better than silence.
+    // Names the track that ended: if the phone already moved on (the user pressed next a
+    // moment ago), this must be a no-op rather than skipping another song.
+    await post("/api/next", { videoId: state.loadedVideoId }, 1500);
     refreshState();
   } catch (e) {
     playUpNextLocally();
@@ -813,7 +855,7 @@ function renderDeviceLabel() {
 /// (or when the phone is the active device), and idempotent so it can be called from the
 /// periodic state broadcast, an explicit refresh, and a pushed "command" message alike
 /// without ever double-applying a play/pause toggle.
-function syncCastAudio(s) {
+function syncCastAudio(s, shouldPlay) {
   const videoId = s.currentTrack ? s.currentTrack.videoId : null;
   // Ownership comes from the phone, not from whatever this tab last clicked — that's what
   // lets a reloaded tab pick casting back up, and what makes a tab that lost ownership
@@ -841,7 +883,16 @@ function syncCastAudio(s) {
     reconcileAfterDisconnection();
     return;
   }
-  if (state.loadedVideoId !== videoId || state.loadedTrackEpoch !== s.trackLoadEpoch) {
+  // A null `loadedTrackEpoch` means *this tab* chose the track (it advanced on its own
+  // while the phone was away), so there is no phone load generation to compare against.
+  // Comparing anyway guaranteed a spurious reload: the phone deliberately doesn't bump
+  // `trackLoadEpoch` when it adopts what we're playing, so the moment the adopt succeeded
+  // the very next snapshot re-loaded and re-buffered a track that was playing perfectly —
+  // an audible gap exactly when the phone came back. The videoId check below still
+  // catches a genuine track change.
+  const phoneRestartedTrack =
+    state.loadedTrackEpoch !== null && state.loadedTrackEpoch !== s.trackLoadEpoch;
+  if (state.loadedVideoId !== videoId || phoneRestartedTrack) {
     // The phone resolves streamUrl asynchronously after a device switch (or a new track
     // starting), so a snapshot can name the new track while streamUrl is still empty —
     // or, worse, still holds the *previous* track's URL. `streamVideoId` says which track
@@ -864,8 +915,14 @@ function syncCastAudio(s) {
     // whether it's already attached.
     audioEl.addEventListener("ended", handleRealTrackEnded);
   }
-  const shouldPlay = desiredPlayState(s);
-  if (shouldPlay && audioEl.paused) playCastAudio();
+  // Passed in: `desiredPlayState` mutates the pending intent and can fire a retry POST, so
+  // it must be evaluated exactly once per snapshot.
+  // `!audioEl.ended` matters: at the end of a track the element is both paused *and*
+  // ended, and calling play() on an ended element seeks it back to zero and starts the
+  // song again. Between the `ended` event and the phone answering /api/next, every
+  // broadcast still named the finished track — so each track transition began with a
+  // burst of the outgoing song's opening seconds.
+  if (shouldPlay && audioEl.paused && !audioEl.ended) playCastAudio();
   if (!shouldPlay && !audioEl.paused) {
     suppressPlaybackEcho();
     audioEl.pause();
@@ -917,17 +974,24 @@ function desiredPlayState(s) {
     return s.isPlaying;
   }
   const age = Date.now() - pending.at;
-  if (age > 2500 && !pending.retried) {
+  if (age > 5000) {
+    // Checked first: a stale intent that already had its retry must expire rather than
+    // fire another toggle. Reaching the retry branch below after five seconds meant a tab
+    // that re-acquired casting could pause music the user had just started.
+    state.pendingPlayIntent = null;
+    return s.isPlaying;
+  }
+  if (!pending.retried) {
     // The request can simply have been lost. Ask again rather than letting audio the OS
     // stopped spring back to life — this failing towards "starts playing on its own" is
     // exactly what breaks an AirPods handover.
     pending.retried = true;
     pending.at = Date.now();
-    post("/api/toggle").then(refreshState).catch(() => {});
-  } else if (age > 5000) {
-    // Give up rather than diverge from the phone indefinitely.
-    state.pendingPlayIntent = null;
-    return s.isPlaying;
+    if (age > 2500) {
+      pending.retried = true;
+      pending.at = Date.now();
+      post("/api/toggle").then(refreshState).catch(() => {});
+    }
   }
   return pending.playing;
 }
@@ -965,10 +1029,11 @@ audioEl.addEventListener("timeupdate", () => {
     // or about playback as it was before its latest instruction (see playbackEpoch).
     videoId: state.loadedVideoId,
     epoch: state.epoch,
+    clientId: CLIENT_ID,
     progress: audioEl.currentTime,
     duration: isFinite(audioEl.duration) ? audioEl.duration : 0,
     isPlaying: !audioEl.paused,
-  });
+  }).catch(() => {});
 });
 
 // ---------- macOS / OS media controls ----------
@@ -1016,7 +1081,7 @@ function seekRelative(delta) {
 /// Feeds the OS the track details it displays next to those controls. Only rebuilt when
 /// the track changes — MediaMetadata triggers an artwork fetch, so doing this on every
 /// state broadcast would re-download the artwork once a second.
-function renderMediaSession(s) {
+function renderMediaSession(s, playing) {
   if (!("mediaSession" in navigator)) return;
   const track = state.isCastTab ? s.currentTrack : null;
   if (!track) {
@@ -1036,7 +1101,10 @@ function renderMediaSession(s) {
         : [],
     });
   }
-  navigator.mediaSession.playbackState = s.isPlaying ? "playing" : "paused";
+  // The resolved state, not the raw snapshot: telling the OS "playing" while the element
+  // is deliberately paused makes the next media-key press send `pause` again, which maps
+  // to a toggle and starts the music back up.
+  navigator.mediaSession.playbackState = playing ? "playing" : "paused";
   // Drives the scrubber in Control Center.
   if (navigator.mediaSession.setPositionState && isFinite(s.duration) && s.duration > 0) {
     try {
@@ -1053,13 +1121,60 @@ function renderMediaSession(s) {
 
 // ---------- now playing ----------
 
+/// Whether a snapshot is newer than the newest one already applied.
+///
+/// State arrives over two unordered transports: the 1 Hz WebSocket broadcast and HTTP
+/// `GET /api/state` (a 5 s poll, plus a refresh chased after every command). Nothing
+/// sequenced them, so a poll issued *before* the user pressed next could arrive *after*
+/// the phone had already broadcast the new track — and being applied unconditionally, it
+/// reloaded the previous track's stream and played it. It also dragged `state.epoch`
+/// backwards, so every progress report for the next second was discarded by the phone as
+/// stale. The phone already stamps each snapshot with `playbackEpoch`; this just refuses
+/// to go back in time. `trackLoadEpoch` is checked too, since it moves independently when
+/// a track restarts.
+function isStaleSnapshot(s) {
+  if (typeof s.playbackEpoch !== "number") return false;
+  // The phone's epoch counter restarts at 0 on every launch. Without noticing that, a
+  // browser holding a high epoch rejects every snapshot from a relaunched phone *forever*:
+  // the socket reconnects and /api/state returns 200, so the page looks perfectly healthy
+  // while being completely frozen on its last state — and if it was the casting tab, the
+  // music stops on both devices with no way back but a manual reload.
+  if (s.serverInstanceId && s.serverInstanceId !== state.serverInstanceId) {
+    state.serverInstanceId = s.serverInstanceId;
+    state.appliedEpoch = null;
+    state.appliedTrackLoadEpoch = null;
+    return false;
+  }
+  // Belt and braces: no correctness guard is worth a permanently dead page. If nothing has
+  // been applied for several seconds, take whatever arrives.
+  if (state.lastAppliedAt && Date.now() - state.lastAppliedAt > 4000) return false;
+  if (state.appliedEpoch === null || state.appliedEpoch === undefined) return false;
+  if (s.playbackEpoch > state.appliedEpoch) return false;
+  if (s.playbackEpoch < state.appliedEpoch) return true;
+  // Same playback epoch: a lower trackLoadEpoch is still a snapshot from before the
+  // current track was (re)started.
+  return typeof s.trackLoadEpoch === "number" &&
+    typeof state.appliedTrackLoadEpoch === "number" &&
+    s.trackLoadEpoch < state.appliedTrackLoadEpoch;
+}
+
 function renderNowPlaying(s) {
+  if (isStaleSnapshot(s)) return;
+  state.appliedEpoch = s.playbackEpoch;
+  state.appliedTrackLoadEpoch = s.trackLoadEpoch;
+  state.lastAppliedAt = Date.now();
   mergeOmittedQueues(s);
   state.upNext = s.nextTrack && s.nextStreamUrl ? { track: s.nextTrack, streamUrl: s.nextStreamUrl } : null;
   state.current = s.currentTrack;
   state.last = s;
   state.epoch = s.playbackEpoch;
-  syncCastAudio(s); // sets state.isCastTab, which the label depends on
+  // One evaluation, shared by the audio element and every visual indicator below. They
+  // used to disagree: the element obeyed `desiredPlayState` while the icons read raw
+  // `s.isPlaying`, so pausing from the Mac's media keys showed a pause glyph over silence
+  // and — worse — reset `navigator.mediaSession.playbackState` to "playing", making the
+  // user's next media-key press start the music again instead of resuming it.
+  const playing = desiredPlayState(s);
+  syncCastAudio(s, playing); // sets state.isCastTab, which the label depends on
   renderDeviceLabel();
   renderDocumentTitle(s);
   const npArt = document.getElementById("np-art");
@@ -1069,8 +1184,8 @@ function renderNowPlaying(s) {
   npArt.classList.toggle("loading", !!s.isLoading);
   document.getElementById("np-title").textContent = s.currentTrack ? s.currentTrack.title : "Nothing playing";
   document.getElementById("np-artist").textContent = s.currentTrack ? s.currentTrack.artist : "";
-  document.getElementById("np-play-icon").style.display = s.isPlaying ? "none" : "block";
-  document.getElementById("np-pause-icon").style.display = s.isPlaying ? "block" : "none";
+  document.getElementById("np-play-icon").style.display = playing ? "none" : "block";
+  document.getElementById("np-pause-icon").style.display = playing ? "block" : "none";
   document.getElementById("np-shuffle").classList.toggle("active", !!s.isShuffling);
 
   const likeBtn = document.getElementById("np-like");
@@ -1096,10 +1211,10 @@ function renderNowPlaying(s) {
   document.getElementById("context-queue-title").textContent = s.queueContextTitle
     ? `Next from: ${s.queueContextTitle}`
     : "Next Up";
-  renderMediaSession(s);
+  renderMediaSession(s, playing);
 
   // Freezes the equalizer bars while paused, so the marker still shows where you are.
-  document.body.classList.toggle("playback-paused", !s.isPlaying);
+  document.body.classList.toggle("playback-paused", !playing);
 
   // renderList no-ops when nothing changed, so this is only work when it matters.
   if (detail.rerender) detail.rerender();
@@ -1162,9 +1277,15 @@ seekEl.addEventListener("input", () => {
 seekEl.addEventListener("change", async () => {
   const seconds = Number(seekEl.value);
   if (state.isCastTab && audioEl.src) audioEl.currentTime = seconds;
-  await post("/api/seek", { seconds });
-  seekEl.dragging = false;
-  refreshState();
+  try {
+    await post("/api/seek", { seconds });
+  } finally {
+    // In a `finally`: if the POST times out, leaving this true freezes the scrubber and
+    // the elapsed time until the page is reloaded, because renderNowPlaying skips seek-bar
+    // updates while a drag is in progress.
+    seekEl.dragging = false;
+    refreshState().catch(() => {});
+  }
 });
 
 // ---------- keyboard control ----------
@@ -1241,7 +1362,7 @@ async function loadHomeRadios() {
       <span class="r-title">${escapeHtml(station.seedTrack.title)} Radio</span>
     `;
     chip.onclick = async () => {
-      const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`);
+      const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`, {}, CONTENT_TIMEOUT_MS);
       openRadioDetail(station.seedTrack, tracks);
     };
     container.appendChild(chip);
@@ -1251,7 +1372,7 @@ async function loadHomeRadios() {
 async function loadHomeRecommendations() {
   const container = document.getElementById("home-recommendations");
   container.innerHTML = "";
-  const sections = await api("/api/home");
+  const sections = await api("/api/home", {}, CONTENT_TIMEOUT_MS);
   if (!sections.length) {
     const empty = document.createElement("div");
     empty.className = "empty-hint";
@@ -1274,9 +1395,10 @@ async function loadHomeRecommendations() {
   });
 }
 
-function loadHome() {
-  loadHomeRadios();
-  loadHomeRecommendations();
+async function loadHome() {
+  // Each half is allowed to fail on its own: one failing fetch shouldn't leave the whole
+  // Home screen blank, and neither rejection had a handler before.
+  await Promise.allSettled([loadHomeRadios(), loadHomeRecommendations()]);
 }
 
 // ---------- search ----------
@@ -1289,7 +1411,7 @@ function runSearch(q) {
     return;
   }
   searchTimer = setTimeout(async () => {
-    const tracks = await api(`/api/search?q=${encodeURIComponent(q)}`);
+    const tracks = await api(`/api/search?q=${encodeURIComponent(q)}`, {}, CONTENT_TIMEOUT_MS);
     renderList(document.getElementById("search-list"), tracks, {
       scope: `search:${q}`,
       onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: "Search" }).then(refreshState),
@@ -1327,7 +1449,7 @@ async function loadLibraryList() {
       row.onclick = async () => {
         document.querySelectorAll(".lib-shortcut, .library-row, .nav-item").forEach((b) => b.classList.remove("active"));
         row.classList.add("active");
-        const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`);
+        const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`, {}, CONTENT_TIMEOUT_MS);
         openRadioDetail(station.seedTrack, tracks);
       };
       container.appendChild(row);
@@ -1390,6 +1512,7 @@ function connectWebSocket() {
     };
     hello();
     heartbeat = setInterval(hello, 15000);
+    markPhoneUnreachable(false);
     // Back in touch: if this tab kept playing without the phone, square that up now.
     reconcileAfterDisconnection();
   };
@@ -1421,16 +1544,40 @@ function connectWebSocket() {
   };
   ws.onclose = () => {
     if (heartbeat) clearInterval(heartbeat);
-    setTimeout(connectWebSocket, 2000);
+    markPhoneUnreachable(true);
+    // Backed off rather than a flat 2 s: a phone that's asleep, off the network or simply
+    // switched off stays unreachable for hours, and hammering it every two seconds for
+    // that whole time is pure battery on both ends.
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    setTimeout(connectWebSocket, reconnectDelay);
   };
   ws.onerror = () => ws.close();
+}
+
+let reconnectDelay = 1000;
+
+/// Shows (or clears) the "can't reach your iPhone" state. Without it the page simply
+/// froze on its last snapshot — still captioned "Playing on iPhone" — while every click
+/// silently did nothing, which is indistinguishable from the app having hung.
+function markPhoneUnreachable(unreachable) {
+  if (unreachable === state.phoneUnreachable) return;
+  state.phoneUnreachable = unreachable;
+  document.body.classList.toggle("phone-unreachable", unreachable);
+  if (!unreachable) reconnectDelay = 1000;
 }
 
 // ---------- init ----------
 
 setupMediaSession();
-loadHome();
-loadLibraryList();
-refreshState();
+loadHome().catch(() => {});
+loadLibraryList().catch(() => {});
+refreshState().catch(() => {});
 connectWebSocket();
-setInterval(refreshState, 5000); // fallback in case the socket drops silently
+// Fallback in case the socket drops silently. The `.catch` is not optional: while the
+// phone is unreachable this rejects every five seconds, and an unhandled rejection in a
+// timer stops nothing but fills the console and hides real errors.
+setInterval(() => {
+  refreshState()
+    .then(() => markPhoneUnreachable(false))
+    .catch(() => markPhoneUnreachable(true));
+}, 5000);
