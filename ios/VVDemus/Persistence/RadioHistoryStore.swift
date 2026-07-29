@@ -18,8 +18,7 @@ final class RadioHistoryStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let decoded = try? JSONDecoder().decode([RadioStation].self, from: data) else { return }
+        guard let decoded = DefaultsSnapshot.load([RadioStation].self, forKey: key) else { return }
         stations = decoded
     }
 

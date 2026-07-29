@@ -94,15 +94,47 @@ final class PlayerService: ObservableObject {
     /// contextQueue in its real (unshuffled) order — the source of truth restored when
     /// shuffle is turned off, and reshuffled fresh each time it's turned back on.
     private var orderedContextQueue: [Track] = []
-    private var backStack: [Track] = []
-    private let recentRadioAvoidCount = 12
 
-    private let player = AVPlayer()
-    private var timeObserver: Any?
-    private var endObserver: NSObjectProtocol?
+    /// Which of the two queues a track was taken from. Needed so `previous()` can put the
+    /// track it's leaving back where it came from: it used to push everything onto
+    /// `contextQueue`, so stepping back over a track the user had explicitly queued
+    /// quietly demoted it out of the manual queue, and the next `advance()` played
+    /// whatever else was in the manual queue instead of retracing the path.
+    enum QueueOrigin {
+        case manual
+        case context
+    }
+
+    private var currentTrackOrigin: QueueOrigin = .context
+    private var backStack: [(track: Track, origin: QueueOrigin)] = []
+    private let recentRadioAvoidCount = 12
+    private let backStackLimit = 30
+
+    // MARK: - Injected collaborators
+
+    private let engine: PlaybackEngine
+    private let session: AudioSessionControlling
+    private let commandCenter: RemoteCommandRegistering
+    private let nowPlaying: NowPlayingPublishing
+    private let streams: StreamResolving
+    private let downloads: DownloadLocating
+    private let sideEffects: PlaybackSideEffects
+    private let radios: RadioFetching
+    private let notifications: NotificationCenter
+
     private var loadTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
+    private var stallRecoveryTask: Task<Void, Never>?
     private var artworkTask: Task<Void, Never>?
+    /// Which track `artworkTask` is currently fetching for. `updateNowPlayingInfo` runs on
+    /// every periodic tick (twice a second), and each call used to cancel the in-flight
+    /// artwork fetch and start it again — so on any connection where the download took
+    /// longer than half a second, lock-screen artwork could never finish loading at all.
+    private var artworkTrackId: String?
+    /// Artwork that could not be fetched or decoded. Without this, `updateNowPlayingInfo`
+    /// runs twice a second, finds the cache still empty, and starts the fetch again — two
+    /// HTTP requests per second on cellular for the entire track.
+    private var failedArtworkIds: Set<String> = []
     /// Bounded so this doesn't grow for the entire app session — lock-screen artwork only
     /// ever needs the current (and maybe just-previous) track, so a handful of entries is
     /// plenty. Unbounded, this held a full decoded UIImage per unique track ever played,
@@ -110,21 +142,80 @@ final class PlayerService: ObservableObject {
     private var artworkCache: [String: MPMediaItemArtwork] = [:]
     private var artworkCacheOrder: [String] = []
     private let artworkCacheLimit = 6
-    /// Must be retained for as long as its asset is in use — `AVAssetResourceLoader`
-    /// does not keep a strong reference to its own delegate.
-    private var activeResourceLoader: StreamingResourceLoader?
-    private var itemStatusObservation: NSKeyValueObservation?
     /// True from the moment playback is handed back to this phone until its player item is
     /// actually attached — resolving a stream URL is async, so this can span seconds on a
     /// cold cache. Transport commands issued inside that window are recorded as intent and
     /// applied by the reattach, rather than being silently undone by it.
     private var isResumingAfterDeviceSwitch = false
 
-    private init() {
-        timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
-            queue: .main
-        ) { [weak self] time in
+    /// Set while the audio session is interrupted (a call, Siri, an alarm, another app
+    /// taking the route). Remembers whether playback was running when the interruption
+    /// began, because that is the only thing that decides whether it should come back when
+    /// the interruption ends — the notification itself doesn't say.
+    /// What the *user* wants playback to be doing, as opposed to what the engine is
+    /// currently doing.
+    ///
+    /// Resolving a stream URL takes 1-3 seconds on a cold cache, and `attach` used to
+    /// hardcode `autoplay: true` — so a pause pressed during that window was silently undone
+    /// when the URL arrived, and the music started again by itself. Taking AirPods out
+    /// during the same window was worse: the route handler paused correctly, then the late
+    /// attach played the track out of the phone's loudspeaker. The device-switch path
+    /// already read live state for this reason; every other load path did not.
+    private var wantsPlayback = false
+    private var wasPlayingBeforeInterruption = false
+    private(set) var isInterrupted = false
+
+    /// The stream URL currently attached, and the track it belongs to. Kept so a playback
+    /// failure can be told apart from a fresh load, and so an expired URL can be re-resolved
+    /// exactly once rather than retrying forever.
+    private var attachedURL: URL?
+    private var hasRetriedCurrentTrack = false
+
+    // MARK: - Init
+
+    private convenience init() {
+        self.init(
+            engine: AVPlaybackEngine(),
+            session: SystemAudioSession.shared,
+            commandCenter: SystemRemoteCommandCenter.shared,
+            nowPlaying: SystemNowPlayingCenter.shared,
+            streams: APIStreamResolver.shared,
+            downloads: DownloadManager.shared,
+            sideEffects: LivePlaybackSideEffects.shared,
+            radios: APIRadioFetcher.shared,
+            notifications: .default
+        )
+    }
+
+    init(
+        engine: PlaybackEngine,
+        session: AudioSessionControlling,
+        commandCenter: RemoteCommandRegistering,
+        nowPlaying: NowPlayingPublishing,
+        streams: StreamResolving,
+        downloads: DownloadLocating,
+        sideEffects: PlaybackSideEffects,
+        radios: RadioFetching,
+        notifications: NotificationCenter
+    ) {
+        self.engine = engine
+        self.session = session
+        self.commandCenter = commandCenter
+        self.nowPlaying = nowPlaying
+        self.streams = streams
+        self.downloads = downloads
+        self.sideEffects = sideEffects
+        self.radios = radios
+        self.notifications = notifications
+
+        configureEngineCallbacks()
+        configureRemoteCommandCenter()
+        observeAudioSession()
+    }
+
+    private func configureEngineCallbacks() {
+        engine.onPeriodicTime = { [weak self] seconds in
+            guard let self else { return }
             // While the computer is the active device, `progress`/`duration` are owned
             // by `applyExternalReport` (fed by the browser) — this phone-side observer
             // keeps firing regardless of `activeDevice` (the AVPlayer item is just
@@ -135,70 +226,142 @@ final class PlayerService: ObservableObject {
             // ...and equally must not report the *old* item's position during the gap
             // between switching back to the phone and the new item being attached, which
             // would drag `progress` back to wherever the phone was when it handed off.
-            guard let self, self.activeDevice == .iphone, !self.isResumingAfterDeviceSwitch else { return }
-            self.progress = time.seconds
-            if let itemDuration = self.player.currentItem?.duration.seconds, itemDuration.isFinite {
+            // `!isLoading`: during a load the old item is still attached, and without this
+            // its position and duration were written into the incoming track's fields.
+            guard self.activeDevice == .iphone, !self.isResumingAfterDeviceSwitch,
+                  !self.isLoading else { return }
+            guard seconds.isFinite else { return }
+            self.progress = seconds
+            if let itemDuration = self.engine.itemDurationSeconds {
                 self.duration = itemDuration
             }
+            // Whatever the app last asked for, the engine is the authority on whether
+            // sound is actually coming out. They diverge when something outside the app
+            // stops playback — and a stuck `isPlaying` is what made the play button need
+            // pressing twice after AirPods dropped out.
+            self.reconcileIsPlayingWithEngine()
             self.updateNowPlayingInfo()
         }
-        configureRemoteCommandCenter()
+
+        engine.onItemDidPlayToEnd = { [weak self] in
+            guard let self, self.activeDevice == .iphone else { return }
+            self.advance()
+        }
+
+        engine.onItemFailed = { [weak self] error in
+            self?.handlePlaybackFailure(error)
+        }
+
+        engine.onStalled = { [weak self] in
+            self?.handleStall()
+        }
     }
 
-    // MARK: - Lock screen / Control Center
+    /// Playback ran out of buffered data.
+    ///
+    /// A brief stall is normal on a patchy connection and AVFoundation recovers by itself,
+    /// so this doesn't touch playback immediately. But a stall that never recovers left the
+    /// app claiming to play over silence forever — `.waitingToPlayAtSpecifiedRate` reads as
+    /// "playing" to `isEnginePlaying`, and no failure is ever raised because the item didn't
+    /// fail, it just stopped. After a grace period with the buffer still empty, the track is
+    /// re-resolved: the usual cause is a stream URL that died mid-play.
+    private func handleStall() {
+        guard activeDevice == .iphone, isPlaying, currentTrack != nil else { return }
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, Self.stallGrace) * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            guard self.activeDevice == .iphone, self.isPlaying, self.engine.isStalled else { return }
+            NSLog("[PlayerService] playback stalled for %.0fs — re-resolving", Self.stallGrace)
+            self.handlePlaybackFailure(nil)
+        }
+    }
 
+    /// Long enough that an ordinary blip on a train recovers untouched, short enough that a
+    /// dead stream doesn't leave the user staring at a frozen scrubber.
+    ///
+    /// Settable so tests can exercise the recovery branch itself rather than only asserting
+    /// that nothing has happened yet — at twelve seconds against a sixty-millisecond test
+    /// wait, every stall test passed no matter what this method did.
+    static var stallGrace: TimeInterval = 12
+
+    /// The engine stopping on its own (a stall, an interruption the app didn't see, the
+    /// route going away) has to be reflected in `isPlaying` or the UI, the lock screen and
+    /// the AirPods gesture all end up out of step with reality.
+    private func reconcileIsPlayingWithEngine() {
+        guard activeDevice == .iphone, !isLoading, !isResumingAfterDeviceSwitch, currentTrack != nil else { return }
+        // An interruption is handled by its own notification, which knows whether to
+        // resume; don't let the periodic tick race it.
+        guard !isInterrupted else { return }
+        if isPlaying && !engine.isEnginePlaying {
+            isPlaying = false
+            updateNowPlayingInfo()
+        }
+    }
+
+    // MARK: - Lock screen / Control Center / AirPods gestures
+
+    /// AirPods (and most Bluetooth headsets) don't have their own protocol for transport:
+    /// a stem press or tap arrives as one of these remote commands. All of them are
+    /// registered — a missing `togglePlayPause` in particular means a single tap does
+    /// nothing at all, which is the control people use most.
     private func configureRemoteCommandCenter() {
-        let center = MPRemoteCommandCenter.shared()
-
-        center.playCommand.addTarget { [weak self] _ in
+        commandCenter.setHandler(for: .play) { [weak self] _ in
             guard let self, self.currentTrack != nil else { return .noSuchContent }
             if !self.isPlaying { self.togglePlayPause() }
             return .success
         }
-        center.pauseCommand.addTarget { [weak self] _ in
+        commandCenter.setHandler(for: .pause) { [weak self] _ in
             guard let self, self.currentTrack != nil else { return .noSuchContent }
             if self.isPlaying { self.togglePlayPause() }
             return .success
         }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+        commandCenter.setHandler(for: .togglePlayPause) { [weak self] _ in
             guard let self, self.currentTrack != nil else { return .noSuchContent }
             self.togglePlayPause()
             return .success
         }
-        center.nextTrackCommand.addTarget { [weak self] _ in
-            self?.advance()
+        commandCenter.setHandler(for: .nextTrack) { [weak self] _ in
+            // Returning `.success` with nothing loaded made a double-tap on an idle set of
+            // AirPods look handled, so the system never fell back to anything else.
+            guard let self, self.currentTrack != nil else { return .noSuchContent }
+            self.advance()
             return .success
         }
-        center.previousTrackCommand.addTarget { [weak self] _ in
-            self?.previous()
+        commandCenter.setHandler(for: .previousTrack) { [weak self] _ in
+            guard let self, self.currentTrack != nil else { return .noSuchContent }
+            self.previous()
             return .success
         }
-        center.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let self, let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            self.seek(to: event.positionTime)
+        commandCenter.setHandler(for: .changePlaybackPosition) { [weak self] position in
+            guard let self, let position, self.currentTrack != nil else { return .commandFailed }
+            self.seek(to: position)
             return .success
         }
+        for kind in RemoteCommandKind.allCases {
+            commandCenter.setEnabled(true, for: kind)
+        }
+        commandCenter.disableUnhandledCommands()
     }
 
     private func updateNowPlayingInfo() {
         guard let track = currentTrack else {
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            nowPlaying.clear()
             return
         }
-        var info: [String: Any] = [
-            MPMediaItemPropertyTitle: track.title,
-            MPMediaItemPropertyArtist: track.artist,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: progress,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
-        ]
-        if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
-        if let album = track.album { info[MPMediaItemPropertyAlbumTitle] = album }
-        if let artwork = artworkCache[track.id] {
-            info[MPMediaItemPropertyArtwork] = artwork
-        } else {
-            loadArtwork(for: track)
-        }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        let artwork = artworkCache[track.id]
+        if artwork == nil { loadArtwork(for: track) }
+        nowPlaying.publish(
+            NowPlayingSnapshot(
+                title: track.title,
+                artist: track.artist,
+                album: track.album,
+                duration: duration > 0 ? duration : nil,
+                elapsed: progress,
+                rate: isPlaying ? 1.0 : 0.0
+            ),
+            artwork: artwork
+        )
     }
 
     /// Checks the disk cache (shared with `RemoteImage`, and pre-warmed by `DownloadManager`
@@ -206,9 +369,15 @@ final class PlayerService: ObservableObject {
     /// downloaded track's lock-screen artwork actually stay offline instead of depending on
     /// the tiny 6-entry in-memory `artworkCache` still happening to hold it.
     private func loadArtwork(for track: Track) {
-        guard artworkCache[track.id] == nil, let urlString = track.thumbnailUrl else { return }
+        guard artworkCache[track.id] == nil, !failedArtworkIds.contains(track.id),
+              let urlString = track.thumbnailUrl else { return }
+        // Already fetching this very track — leave it alone. Restarting here is what
+        // starved the fetch on slow connections.
+        guard artworkTrackId != track.id else { return }
         artworkTask?.cancel()
-        artworkTask = Task {
+        artworkTrackId = track.id
+        artworkTask = Task { [weak self] in
+            guard let self else { return }
             let requestURLString = PlayerService.artworkCacheKey(for: urlString)
             var data: Data?
             if let diskData = await DiskImageCache.shared.data(for: requestURLString) {
@@ -218,12 +387,16 @@ final class PlayerService: ObservableObject {
                 data = fetched
                 await DiskImageCache.shared.store(fetched, for: requestURLString)
             }
-            guard let data, let image = UIImage(data: data) else { return }
             guard !Task.isCancelled else { return }
+            if self.artworkTrackId == track.id { self.artworkTrackId = nil }
+            guard let data, let image = UIImage(data: data) else {
+                self.failedArtworkIds.insert(track.id)
+                return
+            }
             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-            cacheArtwork(artwork, for: track.id)
-            if currentTrack?.id == track.id {
-                updateNowPlayingInfo()
+            self.cacheArtwork(artwork, for: track.id)
+            if self.currentTrack?.id == track.id {
+                self.updateNowPlayingInfo()
             }
         }
     }
@@ -246,6 +419,169 @@ final class PlayerService: ObservableObject {
         }
     }
 
+    // MARK: - Interruptions and route changes
+
+    private func observeAudioSession() {
+        notifications.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated { self?.handleInterruption(note) }
+        }
+        notifications.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated { self?.handleRouteChange(note) }
+        }
+        notifications.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleMediaServicesReset() }
+        }
+    }
+
+    /// A call, an alarm, Siri, or another app taking the audio route. The system has
+    /// already stopped our audio by the time this arrives; what matters is coming back
+    /// afterwards. Nothing handled this before, so a phone call left the app showing
+    /// "playing" with no sound, and the play button needed pressing twice to recover.
+    private func handleInterruption(_ note: Notification) {
+        guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        switch type {
+        case .began:
+            isInterrupted = true
+            wasPlayingBeforeInterruption = (isPlaying || isLoading) && activeDevice == .iphone
+            guard activeDevice == .iphone else { return }
+            engine.pause()
+            if isPlaying {
+                isPlaying = false
+                updateNowPlayingInfo()
+            }
+        case .ended:
+            isInterrupted = false
+            let options = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
+                .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+            // `.shouldResume` absent means the system does not want us back yet (the
+            // interrupting app is still in charge). Resuming anyway is how apps end up
+            // fighting Siri for the speaker.
+            guard options.contains(.shouldResume), wasPlayingBeforeInterruption else {
+                wasPlayingBeforeInterruption = false
+                return
+            }
+            wasPlayingBeforeInterruption = false
+            guard activeDevice == .iphone, currentTrack != nil else { return }
+            wantsPlayback = true
+            // The session was deactivated under us; it has to be reactivated before the
+            // player will make any sound again.
+            session.activate(casting: false)
+            engine.play()
+            isPlaying = true
+            updateNowPlayingInfo()
+        @unknown default:
+            break
+        }
+    }
+
+    /// AirPods being taken out, a headphone cable being pulled, a Bluetooth speaker going
+    /// out of range. The platform convention — and what users expect — is that removing the
+    /// thing you were listening on pauses playback rather than switching to the phone's
+    /// loudspeaker. iOS pauses the underlying `AVPlayer` for us, but the app's own
+    /// `isPlaying` was never updated to match, so the UI and lock screen kept claiming to
+    /// be playing and the next AirPods tap was swallowed "un-pausing" something that was
+    /// already stopped.
+    private func handleRouteChange(_ note: Notification) {
+        guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+        switch reason {
+        case .oldDeviceUnavailable, .noSuitableRouteForCategory:
+            // `.noSuitableRouteForCategory` is the same event without a replacement route:
+            // the last output went away entirely. AVPlayer stops either way, so the app has
+            // to stop claiming to play either way.
+            guard activeDevice == .iphone else { return }
+            // Clears the intent too, or a stream resolve that completes a second later
+            // starts the track playing out of the phone's own speaker.
+            wantsPlayback = false
+            engine.pause()
+            if isPlaying {
+                isPlaying = false
+                updateNowPlayingInfo()
+            }
+        case .newDeviceAvailable:
+            // Deliberately does *not* start playing. Connecting AirPods while nothing is
+            // playing should not begin blasting music; the user's tap does that. What it
+            // must do is make sure the session is live on the new route, so the first tap
+            // afterwards works immediately.
+            guard activeDevice == .iphone, currentTrack != nil else { return }
+            session.activate(casting: false)
+        case .categoryChange, .override, .routeConfigurationChange:
+            // Another app (or our own casting switch) reshaped the route. Only worth
+            // reconciling our flag against what the engine is actually doing.
+            reconcileIsPlayingWithEngine()
+        default:
+            // Any other reason still means the route was reshaped under us; believe the
+            // engine rather than assuming nothing changed.
+            reconcileIsPlayingWithEngine()
+        }
+    }
+
+    /// Rare, but it does happen (and reliably under memory pressure on older phones): the
+    /// media daemon restarts and every AVFoundation object the app holds becomes inert.
+    /// Without rebuilding, playback is dead until the app is force-quit.
+    private func handleMediaServicesReset() {
+        // The player object itself is dead after a reset, not just its item — rebuild
+        // before anything else, or the reattach below plays into a corpse.
+        engine.rebuild()
+        isInterrupted = false
+        session.activate(casting: activeDevice == .computer)
+        guard activeDevice == .iphone, currentTrack != nil, let url = attachedURL else { return }
+        let resumeAt = progress
+        attach(url: url, track: currentTrack!, resumeAt: resumeAt, autoplay: wantsPlayback, recordHistory: false)
+    }
+
+    /// An item that will never play — most often an expired stream URL (they are
+    /// time-limited, and a track started from a queue that was built an hour ago hits this
+    /// routinely). One silent re-resolve, then a visible error rather than a play button
+    /// that does nothing.
+    private func handlePlaybackFailure(_ error: Error?) {
+        guard activeDevice == .iphone, let track = currentTrack else { return }
+        NSLog("[PlayerService] playback failed: %@", error?.localizedDescription ?? "unknown")
+        guard !hasRetriedCurrentTrack else {
+            isPlaying = false
+            isLoading = false
+            errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
+            updateNowPlayingInfo()
+            return
+        }
+        hasRetriedCurrentTrack = true
+        // The cached URL is the thing that just failed; without dropping it the "retry"
+        // below would be handed the very same dead URL and fail identically.
+        streams.invalidate(videoId: track.videoId)
+        let resumeAt = progress
+        let wasPlaying = isPlaying
+        isLoading = true
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let urlString = try await self.streams.streamURL(videoId: track.videoId)
+                guard !Task.isCancelled, self.currentTrack?.videoId == track.videoId else { return }
+                guard let url = URL(string: urlString) else { throw APIError.invalidURL }
+                self.attach(url: url, track: track, resumeAt: resumeAt, autoplay: wasPlaying, recordHistory: false)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.isLoading = false
+                self.isPlaying = false
+                self.errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
+                self.updateNowPlayingInfo()
+            }
+        }
+    }
+
     // MARK: - Playback entry points
 
     /// Play `track`, queuing up whatever comes after it in `context` (the list it was tapped from).
@@ -255,7 +591,7 @@ final class PlayerService: ObservableObject {
     /// happened via the Play button on a radio's own screen, so tapping a song inside a
     /// radio, or starting one from the web remote, left no trace of the station at all.
     func play(track: Track, context: [Track] = [], contextTitle: String? = nil, contextSeed: Track? = nil) {
-        if let contextSeed { RadioHistoryStore.shared.record(seed: contextSeed) }
+        if let contextSeed { sideEffects.recordRadioSeed(contextSeed) }
         manualQueue = []
         isShuffling = false
         if let index = context.firstIndex(where: { $0.id == track.id }) {
@@ -288,6 +624,9 @@ final class PlayerService: ObservableObject {
     func addToQueue(_ track: Track) {
         contextQueue.removeAll { $0.id == track.id }
         orderedContextQueue.removeAll { $0.id == track.id }
+        // Already queued by hand — queuing it again is a no-op rather than a second copy.
+        // Two identical entries played the track twice and made the row identity ambiguous.
+        guard !manualQueue.contains(where: { $0.id == track.id }) else { return }
         manualQueue.append(track)
         prefetchUpNextForComputer()
     }
@@ -300,6 +639,36 @@ final class PlayerService: ObservableObject {
         prefetchUpNextForComputer()
     }
 
+    /// Removes exactly one entry by position. `removeFromQueue(_:)` matches on id and
+    /// removes *every* copy, which is wrong when a track legitimately appears twice.
+    /// Removes one entry, verifying the position still holds the track the caller meant.
+    ///
+    /// A row captures its index when it renders, but the queue moves on its own — `advance()`
+    /// pops from the front at every track boundary. A swipe on a row rendered before that
+    /// boundary and released after it deleted a *different* track. The expected track is
+    /// passed alongside the index so a stale position falls back to matching by identity.
+    func removeFromManualQueue(at index: Int, expecting track: Track? = nil) {
+        guard let resolved = Self.resolveIndex(index, expecting: track, in: manualQueue) else { return }
+        manualQueue.remove(at: resolved)
+        prefetchUpNextForComputer()
+    }
+
+    private static func resolveIndex(_ index: Int, expecting track: Track?, in queue: [Track]) -> Int? {
+        if queue.indices.contains(index), track == nil || queue[index].id == track?.id { return index }
+        guard let track else { return nil }
+        return queue.firstIndex { $0.id == track.id }
+    }
+
+    func removeFromContextQueue(at index: Int, expecting track: Track? = nil) {
+        guard let index = Self.resolveIndex(index, expecting: track, in: contextQueue) else { return }
+        let removed = contextQueue.remove(at: index)
+        // Mirror the removal in the unshuffled order, one copy only.
+        if let mirrored = orderedContextQueue.firstIndex(where: { $0.id == removed.id }) {
+            orderedContextQueue.remove(at: mirrored)
+        }
+        prefetchUpNextForComputer()
+    }
+
     func removeFromQueue(_ track: Track) {
         manualQueue.removeAll { $0.id == track.id }
         contextQueue.removeAll { $0.id == track.id }
@@ -309,6 +678,7 @@ final class PlayerService: ObservableObject {
 
     func moveInManualQueue(from source: IndexSet, to destination: Int) {
         manualQueue.move(fromOffsets: source, toOffset: destination)
+        prefetchUpNextForComputer()
     }
 
     func moveInContextQueue(from source: IndexSet, to destination: Int) {
@@ -316,6 +686,7 @@ final class PlayerService: ObservableObject {
         if !isShuffling {
             orderedContextQueue = contextQueue
         }
+        prefetchUpNextForComputer()
     }
 
     /// Jump straight to an item already in the queue, dropping whatever preceded it —
@@ -323,14 +694,14 @@ final class PlayerService: ObservableObject {
     func skipTo(_ track: Track) {
         if let index = manualQueue.firstIndex(where: { $0.id == track.id }) {
             manualQueue.removeFirst(index + 1)
-            load(track)
+            load(track, origin: .manual)
             return
         }
         guard let index = contextQueue.firstIndex(where: { $0.id == track.id }) else { return }
         let skipped = contextQueue.prefix(index + 1).map(\.id)
         contextQueue.removeFirst(index + 1)
         orderedContextQueue.removeAll { skipped.contains($0.id) }
-        load(track)
+        load(track, origin: .context)
     }
 
     // MARK: - Transport
@@ -340,6 +711,7 @@ final class PlayerService: ObservableObject {
         if activeDevice == .computer {
             bumpPlaybackEpoch()
             isPlaying.toggle()
+            pendingPlayIntent = (playing: isPlaying, at: Date())
             onComputerCommand?(.toggle)
             updateNowPlayingInfo()
             return
@@ -351,24 +723,49 @@ final class PlayerService: ObservableObject {
             updateNowPlayingInfo()
             return
         }
+        // Bumped on the phone's own play/pause too, not just while casting. The epoch is
+        // what a browser uses to recognise reports describing a state the phone has
+        // already moved past, and a pause taken here while a browser was still connected
+        // (about to be handed playback, or just watching) left the two agreeing on an
+        // epoch that no longer described the same thing.
+        bumpPlaybackEpoch()
         if isPlaying {
-            player.pause()
+            wantsPlayback = false
+            engine.pause()
+            isPlaying = false
         } else {
-            player.play()
+            wantsPlayback = true
+            // Coming back from an interruption or a route change, the session may no
+            // longer be active — playing into a dead session is silent, which is exactly
+            // what "the first tap does nothing" felt like.
+            session.activate(casting: false)
+            engine.play()
+            isPlaying = true
         }
-        isPlaying.toggle()
         updateNowPlayingInfo()
     }
 
     func seek(to seconds: Double) {
+        // A scrub past the end (or a negative one from a jittery remote) otherwise pushed
+        // the player into an unrecoverable position.
+        let target = clampToTrack(seconds)
         guard activeDevice != .computer else {
             bumpPlaybackEpoch()
-            progress = seconds
-            onComputerCommand?(.seek(seconds))
+            progress = target
+            onComputerCommand?(.seek(target))
+            updateNowPlayingInfo()
             return
         }
-        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
-        progress = seconds
+        bumpPlaybackEpoch()
+        engine.seek(to: target)
+        progress = target
+        updateNowPlayingInfo()
+    }
+
+    private func clampToTrack(_ seconds: Double) -> Double {
+        guard seconds.isFinite else { return 0 }
+        let upperBound = duration > 0 ? duration : Double.greatestFiniteMagnitude
+        return min(max(0, seconds), upperBound)
     }
 
     // MARK: - Device switching (VVDemus Connect)
@@ -376,14 +773,29 @@ final class PlayerService: ObservableObject {
     /// Moves audio output between this phone's AVPlayer and a connected browser, without
     /// touching queue/radio/shuffle/stats state — those all keep living here regardless
     /// of which device is actually making sound.
+    /// Hands playback back to the phone because the browser went quiet, rather than
+    /// because the user asked. The distinction matters: the automatic case must not start
+    /// making noise — a closed laptop lid otherwise had the phone playing out loud in the
+    /// user's bag about ten seconds later.
+    func fallBackToPhone() {
+        wantsPlayback = false
+        isPlaying = false
+        setActiveDevice(.iphone)
+    }
+
     func setActiveDevice(_ device: PlaybackDevice) {
         guard device != activeDevice else { return }
         activeDevice = device
         bumpPlaybackEpoch()
-        Self.configureAudioSession(casting: device == .computer)
+        pendingPlayIntent = nil
+        session.activate(casting: device == .computer)
         switch device {
         case .computer:
-            player.pause()
+            engine.pause()
+            // A phone-side load cancelled by this switch never reaches its own completion,
+            // so nothing else would ever clear this — and while it is true the reconcile is
+            // disabled entirely.
+            isLoading = false
             isResumingAfterDeviceSwitch = false
             prefetchUpNextForComputer()
             // The currently-playing track (if any) needs its stream URL resolved for the
@@ -392,10 +804,12 @@ final class PlayerService: ObservableObject {
             externalStream = nil
             guard let track = currentTrack else { return }
             loadTask?.cancel()
-            loadTask = Task {
+            loadTask = Task { [weak self] in
+                guard let self else { return }
                 do {
                     let urlString = try await self.resolveComputerStreamUrl(for: track)
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, self.activeDevice == .computer,
+                          self.currentTrack?.videoId == track.videoId else { return }
                     self.externalStream = ExternalStream(videoId: track.videoId, url: urlString)
                 } catch {
                     guard !Task.isCancelled else { return }
@@ -410,24 +824,32 @@ final class PlayerService: ObservableObject {
             guard let track = currentTrack else { return }
             isResumingAfterDeviceSwitch = true
             loadTask?.cancel()
-            loadTask = Task {
+            loadTask = Task { [weak self] in
+                guard let self else { return }
                 do {
                     let url: URL
-                    if let localURL = DownloadManager.shared.localFileURL(for: track) {
+                    if let localURL = self.downloads.localFileURL(for: track) {
                         url = localURL
                     } else {
-                        let stream = try await APIClient.shared.stream(videoId: track.videoId)
-                        guard let resolved = URL(string: stream.url) else { throw APIError.invalidURL }
+                        let urlString = try await self.streams.streamURL(videoId: track.videoId)
+                        guard let resolved = URL(string: urlString) else { throw APIError.invalidURL }
                         url = resolved
                     }
-                    guard !Task.isCancelled else { return }
+                    // A second switch (back to the computer, or on to another track) while
+                    // this was resolving must win — otherwise the late arrival reattaches
+                    // the phone's player and steals the route back.
+                    guard !Task.isCancelled, self.activeDevice == .iphone,
+                          self.currentTrack?.videoId == track.videoId else { return }
                     // Read (rather than pre-captured) so a pause or seek made while this
                     // was resolving is honoured instead of being reverted.
-                    attach(url: url, track: track, resumeAt: progress, autoplay: isPlaying, recordHistory: false)
+                    self.attach(url: url, track: track, resumeAt: self.progress, autoplay: self.isPlaying, recordHistory: false)
                 } catch {
                     guard !Task.isCancelled else { return }
-                    isResumingAfterDeviceSwitch = false
-                    errorMessage = "Couldn't resume playback on this iPhone."
+                    self.isResumingAfterDeviceSwitch = false
+                    self.isLoading = false
+                    self.isPlaying = false
+                    self.errorMessage = "Couldn't resume playback on this iPhone."
+                    self.updateNowPlayingInfo()
                 }
             }
         }
@@ -451,23 +873,75 @@ final class PlayerService: ObservableObject {
         // Anything describing playback as it was before the phone's latest instruction is
         // out of date by definition; see `playbackEpoch`.
         guard epoch == playbackEpoch else { return }
+        // Bounded, not merely finite: `1e300` is finite, and any consumer that converts it
+        // to an Int traps. These values come from any device on the network.
+        guard let progress = Self.sanitisedSeconds(progress),
+              let duration = Self.sanitisedSeconds(duration) else { return }
         self.progress = progress
         self.duration = duration
+        // Position is always worth taking; the play/pause flag is not.
+        //
+        // Pausing from the phone's own lock screen while casting bumps the epoch and
+        // relays a command to the browser. If that relay is slow or the socket is down,
+        // the browser carries on playing, picks up the *new* epoch from its next poll, and
+        // reports `isPlaying: true` under it — which passed the epoch check and flipped the
+        // phone straight back to playing. The pause visibly bounced and didn't stick. The
+        // browser holds the mirror-image intent for its own commands; this is the phone's.
+        if let intent = pendingPlayIntent {
+            if intent.playing == isPlaying {
+                pendingPlayIntent = nil
+            } else if Date().timeIntervalSince(intent.at) < Self.playIntentTimeout {
+                updateNowPlayingInfo()
+                return
+            } else {
+                // The browser never came round; it's the one making sound, so believe it.
+                pendingPlayIntent = nil
+            }
+        }
         self.isPlaying = isPlaying
         updateNowPlayingInfo()
+    }
+
+    /// What this phone last told the casting browser to do, held until the browser's
+    /// reports agree (or until it's clear they never will).
+    private var pendingPlayIntent: (playing: Bool, at: Date)?
+    private static let playIntentTimeout: TimeInterval = 5
+
+    /// Advances only if `from` is still the current track.
+    ///
+    /// The browser posts `/api/next` when its audio element ends, which can arrive just
+    /// after the user already pressed next on the phone. Unconditional advancing then
+    /// skipped a track entirely — and still recorded it as played.
+    func advanceIfCurrent(_ from: String?) {
+        guard let from else { return advance() }
+        guard currentTrack?.videoId == from else { return }
+        advance()
     }
 
     func advance() {
         if !manualQueue.isEmpty {
             let next = manualQueue.removeFirst()
-            load(next)
+            load(next, origin: .manual)
         } else if let next = popNextContextTrack() {
-            load(next)
+            load(next, origin: .context)
         } else if autoplayEnabled, let seed = currentTrack {
             continueAutoplay(from: seed)
         } else {
-            isPlaying = false
+            stopAtEndOfQueue()
         }
+    }
+
+    /// Nothing left to play. The lock screen has to be told, or it keeps showing the last
+    /// track as playing forever.
+    private func stopAtEndOfQueue() {
+        // The track that just finished is credited here. Stats were only ever recorded when
+        // one track replaced another, so the last track of every queue — the one the user
+        // let play all the way through — was systematically the one never counted.
+        recordListeningStats()
+        progress = 0
+        isPlaying = false
+        isLoading = false
+        updateNowPlayingInfo()
     }
 
     private func popNextContextTrack() -> Track? {
@@ -492,17 +966,26 @@ final class PlayerService: ObservableObject {
             seek(to: 0)
             return
         }
-        guard let prev = backStack.popLast() else {
+        guard let entry = backStack.popLast() else {
             seek(to: 0)
             return
         }
         if let outgoing = currentTrack {
-            contextQueue.insert(outgoing, at: 0)
-            orderedContextQueue.insert(outgoing, at: 0)
+            switch currentTrackOrigin {
+            case .manual:
+                manualQueue.insert(outgoing, at: 0)
+            case .context:
+                contextQueue.insert(outgoing, at: 0)
+                // While shuffling the two queues deliberately differ in order; inserting
+                // into the unshuffled one at position 0 would rewrite the real running
+                // order, which is what gets restored when shuffle is switched off.
+                if !isShuffling { orderedContextQueue.insert(outgoing, at: 0) }
+            }
         }
+        currentTrackOrigin = entry.origin
         // Bypass load()'s backStack push: walking backward shouldn't re-push the track
         // we're leaving, or repeated "previous" presses would just bounce between two tracks.
-        beginLoad(prev)
+        beginLoad(entry.track)
     }
 
     var hasPrevious: Bool { !backStack.isEmpty }
@@ -512,58 +995,80 @@ final class PlayerService: ObservableObject {
     private func continueAutoplay(from seed: Track) {
         isLoading = true
         loadTask?.cancel()
-        loadTask = Task {
+        loadTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 // Reuse an already-cached mix for this seed (e.g. from having viewed its
                 // radio screen, or the web remote fetching it) instead of always re-fetching
                 // — and only 25 are needed, not 50, since just `fresh.first` is used
                 // immediately and the rest just seed the context queue.
                 let mix: [Track]
-                if let cached = RadioCacheStore.shared.tracks(for: seed.videoId), !cached.isEmpty {
+                if let cached = self.sideEffects.cachedRadio(seedVideoId: seed.videoId), !cached.isEmpty {
                     mix = cached
                 } else {
-                    let fetched = try await APIClient.shared.radio(videoId: seed.videoId, limit: InnerTubeClient.dataSaverLimit(default: 25))
-                    // `storeIfAbsent`, so autoplay quietly refilling the queue can never
+                    let fetched = try await self.radios.radio(
+                        videoId: seed.videoId,
+                        limit: InnerTubeClient.dataSaverLimit(default: 25)
+                    )
+                    // `cacheRadioIfAbsent`, so autoplay quietly refilling the queue can never
                     // replace the mix shown on that radio's screen with its own shorter one.
-                    RadioCacheStore.shared.storeIfAbsent(fetched, for: seed.videoId)
+                    self.sideEffects.cacheRadioIfAbsent(fetched, seedVideoId: seed.videoId)
                     mix = fetched
                 }
                 guard !Task.isCancelled else { return }
-                let recent = Set(PlayHistoryStore.shared.recentSeeds(recentRadioAvoidCount).map(\.id))
+                let recent = self.sideEffects.recentlyPlayedIds(limit: self.recentRadioAvoidCount)
                 let fresh = mix
                     .excludingLongFormMixes()
                     .filter { $0.id != seed.id && !recent.contains($0.id) }
                 guard let next = fresh.first else {
-                    isLoading = false
-                    isPlaying = false
+                    self.stopAtEndOfQueue()
                     return
                 }
-                orderedContextQueue = Array(fresh.dropFirst())
-                contextQueue = isShuffling ? orderedContextQueue.shuffled() : orderedContextQueue
-                queueContextTitle = "\(seed.title) Radio"
+                self.orderedContextQueue = Array(fresh.dropFirst())
+                self.contextQueue = self.isShuffling ? self.orderedContextQueue.shuffled() : self.orderedContextQueue
+                self.queueContextTitle = "\(seed.title) Radio"
                 // Autoplay rolling into a radio counts as listening to it.
-                RadioHistoryStore.shared.record(seed: seed)
-                load(next)
+                self.sideEffects.recordRadioSeed(seed)
+                self.load(next)
             } catch {
                 guard !Task.isCancelled else { return }
-                isLoading = false
-                isPlaying = false
+                self.stopAtEndOfQueue()
             }
         }
     }
 
     // MARK: - Loading a track
 
-    private func load(_ track: Track) {
-        if let outgoing = currentTrack {
-            backStack.append(outgoing)
-            if backStack.count > 30 { backStack.removeFirst(backStack.count - 30) }
-        }
+    private func load(_ track: Track, origin: QueueOrigin = .context) {
+        pushOntoBackStack()
+        currentTrackOrigin = origin
         beginLoad(track)
+    }
+
+    private func pushOntoBackStack() {
+        guard let outgoing = currentTrack else { return }
+        backStack.append((outgoing, currentTrackOrigin))
+        if backStack.count > backStackLimit {
+            backStack.removeFirst(backStack.count - backStackLimit)
+        }
     }
 
     private func beginLoad(_ track: Track) {
         loadTask?.cancel()
+        // Starting a track is a request to play it.
+        wantsPlayback = true
+        // An interruption that never delivered its `.ended` notification (app suspended, the
+        // interrupting app dismissed) would otherwise latch this flag true for the rest of
+        // the process and permanently disable the reconcile safety net.
+        isInterrupted = false
+        // A fresh track supersedes any in-progress hand-back from the computer. Leaving
+        // this set meant that if the new load then failed, the flag stuck on forever: the
+        // periodic observer dropped every tick (so progress and the lock screen froze) and
+        // `togglePlayPause` took its "record the intent" branch, which never touches the
+        // player — play/pause was dead for the rest of the session.
+        isResumingAfterDeviceSwitch = false
+        pendingPlayIntent = nil
+        stallRecoveryTask?.cancel()
         bumpPlaybackEpoch()
         trackLoadEpoch &+= 1
         recordListeningStats()
@@ -571,7 +1076,13 @@ final class PlayerService: ObservableObject {
         isLoading = true
         errorMessage = nil
         progress = 0
-        duration = 0
+        // Seeded from the track's own metadata rather than left at zero until the first
+        // periodic tick. Without it, handing playback back from the computer *while
+        // paused* never ticks at all, so the scrubber was a one-second stub showing 0:00
+        // for the track length until the user pressed play.
+        duration = track.durationSeconds.map(Double.init) ?? 0
+        hasRetriedCurrentTrack = false
+        attachedURL = nil
         updateNowPlayingInfo()
 
         if activeDevice == .computer {
@@ -579,22 +1090,30 @@ final class PlayerService: ObservableObject {
             return
         }
 
+        // The previously attached item is still loaded and would otherwise keep playing
+        // audibly under the new track's title for the length of the resolve, crediting its
+        // elapsed seconds to a song that was never heard.
+        engine.pause()
+
         // Downloaded tracks play straight from disk — no network, no data usage.
-        if let localURL = DownloadManager.shared.localFileURL(for: track) {
+        if let localURL = downloads.localFileURL(for: track) {
             attach(url: localURL, track: track)
             return
         }
 
-        loadTask = Task {
+        loadTask = Task { [weak self] in
+            guard let self else { return }
             do {
-                let stream = try await APIClient.shared.stream(videoId: track.videoId)
-                guard !Task.isCancelled else { return }
-                guard let url = URL(string: stream.url) else { throw APIError.invalidURL }
-                attach(url: url, track: track)
+                let urlString = try await self.streams.streamURL(videoId: track.videoId)
+                guard !Task.isCancelled, self.currentTrack?.videoId == track.videoId else { return }
+                guard let url = URL(string: urlString) else { throw APIError.invalidURL }
+                self.attach(url: url, track: track)
             } catch {
                 guard !Task.isCancelled else { return }
-                isLoading = false
-                errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
+                self.isLoading = false
+                self.isPlaying = false
+                self.errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
+                self.updateNowPlayingInfo()
             }
         }
     }
@@ -603,22 +1122,40 @@ final class PlayerService: ObservableObject {
     /// into its own `<audio>` element instead of touching this phone's AVPlayer at all,
     /// so the phone doesn't also decode/stream the same audio while casting.
     private func beginLoadForComputer(_ track: Track) {
-        PlayHistoryStore.shared.record(track)
+        sideEffects.recordPlay(track)
+        // The whole point of prefetching the next track's URL is that it's ready the moment
+        // the track changes. Discarding it here and re-resolving from scratch put a 1-2
+        // second silence into *every* track transition while casting — the browser sits at
+        // `streamVideoId !== videoId` waiting — even though the URL was already in hand.
+        if let prefetched = upNextStream, prefetched.videoId == track.videoId {
+            loadTask?.cancel()
+            externalStream = prefetched
+            isLoading = false
+            isPlaying = true
+            updateNowPlayingInfo()
+            prefetchUpNextForComputer()
+            return
+        }
         // Drop the outgoing track's URL immediately, so nothing observing this mid-resolve
         // sees the new track paired with the old track's audio.
         externalStream = nil
-        loadTask = Task {
+        loadTask = Task { [weak self] in
+            guard let self else { return }
             do {
-                let urlString = try await resolveComputerStreamUrl(for: track)
-                guard !Task.isCancelled else { return }
-                externalStream = ExternalStream(videoId: track.videoId, url: urlString)
-                isLoading = false
-                isPlaying = true
-                prefetchUpNextForComputer()
+                let urlString = try await self.resolveComputerStreamUrl(for: track)
+                guard !Task.isCancelled, self.activeDevice == .computer,
+                      self.currentTrack?.videoId == track.videoId else { return }
+                self.externalStream = ExternalStream(videoId: track.videoId, url: urlString)
+                self.isLoading = false
+                self.isPlaying = true
+                self.updateNowPlayingInfo()
+                self.prefetchUpNextForComputer()
             } catch {
                 guard !Task.isCancelled else { return }
-                isLoading = false
-                errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
+                self.isLoading = false
+                self.isPlaying = false
+                self.errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
+                self.updateNowPlayingInfo()
             }
         }
     }
@@ -641,18 +1178,24 @@ final class PlayerService: ObservableObject {
     /// speculatively on every track change.
     private func prefetchUpNextForComputer() {
         guard activeDevice == .computer, let next = nextQueuedTrack else {
+            prefetchTask?.cancel()
             upNextStream = nil
             upNextTrack = nil
             return
         }
         guard upNextStream?.videoId != next.videoId else { return }
+        // Without this the same in-flight prefetch was cancelled and restarted by every
+        // queue mutation, so a rapid series of "add to queue" taps could leave the browser
+        // with no next URL at all.
+        guard upNextTrack?.videoId != next.videoId || upNextStream != nil else { return }
         upNextTrack = next
         upNextStream = nil
         prefetchTask?.cancel()
-        prefetchTask = Task {
-            guard let urlString = try? await resolveComputerStreamUrl(for: next) else { return }
-            guard !Task.isCancelled, nextQueuedTrack?.videoId == next.videoId else { return }
-            upNextStream = ExternalStream(videoId: next.videoId, url: urlString)
+        prefetchTask = Task { [weak self] in
+            guard let self else { return }
+            guard let urlString = try? await self.resolveComputerStreamUrl(for: next) else { return }
+            guard !Task.isCancelled, self.nextQueuedTrack?.videoId == next.videoId else { return }
+            self.upNextStream = ExternalStream(videoId: next.videoId, url: urlString)
         }
     }
 
@@ -668,6 +1211,7 @@ final class PlayerService: ObservableObject {
     /// reason — bumping it is the signal that tells the browser to start a track over.
     func adoptExternalPlayback(videoId: String, progress: Double) {
         guard activeDevice == .computer else { return }
+        guard let progress = Self.sanitisedSeconds(progress) else { return }
         guard currentTrack?.videoId != videoId else {
             self.progress = progress
             return
@@ -678,40 +1222,47 @@ final class PlayerService: ObservableObject {
         if let index = manualQueue.firstIndex(where: { $0.videoId == videoId }) {
             let adopted = manualQueue[index]
             manualQueue.removeFirst(index + 1)
-            finishAdopting(adopted, progress: progress)
+            finishAdopting(adopted, origin: .manual, progress: progress)
         } else if let index = contextQueue.firstIndex(where: { $0.videoId == videoId }) {
             let adopted = contextQueue[index]
             let skipped = contextQueue.prefix(index + 1).map(\.id)
             contextQueue.removeFirst(index + 1)
             orderedContextQueue.removeAll { skipped.contains($0.id) }
-            finishAdopting(adopted, progress: progress)
+            finishAdopting(adopted, origin: .context, progress: progress)
         }
         // A track that isn't in either queue can't be reconciled — the phone keeps its own
         // idea of the queue and the next state broadcast pulls the browser back into line.
     }
 
-    private func finishAdopting(_ track: Track, progress: Double) {
+    private func finishAdopting(_ track: Track, origin: QueueOrigin, progress: Double) {
+        // Unconditionally, not just on the `externalStream == nil` path below. The adopt
+        // handler switches the device first, which starts a task resolving the *outgoing*
+        // track's URL; when the prefetched URL matched (the common case) that task survived
+        // and later overwrote `externalStream` with the previous track's audio. The phone's
+        // `streamVideoId` then permanently disagreed with `currentTrack`, and any tab
+        // loading afterwards waited forever with nothing to play.
+        loadTask?.cancel()
         recordListeningStats()
-        if let outgoing = currentTrack {
-            backStack.append(outgoing)
-            if backStack.count > 30 { backStack.removeFirst(backStack.count - 30) }
-        }
+        pushOntoBackStack()
+        currentTrackOrigin = origin
         currentTrack = track
         self.progress = progress
-        duration = 0
+        // Seeded from the track's own metadata like `beginLoad` does, so the scrubber isn't
+        // a 0:00 stub until the browser's next report lands.
+        duration = track.durationSeconds.map(Double.init) ?? 0
         isLoading = false
         isPlaying = true
-        PlayHistoryStore.shared.record(track)
+        sideEffects.recordPlay(track)
         // The browser already holds a working URL for this track (it's playing it); this
         // just brings the phone's own record back in step, without disturbing playback.
         externalStream = upNextStream?.videoId == track.videoId ? upNextStream : nil
         updateNowPlayingInfo()
         if externalStream == nil {
-            loadTask?.cancel()
-            loadTask = Task {
-                guard let urlString = try? await resolveComputerStreamUrl(for: track),
-                      !Task.isCancelled, currentTrack?.videoId == track.videoId else { return }
-                externalStream = ExternalStream(videoId: track.videoId, url: urlString)
+            loadTask = Task { [weak self] in
+                guard let self else { return }
+                guard let urlString = try? await self.resolveComputerStreamUrl(for: track),
+                      !Task.isCancelled, self.currentTrack?.videoId == track.videoId else { return }
+                self.externalStream = ExternalStream(videoId: track.videoId, url: urlString)
             }
         }
         prefetchUpNextForComputer()
@@ -723,29 +1274,10 @@ final class PlayerService: ObservableObject {
     /// `file://` URL on the phone's disk), or the directly-fetchable resolved stream URL
     /// otherwise.
     private func resolveComputerStreamUrl(for track: Track) async throws -> String {
-        if DownloadManager.shared.isDownloaded(track) {
+        if downloads.isDownloaded(track) {
             return "/api/audio/local/\(track.videoId)"
         }
-        return try await APIClient.shared.stream(videoId: track.videoId).url
-    }
-
-    /// Local (downloaded) files bypass the network entirely — no need to route them
-    /// through `StreamingResourceLoader`, and their bytes were already counted at
-    /// download time. Everything else goes through the loader so its actual streaming
-    /// bytes show up in `NetworkByteCounter` instead of being invisible to it. Falls back
-    /// to handing AVFoundation the real URL directly (no byte counting, but playback
-    /// still works) if the URL can't be remapped to the loader's custom scheme for any
-    /// reason.
-    private static func makePlayerItem(for url: URL) -> (item: AVPlayerItem, resourceLoader: StreamingResourceLoader?) {
-        guard !url.isFileURL, let playableURL = StreamingResourceLoader.playableURL(for: url) else {
-            return (AVPlayerItem(url: url), nil)
-        }
-        let loader = StreamingResourceLoader(realURL: url)
-        let asset = AVURLAsset(url: playableURL)
-        asset.resourceLoader.setDelegate(loader, queue: .main)
-        let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = forwardBufferDuration
-        return (item, loader)
+        return try await streams.streamURL(videoId: track.videoId)
     }
 
     /// While the computer is the one making sound, this phone's session is set to mix
@@ -758,13 +1290,7 @@ final class PlayerService: ObservableObject {
     /// Note that automatic AirPods switching is the operating system's own heuristic; this
     /// removes a reason for it to stay put, but can't force the change.
     static func configureAudioSession(casting: Bool) {
-        let session = AVAudioSession.sharedInstance()
-        if casting {
-            try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-        } else {
-            try? session.setCategory(.playback, mode: .default)
-        }
-        try? session.setActive(true)
+        SystemAudioSession.shared.activate(casting: casting)
     }
 
     /// Left to its own devices AVFoundation happily pulls a whole progressive audio file
@@ -772,50 +1298,44 @@ final class PlayerService: ObservableObject {
     /// usually already paid for all four minutes of it. Capping the read-ahead means a skip
     /// wastes at most this much audio. Kept well above the few seconds of buffer needed to
     /// ride out a bad patch of signal, and tightened further under Data Saver.
-    private static var forwardBufferDuration: TimeInterval {
+    static var forwardBufferDuration: TimeInterval {
         UserDefaults.standard.bool(forKey: InnerTubeClient.dataSaverDefaultsKey) ? 30 : 60
     }
 
-    private func attach(url: URL, track: Track, resumeAt: Double = 0, autoplay: Bool = true, recordHistory: Bool = true) {
+    private func attach(url: URL, track: Track, resumeAt: Double = 0, autoplay: Bool? = nil, recordHistory: Bool = true) {
+        // `wantsPlayback` unless a caller is explicit. Read at attach time, not captured
+        // before the await, so a pause or a route change during the resolve wins.
+        let shouldPlay = (autoplay ?? wantsPlayback) && !isInterrupted
         isResumingAfterDeviceSwitch = false
-        if let endObserver {
-            NotificationCenter.default.removeObserver(endObserver)
-        }
-        // Unpacked into its own binding because `makePlayerItem` returns a pair. The
-        // end-of-track observer below was registered against the *pair* rather than the
-        // player item, which silently compiles (`object:` takes `Any?`) but can never
-        // match the notification AVFoundation posts — so nothing ever advanced when a
-        // track finished on this phone, in the foreground or otherwise. Playback simply
-        // sat at the end of the song.
-        let (playerItem, resourceLoader) = PlayerService.makePlayerItem(for: url)
-        activeResourceLoader = resourceLoader
-        itemStatusObservation = playerItem.observe(\.status, options: [.new]) { playerItem, _ in
-            if playerItem.status == .failed {
-                NSLog("[PlayerService] AVPlayerItem failed: %@", playerItem.error?.localizedDescription ?? "unknown")
-            }
-        }
-        player.replaceCurrentItem(with: playerItem)
+        // A successful attach clears any error from the attempt it replaces — otherwise a
+        // recovered retry plays underneath "Couldn't play…".
+        errorMessage = nil
+        attachedURL = url
+        engine.replaceItem(url: url, forwardBufferDuration: Self.forwardBufferDuration)
         if resumeAt > 0 {
-            player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
+            engine.seek(to: resumeAt)
             progress = resumeAt
         }
-        if autoplay {
-            player.play()
+        if shouldPlay {
+            // Reasserted on every attach: after an interruption or a route change the
+            // session can be inactive, and `play()` into an inactive session is silent
+            // while still reporting success.
+            session.activate(casting: false)
+            engine.play()
             isPlaying = true
         } else {
             isPlaying = false
         }
         isLoading = false
-        if recordHistory { PlayHistoryStore.shared.record(track) }
+        if recordHistory { sideEffects.recordPlay(track) }
         updateNowPlayingInfo()
+    }
 
-        endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: playerItem,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.advance() }
-        }
+    /// A plausible number of seconds, or nil. Anything longer than a day is nonsense for a
+    /// track, and letting it through means a later `Int(...)` conversion aborts the app.
+    static func sanitisedSeconds(_ value: Double) -> Double? {
+        guard value.isFinite, value >= 0, value <= 86_400 else { return nil }
+        return value
     }
 
     /// Logs how much of the *outgoing* track was actually heard, right before it's
@@ -824,7 +1344,8 @@ final class PlayerService: ObservableObject {
     private func recordListeningStats() {
         guard let outgoing = currentTrack, progress > 0 else { return }
         let cap = outgoing.durationSeconds.map(Double.init) ?? progress
-        let elapsed = min(progress, cap)
-        ListeningStatsStore.shared.record(outgoing, secondsPlayed: Int(elapsed))
+        // Clamped before the Int conversion, which traps on anything out of range.
+        let elapsed = min(max(0, min(progress, cap)), 86_400)
+        sideEffects.recordListening(outgoing, secondsPlayed: Int(elapsed))
     }
 }

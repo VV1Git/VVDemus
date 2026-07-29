@@ -57,6 +57,26 @@ final class ByteCountingSessionDelegate: NSObject, URLSessionTaskDelegate {
 /// Shared sessions used in place of `URLSession.shared` for image and InnerTube API calls,
 /// purely so their bytes are visible to `NetworkByteCounter`.
 enum NetworkSessions {
-    static let image = URLSession(configuration: .default, delegate: ByteCountingSessionDelegate(category: .image), delegateQueue: nil)
-    static let api = URLSession(configuration: .default, delegate: ByteCountingSessionDelegate(category: .api), delegateQueue: nil)
+    /// Bounded timeouts. The default is 60 seconds per request, so on a captive portal or
+    /// a half-open connection a search sat spinning for a full minute before failing.
+    private static func configuration(useURLCache: Bool) -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 30
+        // Images already have their own disk cache (`DiskImageCache`); leaving
+        // `URLCache.shared` on top of it stored a second copy of every thumbnail.
+        if !useURLCache { configuration.urlCache = nil }
+        return configuration
+    }
+
+    static let image = URLSession(
+        configuration: configuration(useURLCache: false),
+        delegate: ByteCountingSessionDelegate(category: .image),
+        delegateQueue: nil
+    )
+    static let api = URLSession(
+        configuration: configuration(useURLCache: true),
+        delegate: ByteCountingSessionDelegate(category: .api),
+        delegateQueue: nil
+    )
 }

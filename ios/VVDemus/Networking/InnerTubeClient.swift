@@ -14,26 +14,44 @@ enum InnerTubeClient {
     private static let webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0"
     private static let androidUserAgent = "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip"
     private static let androidVRUserAgent = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+    private static let iosUserAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)"
     /// InnerTube "params" blob selecting the Songs filter — reverse-engineered value,
     /// stable in practice (it's what music.youtube.com itself sends for this filter).
     private static let songsFilterParams = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
 
     static let dataSaverDefaultsKey = "data_saver_enabled"
 
-    /// Halves batch-fetch sizes (recommendation shelves, Daylist, autoplay refill) under
-    /// Data Saver — previously Data Saver only changed streaming bitrate and left these
-    /// fixed constants untouched, even though a smaller radio/recommendation payload is a
-    /// real, easy data saving with no audible quality cost.
+    /// Halves how many tracks are taken from a batch fetch (recommendation shelves,
+    /// Daylist, autoplay refill) under Data Saver.
+    ///
+    /// Note this saves no bytes: InnerTube's search and `next` endpoints return a fixed
+    /// page with no count parameter, so the limit is applied while parsing a response that
+    /// has already been downloaded in full — measured at under 1% difference between
+    /// limit 25 and limit 12 (VVDemusTests/DataUsageBenchmarks). It still bounds how much
+    /// is held in memory and how far autoplay reaches ahead, which is why it stays.
     static func dataSaverLimit(default defaultLimit: Int) -> Int {
         UserDefaults.standard.bool(forKey: dataSaverDefaultsKey) ? max(1, defaultLimit / 2) : defaultLimit
     }
 
-    private static var clientVersion: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd"
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        return "1.\(formatter.string(from: Date())).01.00"
+    /// Built from a fixed Gregorian calendar in UTC, not a locale-sensitive
+    /// `DateFormatter`.
+    ///
+    /// `DateFormatter` defaults to `Locale.current`, so on a device set to a Thai
+    /// Buddhist, Japanese Imperial or Islamic calendar `yyyy` rendered 2569 / 令和8 / 1448
+    /// and every InnerTube request went out claiming to be client version "1.25690729.01.00".
+    /// A formatter was also being allocated per request, which is one of the more
+    /// expensive things in Foundation.
+    static func clientVersion(for date: Date = Date()) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .gmt
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        let year = parts.year ?? 2024
+        let month = parts.month ?? 1
+        let day = parts.day ?? 1
+        return String(format: "1.%04d%02d%02d.01.00", year, month, day)
     }
+
+    private static var clientVersion: String { clientVersion(for: Date()) }
 
     // MARK: - Search
 
@@ -76,13 +94,20 @@ enum InnerTubeClient {
     static func home() async throws -> [Track] {
         let seeds = ["top hits 2026", "chill mix", "trending music"]
         let perSeed = dataSaverLimit(default: 10)
-        let lists = try await withThrowingTaskGroup(of: (Int, [Track]).self) { group -> [[Track]] in
+        // Each seed reports its own failure rather than throwing: `for try await`
+        // rethrows the first error and cancels the siblings, so a single flaky search
+        // wiped out the whole Quick Picks row on exactly the poor connection where a
+        // partial row is better than none.
+        let lists = await withTaskGroup(of: (Int, [Track]).self) { group -> [[Track]] in
             for (index, seed) in seeds.enumerated() {
-                group.addTask { (index, try await search(query: seed, limit: perSeed)) }
+                group.addTask { (index, (try? await search(query: seed, limit: perSeed)) ?? []) }
             }
             var results = Array(repeating: [Track](), count: seeds.count)
-            for try await (index, tracks) in group { results[index] = tracks }
+            for await (index, tracks) in group { results[index] = tracks }
             return results
+        }
+        guard lists.contains(where: { !$0.isEmpty }) else {
+            throw APIError.server("Couldn't reach YouTube Music.")
         }
 
         var seen = Set<String>()
@@ -140,44 +165,188 @@ enum InnerTubeClient {
     /// Audio-only first (a few MB instead of the ~3-4x heavier muxed video+audio file),
     /// falling back to the muxed path if the audio-only client ever stops cooperating.
     static func stream(videoId: String) async throws -> StreamInfo {
-        if let audioOnly = try? await audioOnlyStream(videoId: videoId) {
-            return audioOnly
+        do {
+            return try await audioOnlyStream(videoId: videoId)
+        } catch {
+            // Logged rather than swallowed by a bare `try?`. This fallback silently
+            // triples-to-quadruples the app's data usage — every track downloads a 360p
+            // video nobody watches — and with no trace of it happening, the only symptom
+            // is a data bill. If this line shows up for every track, the audio-only client
+            // has stopped working and that is the thing to fix.
+            NSLog("[InnerTubeClient] audio-only unavailable (%@) — falling back to muxed video at ~3-4x the data",
+                  error.localizedDescription)
+            lastStreamWasMuxedFallback = true
+            return try await muxedStream(videoId: videoId)
         }
-        return try await muxedStream(videoId: videoId)
     }
 
-    /// ANDROID_VR's player response exposes adaptiveFormats with direct, un-ciphered
-    /// audio-only URLs and no PO-token gate — unlike the ANDROID client's adaptiveFormats,
-    /// which are gated behind the newer SABR streaming protocol we don't implement.
-    /// This is the most fragile part of the whole client: it rides on a client context
-    /// YouTube never intended third parties to use for this, and could stop working
-    /// without notice. If it does, `stream(videoId:)` above transparently falls back to
-    /// the muxed path, so playback keeps working — just at ~3-4x the data cost.
-    private static func audioOnlyStream(videoId: String) async throws -> StreamInfo {
-        let body: [String: Any] = [
-            "context": [
-                "client": [
-                    "clientName": "ANDROID_VR",
-                    "clientVersion": "1.65.10",
-                    "deviceMake": "Oculus",
-                    "deviceModel": "Quest 3",
-                    "androidSdkVersion": 32,
-                    "userAgent": androidVRUserAgent,
-                    "osName": "Android",
-                    "osVersion": "12L",
-                ],
-            ],
-            "videoId": videoId,
-        ]
-        let json = try await post(
-            url: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-            userAgent: androidVRUserAgent,
-            origin: nil,
-            body: body
-        )
+    /// Whether the most recent resolution had to fall back to the heavy muxed format.
+    /// Read by diagnostics; not used to make playback decisions.
+    private(set) static var lastStreamWasMuxedFallback = false
 
-        guard json["playabilityStatus"]["status"].string == "OK" else {
-            throw APIError.server(json["playabilityStatus"]["reason"].string ?? "video unavailable")
+    /// A player client that hands back direct, un-ciphered audio-only URLs.
+    ///
+    /// Tried in order, because YouTube blocks these clients individually and without
+    /// notice — the whole reason this list exists rather than a single hard-coded client.
+    ///
+    /// ANDROID_VR spent a while looking permanently blocked ("Sign in to confirm you're
+    /// not a bot"), and this comment used to say so. It was wrong: the client was fine and
+    /// the requests were missing a `visitorData` token. Supplying one took resolution from
+    /// 3/15 to 15/15 (see `VisitorDataProvider`). Diagnosing a *missing credential* as a
+    /// *blocked client* is the trap to avoid here — the symptom is identical, and it cost
+    /// this app ~3.9x its playback data for as long as the mistake stood.
+    ///
+    /// `VVDemusTests/PlayerClientProbe` re-runs this comparison against live YouTube; use
+    /// it rather than guessing when playback data usage looks wrong again.
+    struct PlayerClient {
+        let name: String
+        let version: String
+        let userAgent: String
+        let extraContext: [String: Any]
+    }
+
+    static let playerEndpoint = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
+
+    /// The fully-formed player request, credential included.
+    static func playerRequest(
+        videoId: String,
+        client: PlayerClient,
+        visitorData: String?
+    ) throws -> URLRequest {
+        var context: [String: Any] = [
+            "clientName": client.name,
+            "clientVersion": client.version,
+            "userAgent": client.userAgent,
+        ]
+        context.merge(client.extraContext) { current, _ in current }
+        if let visitorData {
+            context["visitorData"] = visitorData
+        }
+        let body: [String: Any] = [
+            "context": ["client": context],
+            "videoId": videoId,
+            "contentCheckOk": true,
+            "racyCheckOk": true,
+        ]
+        return try makeRequest(
+            url: playerEndpoint,
+            userAgent: client.userAgent,
+            origin: nil,
+            body: body,
+            visitorData: visitorData
+        )
+    }
+
+    /// Deliberately does **not** include the IOS client, which resolves perfectly well.
+    ///
+    /// A client has to clear **two** gates to belong here, and IOS clears only the first:
+    ///
+    /// 1. **Resolves** — answers with a direct, un-ciphered audio/mp4 URL.
+    /// 2. **Serves a whole track** — byte ranges succeed all the way to the end.
+    ///
+    /// IOS reports both itag 139 and 140, then refuses every range past ~1 MB with a 403,
+    /// while a range past the true end returns 416 — so the cap is deliberate throttling,
+    /// not a size error. A track played for about a minute and died: strictly worse than
+    /// paying for the muxed format, however good the byte figures looked at the start.
+    /// Un-throttling those URLs needs the `n`-parameter descrambling that yt-dlp does by
+    /// executing YouTube's player JavaScript, which this app does not do.
+    ///
+    /// ANDROID_VR clears both. Verified end to end: every range 206 across the whole file,
+    /// 416 past the end, and complete tracks fetched in sequential ranges exactly matching
+    /// `contentLength`. `VVDemusTests/PlayerClientProbe` re-checks gate 1 and
+    /// `StreamUrlRangeTests` gate 2 — run both before ever adding a client here.
+    static let audioOnlyClients: [PlayerClient] = [
+        PlayerClient(
+            name: "ANDROID_VR",
+            version: "1.65.10",
+            userAgent: androidVRUserAgent,
+            extraContext: [
+                "deviceMake": "Oculus",
+                "deviceModel": "Quest 3",
+                "androidSdkVersion": 32,
+                "osName": "Android",
+                "osVersion": "12L",
+            ]
+        ),
+    ]
+
+    private static func audioOnlyStream(videoId: String) async throws -> StreamInfo {
+        var lastError: Error = APIError.server("No audio-only client available")
+        for client in audioOnlyClients {
+            do {
+                return try await audioOnlyStream(videoId: videoId, using: client)
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
+    /// A refusal that a fresh visitor token stands a chance of fixing, as opposed to a
+    /// genuinely unavailable video. Distinguished so the retry below stays narrow — an
+    /// age-restricted or region-blocked video must not send the app round again.
+    struct TokenRefusal: LocalizedError {
+        let reason: String
+        var errorDescription: String? { reason }
+    }
+
+    static func isTokenRefusal(status: String?, reason: String) -> Bool {
+        if status == "LOGIN_REQUIRED" { return true }
+        let lowered = reason.lowercased()
+        // Matched on "not a bot" rather than the full sentence: the apostrophe YouTube
+        // sends is a curly U+2019, which is easy to get wrong in a literal.
+        return lowered.contains("not a bot") || lowered.contains("sign in")
+    }
+
+    /// One resolve, with a single escalating retry if YouTube rejects the credential.
+    ///
+    /// Split out from the networking so the escalation itself is testable: which source is
+    /// asked for, that a retry happens at all, and — just as important — that it happens
+    /// **once** and only for a credential refusal. A retry loop around a genuinely
+    /// unavailable video would hammer YouTube from a music app that looks stuck.
+    static func resolveWithTokenRetry(
+        token: (VisitorDataProvider.Source) async -> String?,
+        attempt: (String?) async throws -> StreamInfo
+    ) async throws -> StreamInfo {
+        let first = await token(.cheap)
+        do {
+            return try await attempt(first)
+        } catch let refusal as TokenRefusal {
+            // Escalating rather than just refetching: it also rules out the cheap
+            // endpoint's shape-match having quietly captured the wrong string.
+            guard let fresh = await token(.authoritative), fresh != first else {
+                throw APIError.server(refusal.reason)
+            }
+            do {
+                return try await attempt(fresh)
+            } catch let refusedAgain as TokenRefusal {
+                // Stop. A fresh token was refused too, so this is not a stale credential.
+                throw APIError.server(refusedAgain.reason)
+            }
+        }
+    }
+
+    private static func audioOnlyStream(videoId: String, using client: PlayerClient) async throws -> StreamInfo {
+        try await resolveWithTokenRetry(
+            token: { await VisitorDataProvider.shared.token(for: $0) },
+            attempt: { try await audioOnlyStream(videoId: videoId, using: client, visitorData: $0) }
+        )
+    }
+
+    private static func audioOnlyStream(
+        videoId: String,
+        using client: PlayerClient,
+        visitorData: String?
+    ) async throws -> StreamInfo {
+        let request = try playerRequest(videoId: videoId, client: client, visitorData: visitorData)
+        let json = try await send(request)
+
+        let status = json["playabilityStatus"]["status"].string
+        guard status == "OK" else {
+            let reason = json["playabilityStatus"]["reason"].string ?? "video unavailable"
+            throw isTokenRefusal(status: status, reason: reason)
+                ? TokenRefusal(reason: reason) as Error
+                : APIError.server(reason)
         }
 
         // AAC-in-MP4 only (itags 139/140) — AVPlayer doesn't support WebM/Opus, which is
@@ -194,8 +363,8 @@ enum InnerTubeClient {
             throw APIError.server("No audio-only format available")
         }
         let mime = chosen["mimeType"].string ?? "audio/mp4"
-        let expiresAt = Date().addingTimeInterval(5 * 3600).timeIntervalSince1970
-        return StreamInfo(videoId: videoId, url: urlString, expiresAt: expiresAt, mimeType: mime)
+        lastStreamWasMuxedFallback = false
+        return StreamInfo(videoId: videoId, url: urlString, expiresAt: expiry(for: urlString), mimeType: mime)
     }
 
     /// itag 18: a legacy muxed 360p video + AAC audio file. Works reliably (no PO-token
@@ -232,9 +401,23 @@ enum InnerTubeClient {
             throw APIError.server("No playable format returned")
         }
         let mime = playable["mimeType"].string ?? "video/mp4"
-        // These signed URLs are time-limited; treat as expiring in a few hours to be safe.
-        let expiresAt = Date().addingTimeInterval(5 * 3600).timeIntervalSince1970
-        return StreamInfo(videoId: videoId, url: urlString, expiresAt: expiresAt, mimeType: mime)
+        return StreamInfo(videoId: videoId, url: urlString, expiresAt: expiry(for: urlString), mimeType: mime)
+    }
+
+    /// The URL's real deadline, read from its own `expire=` parameter.
+    ///
+    /// This used to be a flat "now + 5 hours", invented rather than read. YouTube's signed
+    /// URLs are frequently shorter-lived than that, and `APIClient` caches on `expiresAt`
+    /// — so a URL that had actually died was handed back out for hours. Playback then
+    /// 403'd with no error surfaced anywhere, and pressing play again returned the same
+    /// dead URL; only killing the app cleared it.
+    static func expiry(for urlString: String) -> Double {
+        guard let components = URLComponents(string: urlString),
+              let expire = components.queryItems?.first(where: { $0.name == "expire" })?.value,
+              let seconds = Double(expire), seconds > 0 else {
+            return Date().addingTimeInterval(5 * 3600).timeIntervalSince1970
+        }
+        return seconds
     }
 
     // MARK: - Shared parsing
@@ -308,13 +491,26 @@ enum InnerTubeClient {
     /// seek bar, mix length and listening-stats cap derived from it was wrong.
     private static func parseDuration(_ text: String) -> Int? {
         let parts = text.split(separator: ":")
+        // Capped: `reduce { $0 * 60 + $1 }` over many segments overflows and traps, and this
+        // string comes straight from a YouTube metadata run that is not always a duration.
+        guard parts.count <= 3 else { return nil }
         guard parts.count >= 2, parts.allSatisfy({ Int($0) != nil }) else { return nil }
         return parts.compactMap { Int($0) }.reduce(0) { $0 * 60 + $1 }
     }
 
     // MARK: - HTTP
 
-    private static func post(url: String, userAgent: String, origin: String?, body: [String: Any]) async throws -> JSON {
+    /// Building the request is separated from sending it so the part that carries the
+    /// anti-bot credential can be asserted on without a network round trip. The wiring
+    /// being silently absent is precisely the bug this guards: nothing fails, playback
+    /// still works, and the app just quietly uses ~3.9x the data.
+    static func makeRequest(
+        url: String,
+        userAgent: String,
+        origin: String?,
+        body: [String: Any],
+        visitorData: String?
+    ) throws -> URLRequest {
         guard let requestURL = URL(string: url) else { throw APIError.invalidURL }
         var request = URLRequest(url: requestURL)
         request.httpMethod = "POST"
@@ -323,11 +519,38 @@ enum InnerTubeClient {
         if let origin {
             request.setValue(origin, forHTTPHeaderField: "Origin")
         }
+        // Sent as a header as well as in the client context — YouTube reads it from either,
+        // and a browser sends both.
+        if let visitorData {
+            request.setValue(visitorData, forHTTPHeaderField: "X-Goog-Visitor-Id")
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
 
+    private static func post(
+        url: String,
+        userAgent: String,
+        origin: String?,
+        body: [String: Any],
+        visitorData: String? = nil
+    ) async throws -> JSON {
+        let request = try makeRequest(
+            url: url, userAgent: userAgent, origin: origin, body: body, visitorData: visitorData
+        )
+        return try await send(request)
+    }
+
+    private static func send(_ request: URLRequest) async throws -> JSON {
         let (data, response) = try await NetworkSessions.api.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        guard let http = response as? HTTPURLResponse else {
             throw APIError.server("YouTube request failed")
+        }
+        // The status code used to be discarded, so a 403 (anti-bot), a 429 (rate limit)
+        // and a 500 were indistinguishable — which matters because only some of those are
+        // worth retrying, and an expired stream URL is specifically a 403.
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.http(status: http.statusCode)
         }
         return try JSON.parse(data)
     }

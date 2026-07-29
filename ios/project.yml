@@ -25,7 +25,12 @@ targets:
     info:
       path: Generated/Info.plist
       properties:
-        CFBundleDisplayName: Music
+        # Referenced rather than hardcoded: XcodeGen writes this plist from scratch, so a
+        # literal here silently ignores MARKETING_VERSION/CURRENT_PROJECT_VERSION and the
+        # version shown in the app never changes no matter what the settings say.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleDisplayName: Spotify
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -35,20 +40,80 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.vvdemus.app
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        # Kept here rather than only in the Xcode UI. Set through Xcode it lives solely in
+        # project.pbxproj, which XcodeGen rewrites from scratch on every `xcodegen
+        # generate` — so the signing team silently vanished each time the project was
+        # regenerated, and the next device build failed with "requires a development team".
+        DEVELOPMENT_TEAM: 7DJSY2AKJK
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "2"
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         DEVELOPMENT_ASSET_PATHS: ""
         ENABLE_PREVIEWS: YES
+  VVDemusTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: VVDemusTests
+    dependencies:
+      - target: VVDemus
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vvdemus.app.tests
+        DEVELOPMENT_TEAM: 7DJSY2AKJK
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/VVDemus.app/VVDemus"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
   VVDemus:
     build:
       targets:
         VVDemus: all
+        VVDemusTests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: VVDemusTests
+          # The benchmarks hit the real network and cost real cellular data, so they stay
+          # out of the everyday suite. The VVDemus-Benchmarks scheme runs them.
+          skippedTests:
+            - DataUsageBenchmarks
+            - StreamFormatDiagnostics
+            - PlayerClientProbe
+            - PlaybackSmokeTest
+            - StreamUrlRangeTests
+            - ResourceLoaderUrlIntegrityTests
     archive:
       config: Release
+  # Measures real bytes over the wire — run deliberately, not on every build.
+  VVDemus-Benchmarks:
+    build:
+      targets:
+        VVDemus: all
+        VVDemusTests: [test]
+    test:
+      config: Debug
+      targets:
+        - name: VVDemusTests
+          skippedTests:
+            - AirPodsRouteTests
+            - BackgroundPlaybackTests
+            - DeviceSwitchingTests
+            - HarnessSmokeTests
+            - InterruptionTests
+            - LocalControlServerTests
+            - NowPlayingInfoTests
+            - PersistenceAndParsingTests
+            - QueueAndTransportTests
+            - RemoteCommandTests
+            - SystemMediaWiringTests

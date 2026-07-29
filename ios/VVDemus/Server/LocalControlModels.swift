@@ -56,6 +56,11 @@ struct StateSnapshot: Codable {
     /// carry on by itself if the phone is unreachable when the current track ends.
     let nextTrack: Track?
     let nextStreamUrl: String?
+    /// Identifies this run of the app. `playbackEpoch` restarts at 0 every launch, so a
+    /// browser holding a high epoch would reject every snapshot from a relaunched phone
+    /// forever — a page that looks healthy (socket connected, HTTP 200) and is completely
+    /// frozen. The browser compares this and resets its counters when it changes.
+    let serverInstanceId: String
     /// Changes whenever the library's shape does — radio stations, playlists, downloads.
     /// The web remote reloads its sidebar when this moves, so a radio you just started
     /// appears under Radio straight away instead of only after a page reload.
@@ -96,6 +101,7 @@ struct StateSnapshot: Codable {
             trackLoadEpoch: trackLoadEpoch,
             nextTrack: nextTrack,
             nextStreamUrl: nextStreamUrl,
+            serverInstanceId: serverInstanceId,
             librarySignature: librarySignature
         )
     }
@@ -141,6 +147,11 @@ struct PlaybackReportBody: Decodable {
     /// The `playbackEpoch` this report was produced under — anything older than the phone's
     /// current epoch describes playback from before the phone's latest instruction.
     let epoch: Int?
+    /// Which tab is reporting. Only the tab that owns casting may refresh the liveness
+    /// clock — otherwise a stale tab kept the phone believing a browser was playing when
+    /// none was, and the fallback to the phone could never fire. Optional so an older
+    /// client still works (it simply can't be attributed, and is treated as the owner).
+    let clientId: String?
 }
 
 struct DaylistSnapshot: Codable {

@@ -3,11 +3,16 @@ import Foundation
 enum APIError: LocalizedError {
     case invalidURL
     case server(String)
+    /// Carries the status code so callers can tell a transient failure from a permanent
+    /// one — a 403 on a stream URL means "expired, re-resolve", which is not something a
+    /// generic error message can express.
+    case http(status: Int)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Invalid request URL"
         case .server(let message): return message
+        case .http(let status): return "YouTube request failed (HTTP \(status))"
         }
     }
 }
@@ -35,18 +40,40 @@ final class APIClient {
     }
 
     func stream(videoId: String) async throws -> StreamInfo {
-        let safetyMargin: TimeInterval = 300
-        streamCacheLock.lock()
-        let cached = streamCache[videoId]
-        streamCacheLock.unlock()
-        if let cached, cached.expiresAt - safetyMargin > Date().timeIntervalSince1970 {
-            return cached
-        }
+        if let cached = cachedStream(videoId: videoId) { return cached }
         let fresh = try await InnerTubeClient.stream(videoId: videoId)
         streamCacheLock.lock()
         streamCache[videoId] = fresh
+        // Bounded: entries were only ever added, including long-dead ones, so this grew
+        // for the whole session.
+        if streamCache.count > 128 {
+            let expired = streamCache.filter { $0.value.expiresAt <= Date().timeIntervalSince1970 }
+            for key in expired.keys { streamCache.removeValue(forKey: key) }
+        }
         streamCacheLock.unlock()
         return fresh
+    }
+
+    static let streamExpirySafetyMargin: TimeInterval = 300
+
+    private func cachedStream(videoId: String) -> StreamInfo? {
+        streamCacheLock.lock()
+        defer { streamCacheLock.unlock() }
+        guard let cached = streamCache[videoId] else { return nil }
+        guard cached.expiresAt - Self.streamExpirySafetyMargin > Date().timeIntervalSince1970 else {
+            streamCache.removeValue(forKey: videoId)
+            return nil
+        }
+        return cached
+    }
+
+    /// Drops a URL that turned out not to work. Without this, a stream that 403'd was
+    /// re-served from the cache on every retry until it expired on paper — so "press play
+    /// again" could not possibly fix it.
+    func invalidateStream(videoId: String) {
+        streamCacheLock.lock()
+        streamCache.removeValue(forKey: videoId)
+        streamCacheLock.unlock()
     }
 
     /// YouTube Music's "radio" for a track: the seed track followed by similar songs.

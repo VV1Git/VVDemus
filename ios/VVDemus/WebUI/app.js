@@ -34,6 +34,15 @@ const state = {
   lastQueues: {},
   // Latest playback epoch seen from the phone; echoed back with progress reports.
   epoch: null,
+  // The highest epochs actually applied to the UI, so an out-of-order snapshot arriving
+  // from the slower of the two transports can be dropped rather than rewinding the page
+  // to a state the phone has already moved past. See isStaleSnapshot.
+  appliedEpoch: null,
+  appliedTrackLoadEpoch: null,
+  // Which run of the phone app the epochs above belong to; they mean nothing across a
+  // restart. See isStaleSnapshot.
+  serverInstanceId: null,
+  lastAppliedAt: 0,
   failedSrc: null,
   failedAt: 0,
   // What the phone says plays next, with a resolved URL — this tab's lifeline if the
@@ -52,6 +61,9 @@ const state = {
   mediaSessionTrack: null,
   // A play/pause relayed to the phone that we haven't seen come back yet.
   pendingPlayIntent: null,
+  // Whether the phone is currently answering at all, so the page can say so instead of
+  // freezing on a stale snapshot while every click quietly fails.
+  phoneUnreachable: false,
 };
 
 const audioEl = document.getElementById("np-audio");
@@ -79,25 +91,60 @@ function fmtTime(seconds) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-async function api(path, options) {
-  const res = await fetch(path, options);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
-  const contentType = res.headers.get("content-type") || "";
-  return contentType.includes("application/json") ? res.json() : res.text();
+// How long to wait for the phone before treating it as unreachable.
+//
+// Every request needs one. Without a timeout, a phone that is asleep or off the network
+// doesn't refuse the connection — the TCP handshake just retransmits, so `fetch` stays
+// pending for thirty to ninety seconds before rejecting. That matters most at the end of
+// a track: the whole prefetched-next-track mechanism lives in the `catch` of
+// `/api/next`, so instead of continuing seamlessly the music went silent for a minute
+// first — the exact failure the prefetch was built to prevent.
+const REQUEST_TIMEOUT_MS = 2000;
+/// For requests where the phone itself has to hit the network before it can answer —
+/// search, Home, a radio fetch, a daylist rebuild. These routinely take several seconds,
+/// and holding them to the transport deadline made a perfectly healthy phone look broken:
+/// empty search results, a permanently blank Home, and Refresh buttons that did nothing.
+const CONTENT_TIMEOUT_MS = 20000;
+
+async function api(path, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(path, { ...options, signal: controller.signal });
+    if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+    const contentType = res.headers.get("content-type") || "";
+    return contentType.includes("application/json") ? res.json() : res.text();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-function post(path, body) {
-  return api(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body ?? {}),
-  });
+function post(path, body, timeoutMs) {
+  return api(
+    path,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    },
+    timeoutMs
+  );
 }
+
+/// Escapes text for interpolation into markup — element content *or* an attribute value.
+///
+/// This used to be `div.textContent = text; return div.innerHTML`, which is the usual
+/// trick and is only half a defence: serialising a text node escapes `&`, `<` and `>` but
+/// leaves quotes untouched. Verified in a browser — feeding it `" onerror="..." x="` and
+/// dropping the result into `src="..."` produced an element with a live `onerror`
+/// attribute. Every current caller happened to be element content, so nothing was
+/// exploitable through it, but `artImg` below does interpolate into an attribute and the
+/// URLs it renders come from YouTube by way of whatever a POST wrote into the phone's
+/// stored library.
+const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
 function escapeHtml(text) {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
+  return String(text ?? "").replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
 }
 
 /// YouTube hands back thumbnail URLs at whatever size it picked — usually 544px square,
@@ -119,17 +166,91 @@ function art(url, cssPixels) {
   return url.replace(/=w\d+-h\d+/, `=w${target}-h${target}`);
 }
 
+/// Markup for a thumbnail, or a placeholder glyph when the track has none.
+///
+/// `art()` returns "" for a missing thumbnail, and `<img src="">` does not render nothing:
+/// the browser resolves the empty URL against the document, fetches this page's own HTML,
+/// fails to decode it as an image and draws a broken-image icon. Radio seed tracks come
+/// back from the phone with no `thumbnailUrl` at all, so that icon showed on the Home
+/// shelf and in the sidebar on every load.
+///
+/// The URL is escaped because it comes from YouTube: a quote in it would otherwise close
+/// the `src` attribute early and let the rest be parsed as markup.
+function artImg(url, cssPixels, attrs = "") {
+  const src = safeArtUrl(url, cssPixels);
+  return src
+    ? `<img src="${escapeHtml(src)}" alt="" ${attrs}>`
+    : `<span class="art-fallback">${ICONS.note}</span>`;
+}
+
+/// Artwork URL, or "" if it isn't one we're willing to render.
+///
+/// Restricted to http(s) as defence in depth. These strings are not necessarily from
+/// YouTube: any device on the network can POST a `Track` and the phone stores it verbatim,
+/// so a `thumbnailUrl` is attacker-controlled input that gets persisted and re-rendered on
+/// every later page load.
+function safeArtUrl(url, cssPixels) {
+  const src = art(url, cssPixels);
+  return /^https?:\/\//i.test(src) ? src : "";
+}
+
+/// The same guard for an `<img>` element that already exists: hidden outright rather than
+/// left with an empty `src`, so the container's own background shows instead of a broken
+/// image.
+function setArt(img, url, cssPixels) {
+  const src = safeArtUrl(url, cssPixels);
+  if (src) {
+    img.src = src;
+    img.hidden = false;
+  } else {
+    img.removeAttribute("src");
+    img.hidden = true;
+  }
+}
+
 // ---------- view switching ----------
+
+/// The sidebar row that should stay lit for whatever is on screen.
+///
+/// Held here rather than set directly by the handlers because the sidebar navigates
+/// *through* `openDetail`, which ends in `showView` — so a handler that highlighted its own
+/// row first had the highlight wiped a moment later, and the sidebar never showed which
+/// playlist or section you were looking at. Re-applied below after the clear.
+let sidebarSelection = null;
+
+function selectSidebarRow(el) {
+  sidebarSelection = el;
+}
+
+/// Whether the detail view is the one on screen.
+///
+/// `detail` itself is only ever reassigned by `openDetail`, so after visiting a radio once
+/// it kept `kind === "radio"` forever. A pushed radio update then re-opened the detail
+/// view from whatever the user had navigated to — mid-search, the page would navigate
+/// itself and leave focus in a now-hidden input.
+let detailVisible = false;
 
 function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   document.getElementById(`view-${name}`).classList.add("active");
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
   document.querySelectorAll(".lib-shortcut, .library-row").forEach((b) => b.classList.remove("active"));
+  // Guarded on still being in the document: the sidebar is rebuilt wholesale by
+  // `loadLibraryList`, which would otherwise leave this holding a detached node.
+  if (sidebarSelection && document.body.contains(sidebarSelection)) {
+    sidebarSelection.classList.add("active");
+  }
+  // Each view has its own place in the list; carrying the last one's offset over meant
+  // opening a playlist from the bottom of Home landed you mid-tracklist with the cover
+  // art and the play button scrolled off above.
+  const content = document.getElementById("content");
+  if (content) content.scrollTop = 0;
+  detailVisible = name === "detail";
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
   btn.onclick = () => {
+    selectSidebarRow(null);
     showView(btn.dataset.view);
     btn.classList.add("active");
     if (btn.dataset.view === "search") document.getElementById("global-search").focus();
@@ -183,7 +304,21 @@ document.addEventListener("keydown", (e) => {
 window.addEventListener("blur", closeContextMenu);
 // Capture phase: the menu is fixed-positioned, so it would otherwise hang in place while
 // the list behind it scrolls away.
-document.addEventListener("scroll", closeContextMenu, true);
+//
+// Scrolling *inside* the menu is exempt. The menu is deliberately scrollable
+// (`max-height: 60vh; overflow-y: auto`), and a capture-phase listener on `document` sees
+// scroll events from every descendant — so reaching a playlist below the fold closed the
+// thing you were reaching into. Worse, it closed itself: showPlaylistPicker focuses its
+// "New playlist" input, which scrolls the container to reveal it, so with enough playlists
+// to overflow, "Add to Playlist" opened the picker and dismissed it in the same frame.
+document.addEventListener(
+  "scroll",
+  (e) => {
+    if (e.target instanceof Node && contextMenuEl.contains(e.target)) return;
+    closeContextMenu();
+  },
+  true
+);
 window.addEventListener("resize", closeContextMenu);
 
 function menuButton(label, icon, onClick, { liked } = {}) {
@@ -240,7 +375,7 @@ async function openTrackMenu(event, track, { onRemove, removeLabel } = {}) {
   contextMenuEl.appendChild(menuSeparator());
 
   contextMenuEl.appendChild(menuButton("Go to Radio", MENU_ICONS.radio, async () => {
-    const tracks = await api(`/api/radio?videoId=${encodeURIComponent(track.videoId)}`);
+    const tracks = await api(`/api/radio?videoId=${encodeURIComponent(track.videoId)}`, {}, CONTENT_TIMEOUT_MS);
     openRadioDetail(track, tracks);
   }));
 
@@ -384,7 +519,7 @@ function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
   const artwork = document.createElement("div");
   artwork.className = "track-art";
   const img = document.createElement("img");
-  img.src = art(track.thumbnailUrl, 44); // .track-row img is 44px
+  setArt(img, track.thumbnailUrl, 44); // .track-row img is 44px
   artwork.appendChild(img);
   // Animated bars over the artwork of whatever is playing — a green title alone was easy
   // to miss, especially in a long radio where several rows look alike.
@@ -493,7 +628,11 @@ function openDetail(tracks, { title, subtitle, badge, imageURL, kind, seedTrack,
   document.getElementById("detail-badge").textContent = badge || "";
   document.getElementById("detail-title").textContent = title;
   document.getElementById("detail-subtitle").textContent = subtitle || "";
-  document.getElementById("detail-art").innerHTML = imageURL ? `<img src="${imageURL}" alt="">` : "";
+  // Escaped and scheme-checked like every other artwork site: `imageURL` reaches here
+  // from a stored Track, which any device on the network can write.
+  // 180 matches `.detail-art`; callers already size to the same number, so the resize is
+  // a no-op and this is here for the escaping and the missing-artwork placeholder.
+  document.getElementById("detail-art").innerHTML = artImg(imageURL, 180);
   document.getElementById("detail-refresh").style.display = showRefresh ? "flex" : "none";
 
   // Kept so the open list can be re-rendered when the playing track changes — otherwise
@@ -532,10 +671,10 @@ document.getElementById("detail-shuffle").onclick = () => {
 
 document.getElementById("detail-refresh").onclick = async () => {
   if (detail.kind === "radio" && detail.seedTrack) {
-    const tracks = await post("/api/radio/refresh", { videoId: detail.seedTrack.videoId });
+    const tracks = await post("/api/radio/refresh", { videoId: detail.seedTrack.videoId }, CONTENT_TIMEOUT_MS);
     openRadioDetail(detail.seedTrack, tracks);
   } else if (detail.kind === "daylist") {
-    await post("/api/library/daylist/refresh");
+    await post("/api/library/daylist/refresh", {}, CONTENT_TIMEOUT_MS);
     await openDaylistDetail();
   }
 };
@@ -606,8 +745,7 @@ async function openDownloadsDetail() {
 
 document.querySelectorAll(".lib-shortcut").forEach((btn) => {
   btn.onclick = async () => {
-    document.querySelectorAll(".lib-shortcut, .library-row, .nav-item").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
+    selectSidebarRow(btn);
     const which = btn.dataset.detail;
     if (which === "daylist") await openDaylistDetail();
     else if (which === "liked") await openLikedDetail();
@@ -656,7 +794,12 @@ const SILENT_UNLOCK_SRC =
 async function handleRealTrackEnded() {
   if (!state.isCastTab) return;
   try {
-    await post("/api/next");
+    // Deliberately a tight timeout: this is the one request where waiting is worse than
+    // failing. If the phone can't answer inside a second and a half, the prefetched next
+    // track is right here and playing it immediately is strictly better than silence.
+    // Names the track that ended: if the phone already moved on (the user pressed next a
+    // moment ago), this must be a no-op rather than skipping another song.
+    await post("/api/next", { videoId: state.loadedVideoId }, 1500);
     refreshState();
   } catch (e) {
     playUpNextLocally();
@@ -742,6 +885,19 @@ document.querySelectorAll("#np-device-menu button").forEach((btn) => {
     e.stopPropagation();
     document.getElementById("np-device-menu").classList.remove("open");
     const device = btn.dataset.device;
+
+    // Picking the device that is *already* active used to stop the music dead, and there
+    // is nothing in the menu to say which one that is, so it was one stray click away at
+    // any time. The silent unlock clip would replace the real audio, while the phone's
+    // `setActiveDevice` early-returned without bumping any epoch — so the next snapshot
+    // was identical, the reload branch never ran, and the element kept the silent clip
+    // forever. Neither play/pause nor seek could recover it.
+    // "This Computer" still has work to do when a *different* tab is casting — it takes
+    // ownership — so this checks for this tab specifically, not merely for the computer
+    // being the active device.
+    const alreadyActive = device === "computer" ? state.isCastTab : state.activeDevice === "iphone";
+    if (alreadyActive) return;
+
     state.isCastTab = device === "computer";
     state.needsGesture = false;
     if (state.isCastTab) {
@@ -813,12 +969,16 @@ function renderDeviceLabel() {
 /// (or when the phone is the active device), and idempotent so it can be called from the
 /// periodic state broadcast, an explicit refresh, and a pushed "command" message alike
 /// without ever double-applying a play/pause toggle.
-function syncCastAudio(s) {
+function syncCastAudio(s, shouldPlay) {
   const videoId = s.currentTrack ? s.currentTrack.videoId : null;
   // Ownership comes from the phone, not from whatever this tab last clicked — that's what
   // lets a reloaded tab pick casting back up, and what makes a tab that lost ownership
   // shut up instead of playing over the tab that took it.
   state.isCastTab = s.activeDevice === "computer" && !!s.castClientId && s.castClientId === CLIENT_ID;
+  // Tracked separately from `isCastTab`: when *another* tab is casting this one is not the
+  // cast tab, but the active device is still the computer, and the device menu has to be
+  // able to tell those apart.
+  state.activeDevice = s.activeDevice;
 
   if (!state.isCastTab || !videoId) {
     // If this tab kept playing through an outage, don't go quiet just because the phone
@@ -841,7 +1001,16 @@ function syncCastAudio(s) {
     reconcileAfterDisconnection();
     return;
   }
-  if (state.loadedVideoId !== videoId || state.loadedTrackEpoch !== s.trackLoadEpoch) {
+  // A null `loadedTrackEpoch` means *this tab* chose the track (it advanced on its own
+  // while the phone was away), so there is no phone load generation to compare against.
+  // Comparing anyway guaranteed a spurious reload: the phone deliberately doesn't bump
+  // `trackLoadEpoch` when it adopts what we're playing, so the moment the adopt succeeded
+  // the very next snapshot re-loaded and re-buffered a track that was playing perfectly —
+  // an audible gap exactly when the phone came back. The videoId check below still
+  // catches a genuine track change.
+  const phoneRestartedTrack =
+    state.loadedTrackEpoch !== null && state.loadedTrackEpoch !== s.trackLoadEpoch;
+  if (state.loadedVideoId !== videoId || phoneRestartedTrack) {
     // The phone resolves streamUrl asynchronously after a device switch (or a new track
     // starting), so a snapshot can name the new track while streamUrl is still empty —
     // or, worse, still holds the *previous* track's URL. `streamVideoId` says which track
@@ -864,8 +1033,14 @@ function syncCastAudio(s) {
     // whether it's already attached.
     audioEl.addEventListener("ended", handleRealTrackEnded);
   }
-  const shouldPlay = desiredPlayState(s);
-  if (shouldPlay && audioEl.paused) playCastAudio();
+  // Passed in: `desiredPlayState` mutates the pending intent and can fire a retry POST, so
+  // it must be evaluated exactly once per snapshot.
+  // `!audioEl.ended` matters: at the end of a track the element is both paused *and*
+  // ended, and calling play() on an ended element seeks it back to zero and starts the
+  // song again. Between the `ended` event and the phone answering /api/next, every
+  // broadcast still named the finished track — so each track transition began with a
+  // burst of the outgoing song's opening seconds.
+  if (shouldPlay && audioEl.paused && !audioEl.ended) playCastAudio();
   if (!shouldPlay && !audioEl.paused) {
     suppressPlaybackEcho();
     audioEl.pause();
@@ -917,17 +1092,30 @@ function desiredPlayState(s) {
     return s.isPlaying;
   }
   const age = Date.now() - pending.at;
-  if (age > 2500 && !pending.retried) {
+  if (age > 5000) {
+    // Checked first: a stale intent that already had its retry must expire rather than
+    // fire another toggle. Reaching the retry branch below after five seconds meant a tab
+    // that re-acquired casting could pause music the user had just started.
+    state.pendingPlayIntent = null;
+    return s.isPlaying;
+  }
+  if (!pending.retried && age > 2500) {
     // The request can simply have been lost. Ask again rather than letting audio the OS
     // stopped spring back to life — this failing towards "starts playing on its own" is
     // exactly what breaks an AirPods handover.
+    //
+    // The flag and the clock used to be set *before* this age test, one scope out. The
+    // first snapshot that disagreed — which arrives within a second, since broadcasts are
+    // 1 Hz and a `refreshState` is chased off the original POST — therefore consumed the
+    // single retry without ever sending it, and no later snapshot could re-enter. So a
+    // dropped toggle was never resent: the intent expired at 5s, the phone's stale
+    // `isPlaying: true` won, and music the user had paused from the media keys started
+    // again by itself about five seconds later.
+    //
+    // `pending.at` is deliberately not bumped here. Doing so also pushed back the 5s
+    // expiry above, letting a stale intent outlive the window it was given.
     pending.retried = true;
-    pending.at = Date.now();
     post("/api/toggle").then(refreshState).catch(() => {});
-  } else if (age > 5000) {
-    // Give up rather than diverge from the phone indefinitely.
-    state.pendingPlayIntent = null;
-    return s.isPlaying;
   }
   return pending.playing;
 }
@@ -965,10 +1153,11 @@ audioEl.addEventListener("timeupdate", () => {
     // or about playback as it was before its latest instruction (see playbackEpoch).
     videoId: state.loadedVideoId,
     epoch: state.epoch,
+    clientId: CLIENT_ID,
     progress: audioEl.currentTime,
     duration: isFinite(audioEl.duration) ? audioEl.duration : 0,
     isPlaying: !audioEl.paused,
-  });
+  }).catch(() => {});
 });
 
 // ---------- macOS / OS media controls ----------
@@ -1016,7 +1205,7 @@ function seekRelative(delta) {
 /// Feeds the OS the track details it displays next to those controls. Only rebuilt when
 /// the track changes — MediaMetadata triggers an artwork fetch, so doing this on every
 /// state broadcast would re-download the artwork once a second.
-function renderMediaSession(s) {
+function renderMediaSession(s, playing) {
   if (!("mediaSession" in navigator)) return;
   const track = state.isCastTab ? s.currentTrack : null;
   if (!track) {
@@ -1036,7 +1225,10 @@ function renderMediaSession(s) {
         : [],
     });
   }
-  navigator.mediaSession.playbackState = s.isPlaying ? "playing" : "paused";
+  // The resolved state, not the raw snapshot: telling the OS "playing" while the element
+  // is deliberately paused makes the next media-key press send `pause` again, which maps
+  // to a toggle and starts the music back up.
+  navigator.mediaSession.playbackState = playing ? "playing" : "paused";
   // Drives the scrubber in Control Center.
   if (navigator.mediaSession.setPositionState && isFinite(s.duration) && s.duration > 0) {
     try {
@@ -1053,24 +1245,71 @@ function renderMediaSession(s) {
 
 // ---------- now playing ----------
 
+/// Whether a snapshot is newer than the newest one already applied.
+///
+/// State arrives over two unordered transports: the 1 Hz WebSocket broadcast and HTTP
+/// `GET /api/state` (a 5 s poll, plus a refresh chased after every command). Nothing
+/// sequenced them, so a poll issued *before* the user pressed next could arrive *after*
+/// the phone had already broadcast the new track — and being applied unconditionally, it
+/// reloaded the previous track's stream and played it. It also dragged `state.epoch`
+/// backwards, so every progress report for the next second was discarded by the phone as
+/// stale. The phone already stamps each snapshot with `playbackEpoch`; this just refuses
+/// to go back in time. `trackLoadEpoch` is checked too, since it moves independently when
+/// a track restarts.
+function isStaleSnapshot(s) {
+  if (typeof s.playbackEpoch !== "number") return false;
+  // The phone's epoch counter restarts at 0 on every launch. Without noticing that, a
+  // browser holding a high epoch rejects every snapshot from a relaunched phone *forever*:
+  // the socket reconnects and /api/state returns 200, so the page looks perfectly healthy
+  // while being completely frozen on its last state — and if it was the casting tab, the
+  // music stops on both devices with no way back but a manual reload.
+  if (s.serverInstanceId && s.serverInstanceId !== state.serverInstanceId) {
+    state.serverInstanceId = s.serverInstanceId;
+    state.appliedEpoch = null;
+    state.appliedTrackLoadEpoch = null;
+    return false;
+  }
+  // Belt and braces: no correctness guard is worth a permanently dead page. If nothing has
+  // been applied for several seconds, take whatever arrives.
+  if (state.lastAppliedAt && Date.now() - state.lastAppliedAt > 4000) return false;
+  if (state.appliedEpoch === null || state.appliedEpoch === undefined) return false;
+  if (s.playbackEpoch > state.appliedEpoch) return false;
+  if (s.playbackEpoch < state.appliedEpoch) return true;
+  // Same playback epoch: a lower trackLoadEpoch is still a snapshot from before the
+  // current track was (re)started.
+  return typeof s.trackLoadEpoch === "number" &&
+    typeof state.appliedTrackLoadEpoch === "number" &&
+    s.trackLoadEpoch < state.appliedTrackLoadEpoch;
+}
+
 function renderNowPlaying(s) {
+  if (isStaleSnapshot(s)) return;
+  state.appliedEpoch = s.playbackEpoch;
+  state.appliedTrackLoadEpoch = s.trackLoadEpoch;
+  state.lastAppliedAt = Date.now();
   mergeOmittedQueues(s);
   state.upNext = s.nextTrack && s.nextStreamUrl ? { track: s.nextTrack, streamUrl: s.nextStreamUrl } : null;
   state.current = s.currentTrack;
   state.last = s;
   state.epoch = s.playbackEpoch;
-  syncCastAudio(s); // sets state.isCastTab, which the label depends on
+  // One evaluation, shared by the audio element and every visual indicator below. They
+  // used to disagree: the element obeyed `desiredPlayState` while the icons read raw
+  // `s.isPlaying`, so pausing from the Mac's media keys showed a pause glyph over silence
+  // and — worse — reset `navigator.mediaSession.playbackState` to "playing", making the
+  // user's next media-key press start the music again instead of resuming it.
+  const playing = desiredPlayState(s);
+  syncCastAudio(s, playing); // sets state.isCastTab, which the label depends on
   renderDeviceLabel();
   renderDocumentTitle(s);
   const npArt = document.getElementById("np-art");
-  npArt.src = s.currentTrack ? art(s.currentTrack.thumbnailUrl, 56) : "";
+  setArt(npArt, s.currentTrack ? s.currentTrack.thumbnailUrl : null, 56);
   // The phone resolving a stream can take a second or two; without any sign of it, the
   // remote just looked frozen between pressing play and hearing anything.
   npArt.classList.toggle("loading", !!s.isLoading);
   document.getElementById("np-title").textContent = s.currentTrack ? s.currentTrack.title : "Nothing playing";
   document.getElementById("np-artist").textContent = s.currentTrack ? s.currentTrack.artist : "";
-  document.getElementById("np-play-icon").style.display = s.isPlaying ? "none" : "block";
-  document.getElementById("np-pause-icon").style.display = s.isPlaying ? "block" : "none";
+  document.getElementById("np-play-icon").style.display = playing ? "none" : "block";
+  document.getElementById("np-pause-icon").style.display = playing ? "block" : "none";
   document.getElementById("np-shuffle").classList.toggle("active", !!s.isShuffling);
 
   const likeBtn = document.getElementById("np-like");
@@ -1079,7 +1318,11 @@ function renderNowPlaying(s) {
   likeBtn.classList.toggle("liked", !!liked);
 
   const seek = document.getElementById("np-seek");
-  if (!seek.dragging) {
+  // `seeking` covers the window after the thumb is released while the POST is still in
+  // flight. Without it, clearing `dragging` on `pointerup` would let a 1 Hz snapshot
+  // carrying the pre-seek position overwrite the thumb, so it visibly snapped back and
+  // then jumped forward again when the phone caught up.
+  if (!seek.dragging && !seek.seeking) {
     seek.max = Math.max(s.duration, 1);
     seek.value = s.progress;
   }
@@ -1096,10 +1339,10 @@ function renderNowPlaying(s) {
   document.getElementById("context-queue-title").textContent = s.queueContextTitle
     ? `Next from: ${s.queueContextTitle}`
     : "Next Up";
-  renderMediaSession(s);
+  renderMediaSession(s, playing);
 
   // Freezes the equalizer bars while paused, so the marker still shows where you are.
-  document.body.classList.toggle("playback-paused", !s.isPlaying);
+  document.body.classList.toggle("playback-paused", !playing);
 
   // renderList no-ops when nothing changed, so this is only work when it matters.
   if (detail.rerender) detail.rerender();
@@ -1154,17 +1397,32 @@ seekEl.addEventListener("pointerdown", () => (seekEl.dragging = true));
 // window lose focus mid-drag) left `dragging` stuck true forever — and while it's true
 // the progress bar stops accepting updates from the phone, so the whole seek bar and
 // elapsed time silently froze until the page was reloaded.
-["pointercancel", "blur"].forEach((ev) => seekEl.addEventListener(ev, () => (seekEl.dragging = false)));
+// `pointerup` is the one that actually matters and was the one missing. `change` only
+// fires when the value really changed, so pressing the thumb and releasing without moving
+// it — or dragging away and back to the same spot — left `dragging` latched true. The
+// slider keeps focus, so `blur` didn't fire either, and the scrubber and elapsed time sat
+// frozen while the music played on until the user happened to click elsewhere.
+["pointerup", "pointercancel", "blur"].forEach((ev) =>
+  seekEl.addEventListener(ev, () => (seekEl.dragging = false))
+);
 // Live feedback while scrubbing, instead of the elapsed time sitting still until release.
 seekEl.addEventListener("input", () => {
   document.getElementById("np-elapsed").textContent = fmtTime(Number(seekEl.value));
 });
 seekEl.addEventListener("change", async () => {
   const seconds = Number(seekEl.value);
+  seekEl.seeking = true;
   if (state.isCastTab && audioEl.src) audioEl.currentTime = seconds;
-  await post("/api/seek", { seconds });
-  seekEl.dragging = false;
-  refreshState();
+  try {
+    await post("/api/seek", { seconds });
+  } finally {
+    // In a `finally`: if the POST times out, leaving this true freezes the scrubber and
+    // the elapsed time until the page is reloaded, because renderNowPlaying skips seek-bar
+    // updates while a drag is in progress.
+    seekEl.dragging = false;
+    seekEl.seeking = false;
+    refreshState().catch(() => {});
+  }
 });
 
 // ---------- keyboard control ----------
@@ -1214,7 +1472,7 @@ function gridTrackCard(track, tracks, contextTitle) {
   card.className = "grid-card";
   card.innerHTML = `
     <div class="g-art-wrap">
-      <img src="${art(track.thumbnailUrl, 170)}" alt="" loading="lazy">
+      ${artImg(track.thumbnailUrl, 170, 'loading="lazy"')}
       <button class="g-queue-btn" title="Add to queue">${ICONS.add}</button>
     </div>
     <div class="g-title">${escapeHtml(track.title)}</div>
@@ -1237,11 +1495,11 @@ async function loadHomeRadios() {
     const chip = document.createElement("div");
     chip.className = "radio-chip";
     chip.innerHTML = `
-      <img src="${art(station.seedTrack.thumbnailUrl, 64)}" alt="" loading="lazy">
+      ${artImg(station.seedTrack.thumbnailUrl, 64, 'loading="lazy"')}
       <span class="r-title">${escapeHtml(station.seedTrack.title)} Radio</span>
     `;
     chip.onclick = async () => {
-      const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`);
+      const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`, {}, CONTENT_TIMEOUT_MS);
       openRadioDetail(station.seedTrack, tracks);
     };
     container.appendChild(chip);
@@ -1251,7 +1509,7 @@ async function loadHomeRadios() {
 async function loadHomeRecommendations() {
   const container = document.getElementById("home-recommendations");
   container.innerHTML = "";
-  const sections = await api("/api/home");
+  const sections = await api("/api/home", {}, CONTENT_TIMEOUT_MS);
   if (!sections.length) {
     const empty = document.createElement("div");
     empty.className = "empty-hint";
@@ -1274,9 +1532,10 @@ async function loadHomeRecommendations() {
   });
 }
 
-function loadHome() {
-  loadHomeRadios();
-  loadHomeRecommendations();
+async function loadHome() {
+  // Each half is allowed to fail on its own: one failing fetch shouldn't leave the whole
+  // Home screen blank, and neither rejection had a handler before.
+  await Promise.allSettled([loadHomeRadios(), loadHomeRecommendations()]);
 }
 
 // ---------- search ----------
@@ -1289,7 +1548,7 @@ function runSearch(q) {
     return;
   }
   searchTimer = setTimeout(async () => {
-    const tracks = await api(`/api/search?q=${encodeURIComponent(q)}`);
+    const tracks = await api(`/api/search?q=${encodeURIComponent(q)}`, {}, CONTENT_TIMEOUT_MS);
     renderList(document.getElementById("search-list"), tracks, {
       scope: `search:${q}`,
       onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: "Search" }).then(refreshState),
@@ -1321,13 +1580,12 @@ async function loadLibraryList() {
       const row = document.createElement("button");
       row.className = "library-row";
       row.innerHTML = `
-        <span class="lib-icon"><img src="${art(station.seedTrack.thumbnailUrl, 32)}" alt="" loading="lazy"></span>
+        <span class="lib-icon">${artImg(station.seedTrack.thumbnailUrl, 32, 'loading="lazy"')}</span>
         <span class="track-title-sm">${escapeHtml(station.seedTrack.title)} Radio</span>
       `;
       row.onclick = async () => {
-        document.querySelectorAll(".lib-shortcut, .library-row, .nav-item").forEach((b) => b.classList.remove("active"));
-        row.classList.add("active");
-        const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`);
+        selectSidebarRow(row);
+        const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`, {}, CONTENT_TIMEOUT_MS);
         openRadioDetail(station.seedTrack, tracks);
       };
       container.appendChild(row);
@@ -1354,8 +1612,7 @@ async function loadLibraryList() {
         <span class="track-title-sm">${escapeHtml(p.name)}<span class="row-sub">${p.tracks.length} songs</span></span>
       `;
       row.onclick = () => {
-        document.querySelectorAll(".lib-shortcut, .library-row, .nav-item").forEach((b) => b.classList.remove("active"));
-        row.classList.add("active");
+        selectSidebarRow(row);
         openPlaylistDetail(p);
       };
       container.appendChild(row);
@@ -1390,6 +1647,7 @@ function connectWebSocket() {
     };
     hello();
     heartbeat = setInterval(hello, 15000);
+    markPhoneUnreachable(false);
     // Back in touch: if this tab kept playing without the phone, square that up now.
     reconcileAfterDisconnection();
   };
@@ -1399,7 +1657,11 @@ function connectWebSocket() {
       if (msg.type === "radio") {
         // A radio's mix changed (refreshed from the phone or another browser tab) —
         // if that's the one currently open here, update it live instead of going stale.
-        if (detail.kind === "radio" && detail.seedTrack && detail.seedTrack.videoId === msg.videoId) {
+        //
+        // `detailVisible` matters as much as the id: `detail` keeps describing the last
+        // radio opened long after the user navigated away, so this used to re-open the
+        // detail view over Search or Home the moment anyone refreshed that station.
+        if (detailVisible && detail.kind === "radio" && detail.seedTrack && detail.seedTrack.videoId === msg.videoId) {
           openRadioDetail(detail.seedTrack, msg.tracks);
         }
       } else if (msg.type === "state") {
@@ -1421,16 +1683,40 @@ function connectWebSocket() {
   };
   ws.onclose = () => {
     if (heartbeat) clearInterval(heartbeat);
-    setTimeout(connectWebSocket, 2000);
+    markPhoneUnreachable(true);
+    // Backed off rather than a flat 2 s: a phone that's asleep, off the network or simply
+    // switched off stays unreachable for hours, and hammering it every two seconds for
+    // that whole time is pure battery on both ends.
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    setTimeout(connectWebSocket, reconnectDelay);
   };
   ws.onerror = () => ws.close();
+}
+
+let reconnectDelay = 1000;
+
+/// Shows (or clears) the "can't reach your iPhone" state. Without it the page simply
+/// froze on its last snapshot — still captioned "Playing on iPhone" — while every click
+/// silently did nothing, which is indistinguishable from the app having hung.
+function markPhoneUnreachable(unreachable) {
+  if (unreachable === state.phoneUnreachable) return;
+  state.phoneUnreachable = unreachable;
+  document.body.classList.toggle("phone-unreachable", unreachable);
+  if (!unreachable) reconnectDelay = 1000;
 }
 
 // ---------- init ----------
 
 setupMediaSession();
-loadHome();
-loadLibraryList();
-refreshState();
+loadHome().catch(() => {});
+loadLibraryList().catch(() => {});
+refreshState().catch(() => {});
 connectWebSocket();
-setInterval(refreshState, 5000); // fallback in case the socket drops silently
+// Fallback in case the socket drops silently. The `.catch` is not optional: while the
+// phone is unreachable this rejects every five seconds, and an unhandled rejection in a
+// timer stops nothing but fills the console and hides real errors.
+setInterval(() => {
+  refreshState()
+    .then(() => markPhoneUnreachable(false))
+    .catch(() => markPhoneUnreachable(true));
+}, 5000);

@@ -21,6 +21,20 @@
                ReferencedContainer = "container:VVDemus.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "7E396043DF741FD6DF754A4A"
+               BuildableName = "VVDemusTests.xctest"
+               BlueprintName = "VVDemusTests"
+               ReferencedContainer = "container:VVDemus.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -39,7 +53,40 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "7E396043DF741FD6DF754A4A"
+               BuildableName = "VVDemusTests.xctest"
+               BlueprintName = "VVDemusTests"
+               ReferencedContainer = "container:VVDemus.xcodeproj">
+            </BuildableReference>
+            <SkippedTests>
+               <Test
+                  Identifier = "DataUsageBenchmarks">
+               </Test>
+               <Test
+                  Identifier = "StreamFormatDiagnostics">
+               </Test>
+               <Test
+                  Identifier = "PlayerClientProbe">
+               </Test>
+               <Test
+                  Identifier = "PlaybackSmokeTest">
+               </Test>
+               <Test
+                  Identifier = "StreamUrlRangeTests">
+               </Test>
+               <Test
+                  Identifier = "ResourceLoaderUrlIntegrityTests">
+               </Test>
+            </SkippedTests>
+         </TestableReference>
       </Testables>
+      <CommandLineArguments>
+      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

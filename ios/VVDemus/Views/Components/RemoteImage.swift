@@ -45,6 +45,7 @@ struct RemoteImage: View {
         .task(id: url) {
             await load()
         }
+        .accessibilityHidden(true)
     }
 
     private func load() async {
@@ -94,11 +95,40 @@ struct RemoteImage: View {
     /// source for 900px and be served a blurry upscale at roughly six times the bytes of
     /// the original.
     static func resizedThumbnailUrl(_ url: String, targetPixels: Int) -> String {
+        if let sized = ytimgVariant(url, targetPixels: targetPixels) { return sized }
         guard let range = url.range(of: #"=w\d+-h\d+"#, options: .regularExpression) else { return url }
         let sourceWidth = url[range]
             .dropFirst(2)                                    // "=w"
             .prefix { $0.isNumber }
         let target = min(targetPixels, Int(sourceWidth) ?? targetPixels)
         return url.replacingCharacters(in: range, with: "=w\(target)-h\(target)")
+    }
+
+    /// Radio and watch endpoints hand back `i.ytimg.com/vi/{id}/hq720.jpg?sqp=…` instead of
+    /// the `yt3.googleusercontent.com` form, and the `=w{N}-h{N}` rewrite above doesn't
+    /// match it at all — so every one of those was fetched at full size. Measured: 49.7 KB
+    /// each, against 11.5 KB for the same image at row size. A radio screen shows dozens.
+    ///
+    /// These URLs expose fixed-size variants by filename. The signature parameters belong
+    /// to the specific filename, so they're dropped — the unsigned variants are served
+    /// happily (verified against all six).
+    ///
+    /// Large targets deliberately keep the original URL: `sddefault`/`maxresdefault` are
+    /// the two variants that genuinely can 404 for some videos, and a missing hero image is
+    /// a worse outcome than a few saved kilobytes on the one image the user is looking at.
+    private static func ytimgVariant(_ url: String, targetPixels: Int) -> String? {
+        guard let components = URLComponents(string: url),
+              components.host?.hasSuffix("ytimg.com") == true else { return nil }
+        let path = components.path
+        guard let range = path.range(of: #"/vi/[^/]+/"#, options: .regularExpression) else { return nil }
+        let base = String(path[..<range.upperBound])
+
+        let variant: String
+        switch targetPixels {
+        case ..<200: variant = "mqdefault"   // 320×180, ~11.5 KB
+        case ..<400: variant = "hqdefault"   // 480×360, ~21.4 KB
+        default: return nil                  // hero images keep whatever they were given
+        }
+        return "https://i.ytimg.com\(base)\(variant).jpg"
     }
 }

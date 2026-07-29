@@ -36,6 +36,10 @@ final class RadioCacheStore: ObservableObject {
     /// refresh button — and is the only thing that should ever change a list the user is
     /// looking at, since YouTube returns a different set of songs on every call.
     func store(_ tracks: [Track], for seedVideoId: String) {
+        // Never cache an empty mix. A successful-but-empty response used to be stored and
+        // then served indefinitely, so the browser's radio screen for that seed stayed
+        // blank permanently — the phone re-fetches on empty, the browser cannot.
+        guard !tracks.isEmpty else { return }
         let changed = cache[seedVideoId] != tracks
         cache[seedVideoId] = tracks
         lastFetched[seedVideoId] = Date()
@@ -69,8 +73,7 @@ final class RadioCacheStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+        guard let snapshot = DefaultsSnapshot.load(Snapshot.self, forKey: key) else { return }
         cache = snapshot.cache
         order = snapshot.order
     }

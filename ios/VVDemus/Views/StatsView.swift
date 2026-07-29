@@ -127,7 +127,7 @@ struct StatsView: View {
                 }
             }
             .padding(.vertical)
-            .padding(.bottom, 40)
+            .miniPlayerInset()
         }
         .background(Theme.background)
         .navigationTitle("Your Stats")
