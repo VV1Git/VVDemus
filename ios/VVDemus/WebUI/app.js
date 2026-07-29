@@ -131,10 +131,20 @@ function post(path, body, timeoutMs) {
   );
 }
 
+/// Escapes text for interpolation into markup — element content *or* an attribute value.
+///
+/// This used to be `div.textContent = text; return div.innerHTML`, which is the usual
+/// trick and is only half a defence: serialising a text node escapes `&`, `<` and `>` but
+/// leaves quotes untouched. Verified in a browser — feeding it `" onerror="..." x="` and
+/// dropping the result into `src="..."` produced an element with a live `onerror`
+/// attribute. Every current caller happened to be element content, so nothing was
+/// exploitable through it, but `artImg` below does interpolate into an attribute and the
+/// URLs it renders come from YouTube by way of whatever a POST wrote into the phone's
+/// stored library.
+const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
 function escapeHtml(text) {
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
+  return String(text ?? "").replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
 }
 
 /// YouTube hands back thumbnail URLs at whatever size it picked — usually 544px square,
@@ -156,17 +166,91 @@ function art(url, cssPixels) {
   return url.replace(/=w\d+-h\d+/, `=w${target}-h${target}`);
 }
 
+/// Markup for a thumbnail, or a placeholder glyph when the track has none.
+///
+/// `art()` returns "" for a missing thumbnail, and `<img src="">` does not render nothing:
+/// the browser resolves the empty URL against the document, fetches this page's own HTML,
+/// fails to decode it as an image and draws a broken-image icon. Radio seed tracks come
+/// back from the phone with no `thumbnailUrl` at all, so that icon showed on the Home
+/// shelf and in the sidebar on every load.
+///
+/// The URL is escaped because it comes from YouTube: a quote in it would otherwise close
+/// the `src` attribute early and let the rest be parsed as markup.
+function artImg(url, cssPixels, attrs = "") {
+  const src = safeArtUrl(url, cssPixels);
+  return src
+    ? `<img src="${escapeHtml(src)}" alt="" ${attrs}>`
+    : `<span class="art-fallback">${ICONS.note}</span>`;
+}
+
+/// Artwork URL, or "" if it isn't one we're willing to render.
+///
+/// Restricted to http(s) as defence in depth. These strings are not necessarily from
+/// YouTube: any device on the network can POST a `Track` and the phone stores it verbatim,
+/// so a `thumbnailUrl` is attacker-controlled input that gets persisted and re-rendered on
+/// every later page load.
+function safeArtUrl(url, cssPixels) {
+  const src = art(url, cssPixels);
+  return /^https?:\/\//i.test(src) ? src : "";
+}
+
+/// The same guard for an `<img>` element that already exists: hidden outright rather than
+/// left with an empty `src`, so the container's own background shows instead of a broken
+/// image.
+function setArt(img, url, cssPixels) {
+  const src = safeArtUrl(url, cssPixels);
+  if (src) {
+    img.src = src;
+    img.hidden = false;
+  } else {
+    img.removeAttribute("src");
+    img.hidden = true;
+  }
+}
+
 // ---------- view switching ----------
+
+/// The sidebar row that should stay lit for whatever is on screen.
+///
+/// Held here rather than set directly by the handlers because the sidebar navigates
+/// *through* `openDetail`, which ends in `showView` — so a handler that highlighted its own
+/// row first had the highlight wiped a moment later, and the sidebar never showed which
+/// playlist or section you were looking at. Re-applied below after the clear.
+let sidebarSelection = null;
+
+function selectSidebarRow(el) {
+  sidebarSelection = el;
+}
+
+/// Whether the detail view is the one on screen.
+///
+/// `detail` itself is only ever reassigned by `openDetail`, so after visiting a radio once
+/// it kept `kind === "radio"` forever. A pushed radio update then re-opened the detail
+/// view from whatever the user had navigated to — mid-search, the page would navigate
+/// itself and leave focus in a now-hidden input.
+let detailVisible = false;
 
 function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   document.getElementById(`view-${name}`).classList.add("active");
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
   document.querySelectorAll(".lib-shortcut, .library-row").forEach((b) => b.classList.remove("active"));
+  // Guarded on still being in the document: the sidebar is rebuilt wholesale by
+  // `loadLibraryList`, which would otherwise leave this holding a detached node.
+  if (sidebarSelection && document.body.contains(sidebarSelection)) {
+    sidebarSelection.classList.add("active");
+  }
+  // Each view has its own place in the list; carrying the last one's offset over meant
+  // opening a playlist from the bottom of Home landed you mid-tracklist with the cover
+  // art and the play button scrolled off above.
+  const content = document.getElementById("content");
+  if (content) content.scrollTop = 0;
+  detailVisible = name === "detail";
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
   btn.onclick = () => {
+    selectSidebarRow(null);
     showView(btn.dataset.view);
     btn.classList.add("active");
     if (btn.dataset.view === "search") document.getElementById("global-search").focus();
@@ -220,7 +304,21 @@ document.addEventListener("keydown", (e) => {
 window.addEventListener("blur", closeContextMenu);
 // Capture phase: the menu is fixed-positioned, so it would otherwise hang in place while
 // the list behind it scrolls away.
-document.addEventListener("scroll", closeContextMenu, true);
+//
+// Scrolling *inside* the menu is exempt. The menu is deliberately scrollable
+// (`max-height: 60vh; overflow-y: auto`), and a capture-phase listener on `document` sees
+// scroll events from every descendant — so reaching a playlist below the fold closed the
+// thing you were reaching into. Worse, it closed itself: showPlaylistPicker focuses its
+// "New playlist" input, which scrolls the container to reveal it, so with enough playlists
+// to overflow, "Add to Playlist" opened the picker and dismissed it in the same frame.
+document.addEventListener(
+  "scroll",
+  (e) => {
+    if (e.target instanceof Node && contextMenuEl.contains(e.target)) return;
+    closeContextMenu();
+  },
+  true
+);
 window.addEventListener("resize", closeContextMenu);
 
 function menuButton(label, icon, onClick, { liked } = {}) {
@@ -421,7 +519,7 @@ function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
   const artwork = document.createElement("div");
   artwork.className = "track-art";
   const img = document.createElement("img");
-  img.src = art(track.thumbnailUrl, 44); // .track-row img is 44px
+  setArt(img, track.thumbnailUrl, 44); // .track-row img is 44px
   artwork.appendChild(img);
   // Animated bars over the artwork of whatever is playing — a green title alone was easy
   // to miss, especially in a long radio where several rows look alike.
@@ -530,7 +628,11 @@ function openDetail(tracks, { title, subtitle, badge, imageURL, kind, seedTrack,
   document.getElementById("detail-badge").textContent = badge || "";
   document.getElementById("detail-title").textContent = title;
   document.getElementById("detail-subtitle").textContent = subtitle || "";
-  document.getElementById("detail-art").innerHTML = imageURL ? `<img src="${imageURL}" alt="">` : "";
+  // Escaped and scheme-checked like every other artwork site: `imageURL` reaches here
+  // from a stored Track, which any device on the network can write.
+  // 180 matches `.detail-art`; callers already size to the same number, so the resize is
+  // a no-op and this is here for the escaping and the missing-artwork placeholder.
+  document.getElementById("detail-art").innerHTML = artImg(imageURL, 180);
   document.getElementById("detail-refresh").style.display = showRefresh ? "flex" : "none";
 
   // Kept so the open list can be re-rendered when the playing track changes — otherwise
@@ -643,8 +745,7 @@ async function openDownloadsDetail() {
 
 document.querySelectorAll(".lib-shortcut").forEach((btn) => {
   btn.onclick = async () => {
-    document.querySelectorAll(".lib-shortcut, .library-row, .nav-item").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
+    selectSidebarRow(btn);
     const which = btn.dataset.detail;
     if (which === "daylist") await openDaylistDetail();
     else if (which === "liked") await openLikedDetail();
@@ -784,6 +885,19 @@ document.querySelectorAll("#np-device-menu button").forEach((btn) => {
     e.stopPropagation();
     document.getElementById("np-device-menu").classList.remove("open");
     const device = btn.dataset.device;
+
+    // Picking the device that is *already* active used to stop the music dead, and there
+    // is nothing in the menu to say which one that is, so it was one stray click away at
+    // any time. The silent unlock clip would replace the real audio, while the phone's
+    // `setActiveDevice` early-returned without bumping any epoch — so the next snapshot
+    // was identical, the reload branch never ran, and the element kept the silent clip
+    // forever. Neither play/pause nor seek could recover it.
+    // "This Computer" still has work to do when a *different* tab is casting — it takes
+    // ownership — so this checks for this tab specifically, not merely for the computer
+    // being the active device.
+    const alreadyActive = device === "computer" ? state.isCastTab : state.activeDevice === "iphone";
+    if (alreadyActive) return;
+
     state.isCastTab = device === "computer";
     state.needsGesture = false;
     if (state.isCastTab) {
@@ -861,6 +975,10 @@ function syncCastAudio(s, shouldPlay) {
   // lets a reloaded tab pick casting back up, and what makes a tab that lost ownership
   // shut up instead of playing over the tab that took it.
   state.isCastTab = s.activeDevice === "computer" && !!s.castClientId && s.castClientId === CLIENT_ID;
+  // Tracked separately from `isCastTab`: when *another* tab is casting this one is not the
+  // cast tab, but the active device is still the computer, and the device menu has to be
+  // able to tell those apart.
+  state.activeDevice = s.activeDevice;
 
   if (!state.isCastTab || !videoId) {
     // If this tab kept playing through an outage, don't go quiet just because the phone
@@ -981,17 +1099,23 @@ function desiredPlayState(s) {
     state.pendingPlayIntent = null;
     return s.isPlaying;
   }
-  if (!pending.retried) {
+  if (!pending.retried && age > 2500) {
     // The request can simply have been lost. Ask again rather than letting audio the OS
     // stopped spring back to life — this failing towards "starts playing on its own" is
     // exactly what breaks an AirPods handover.
+    //
+    // The flag and the clock used to be set *before* this age test, one scope out. The
+    // first snapshot that disagreed — which arrives within a second, since broadcasts are
+    // 1 Hz and a `refreshState` is chased off the original POST — therefore consumed the
+    // single retry without ever sending it, and no later snapshot could re-enter. So a
+    // dropped toggle was never resent: the intent expired at 5s, the phone's stale
+    // `isPlaying: true` won, and music the user had paused from the media keys started
+    // again by itself about five seconds later.
+    //
+    // `pending.at` is deliberately not bumped here. Doing so also pushed back the 5s
+    // expiry above, letting a stale intent outlive the window it was given.
     pending.retried = true;
-    pending.at = Date.now();
-    if (age > 2500) {
-      pending.retried = true;
-      pending.at = Date.now();
-      post("/api/toggle").then(refreshState).catch(() => {});
-    }
+    post("/api/toggle").then(refreshState).catch(() => {});
   }
   return pending.playing;
 }
@@ -1178,7 +1302,7 @@ function renderNowPlaying(s) {
   renderDeviceLabel();
   renderDocumentTitle(s);
   const npArt = document.getElementById("np-art");
-  npArt.src = s.currentTrack ? art(s.currentTrack.thumbnailUrl, 56) : "";
+  setArt(npArt, s.currentTrack ? s.currentTrack.thumbnailUrl : null, 56);
   // The phone resolving a stream can take a second or two; without any sign of it, the
   // remote just looked frozen between pressing play and hearing anything.
   npArt.classList.toggle("loading", !!s.isLoading);
@@ -1194,7 +1318,11 @@ function renderNowPlaying(s) {
   likeBtn.classList.toggle("liked", !!liked);
 
   const seek = document.getElementById("np-seek");
-  if (!seek.dragging) {
+  // `seeking` covers the window after the thumb is released while the POST is still in
+  // flight. Without it, clearing `dragging` on `pointerup` would let a 1 Hz snapshot
+  // carrying the pre-seek position overwrite the thumb, so it visibly snapped back and
+  // then jumped forward again when the phone caught up.
+  if (!seek.dragging && !seek.seeking) {
     seek.max = Math.max(s.duration, 1);
     seek.value = s.progress;
   }
@@ -1269,13 +1397,21 @@ seekEl.addEventListener("pointerdown", () => (seekEl.dragging = true));
 // window lose focus mid-drag) left `dragging` stuck true forever — and while it's true
 // the progress bar stops accepting updates from the phone, so the whole seek bar and
 // elapsed time silently froze until the page was reloaded.
-["pointercancel", "blur"].forEach((ev) => seekEl.addEventListener(ev, () => (seekEl.dragging = false)));
+// `pointerup` is the one that actually matters and was the one missing. `change` only
+// fires when the value really changed, so pressing the thumb and releasing without moving
+// it — or dragging away and back to the same spot — left `dragging` latched true. The
+// slider keeps focus, so `blur` didn't fire either, and the scrubber and elapsed time sat
+// frozen while the music played on until the user happened to click elsewhere.
+["pointerup", "pointercancel", "blur"].forEach((ev) =>
+  seekEl.addEventListener(ev, () => (seekEl.dragging = false))
+);
 // Live feedback while scrubbing, instead of the elapsed time sitting still until release.
 seekEl.addEventListener("input", () => {
   document.getElementById("np-elapsed").textContent = fmtTime(Number(seekEl.value));
 });
 seekEl.addEventListener("change", async () => {
   const seconds = Number(seekEl.value);
+  seekEl.seeking = true;
   if (state.isCastTab && audioEl.src) audioEl.currentTime = seconds;
   try {
     await post("/api/seek", { seconds });
@@ -1284,6 +1420,7 @@ seekEl.addEventListener("change", async () => {
     // the elapsed time until the page is reloaded, because renderNowPlaying skips seek-bar
     // updates while a drag is in progress.
     seekEl.dragging = false;
+    seekEl.seeking = false;
     refreshState().catch(() => {});
   }
 });
@@ -1335,7 +1472,7 @@ function gridTrackCard(track, tracks, contextTitle) {
   card.className = "grid-card";
   card.innerHTML = `
     <div class="g-art-wrap">
-      <img src="${art(track.thumbnailUrl, 170)}" alt="" loading="lazy">
+      ${artImg(track.thumbnailUrl, 170, 'loading="lazy"')}
       <button class="g-queue-btn" title="Add to queue">${ICONS.add}</button>
     </div>
     <div class="g-title">${escapeHtml(track.title)}</div>
@@ -1358,7 +1495,7 @@ async function loadHomeRadios() {
     const chip = document.createElement("div");
     chip.className = "radio-chip";
     chip.innerHTML = `
-      <img src="${art(station.seedTrack.thumbnailUrl, 64)}" alt="" loading="lazy">
+      ${artImg(station.seedTrack.thumbnailUrl, 64, 'loading="lazy"')}
       <span class="r-title">${escapeHtml(station.seedTrack.title)} Radio</span>
     `;
     chip.onclick = async () => {
@@ -1443,12 +1580,11 @@ async function loadLibraryList() {
       const row = document.createElement("button");
       row.className = "library-row";
       row.innerHTML = `
-        <span class="lib-icon"><img src="${art(station.seedTrack.thumbnailUrl, 32)}" alt="" loading="lazy"></span>
+        <span class="lib-icon">${artImg(station.seedTrack.thumbnailUrl, 32, 'loading="lazy"')}</span>
         <span class="track-title-sm">${escapeHtml(station.seedTrack.title)} Radio</span>
       `;
       row.onclick = async () => {
-        document.querySelectorAll(".lib-shortcut, .library-row, .nav-item").forEach((b) => b.classList.remove("active"));
-        row.classList.add("active");
+        selectSidebarRow(row);
         const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`, {}, CONTENT_TIMEOUT_MS);
         openRadioDetail(station.seedTrack, tracks);
       };
@@ -1476,8 +1612,7 @@ async function loadLibraryList() {
         <span class="track-title-sm">${escapeHtml(p.name)}<span class="row-sub">${p.tracks.length} songs</span></span>
       `;
       row.onclick = () => {
-        document.querySelectorAll(".lib-shortcut, .library-row, .nav-item").forEach((b) => b.classList.remove("active"));
-        row.classList.add("active");
+        selectSidebarRow(row);
         openPlaylistDetail(p);
       };
       container.appendChild(row);
@@ -1522,7 +1657,11 @@ function connectWebSocket() {
       if (msg.type === "radio") {
         // A radio's mix changed (refreshed from the phone or another browser tab) —
         // if that's the one currently open here, update it live instead of going stale.
-        if (detail.kind === "radio" && detail.seedTrack && detail.seedTrack.videoId === msg.videoId) {
+        //
+        // `detailVisible` matters as much as the id: `detail` keeps describing the last
+        // radio opened long after the user navigated away, so this used to re-open the
+        // detail view over Search or Home the moment anyone refreshed that station.
+        if (detailVisible && detail.kind === "radio" && detail.seedTrack && detail.seedTrack.videoId === msg.videoId) {
           openRadioDetail(detail.seedTrack, msg.tracks);
         }
       } else if (msg.type === "state") {

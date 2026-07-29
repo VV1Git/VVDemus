@@ -3,6 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Artwork comes straight from googleusercontent, which rate-limits hard on an
+     unrecognised Referer: measured 9 of 12 identical requests returning 429 with a
+     Referer header against 0 of 12 without it. The 429 body is HTML served with
+     `nosniff`, so Chrome's opaque-response blocking rejects it and the image simply
+     never appears — roughly a third of all cover art was missing. The iOS app never
+     hit this because URLSession sends no Referer. Also stops leaking the phone's
+     local address to Google on every thumbnail. -->
+<meta name="referrer" content="no-referrer">
 <title>Spotify</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23191414'/%3E%3Ccircle cx='12' cy='12' r='9.4' fill='%231ED760'/%3E%3Cg stroke='%23191414' fill='none' stroke-linecap='round'%3E%3Cpath d='M5.2 9.4Q12 5.9 18.8 10.1' stroke-width='1.8'/%3E%3Cpath d='M6.1 12.7Q12 9.8 17.9 13.4' stroke-width='1.5'/%3E%3Cpath d='M7 15.9Q12 13.5 16.7 16.6' stroke-width='1.2'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="/style.css">

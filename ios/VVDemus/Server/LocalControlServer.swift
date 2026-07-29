@@ -147,9 +147,104 @@ final class LocalControlServer: ObservableObject {
 
     // MARK: - Lifecycle
 
+    /// Largest request body accepted, before a byte of it is read.
+    ///
+    /// Swifter takes `Content-Length` at face value and calls `allocate(capacity:)` with it
+    /// *before* reading the body, so `Content-Length: 4000000000` from anything on the Wi-Fi
+    /// makes the app attempt a 4 GB allocation and trap. A `/api/play` carrying the maximum
+    /// 2000-track context is a few hundred KB, so this is generous.
+    static let maximumRequestBodyBytes = 4 * 1024 * 1024
+
+    /// Rejects requests that didn't come from this server's own page.
+    ///
+    /// The threat isn't a stranger typing the address in — it's an ordinary web page the
+    /// user happens to visit issuing requests to the phone in the background. A form-style
+    /// POST needs no preflight, so without this check any page could start playback, queue
+    /// downloads, or plant a crafted track that the phone then stores and re-renders.
+    /// `Host` is checked for the same reason from the other direction: without it a name the
+    /// attacker controls can be re-pointed at the phone's LAN address (DNS rebinding) and
+    /// every response becomes readable from their origin.
+    ///
+    /// Deliberately permissive about a *missing* `Origin`: curl, the phone itself and
+    /// non-browser clients send none, and they were never the risk.
+    nonisolated static func isAllowedOrigin(_ origin: String?, port: UInt16) -> Bool {
+        guard let origin, !origin.isEmpty, origin != "null" else { return true }
+        guard let url = URL(string: origin), let host = url.host else { return false }
+        guard (url.port ?? -1) == Int(port) else { return false }
+        return host == "localhost" || host == "127.0.0.1" || isIPv4Literal(host)
+    }
+
+    nonisolated static func isAllowedHost(_ host: String?, port: UInt16) -> Bool {
+        guard let host, !host.isEmpty else { return true }
+        // Strip the port; IPv6 literals arrive bracketed.
+        let name: String
+        if host.hasPrefix("["), let close = host.firstIndex(of: "]") {
+            name = String(host[host.index(after: host.startIndex)..<close])
+        } else {
+            name = host.split(separator: ":").first.map(String.init) ?? host
+        }
+        return name == "localhost" || name == "::1" || isIPv4Literal(name)
+    }
+
+    /// An address the user typed or the page was served from — never a name an attacker can
+    /// point wherever they like.
+    nonisolated static func isIPv4Literal(_ host: String) -> Bool {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        return parts.allSatisfy { part in
+            !part.isEmpty && part.count <= 3 && part.allSatisfy(\.isNumber) && (Int(part) ?? 256) <= 255
+        }
+    }
+
+    private func installGuards() {
+        let port = self.port
+        server.middleware = [
+            { request in
+                // Swifter lowercases header names as it parses them.
+                if let length = request.headers["content-length"].flatMap(Int.init),
+                   length > Self.maximumRequestBodyBytes {
+                    return .raw(413, "Payload Too Large", [:], nil)
+                }
+                guard Self.isAllowedHost(request.headers["host"], port: port) else {
+                    return .raw(403, "Forbidden", [:], nil)
+                }
+                guard Self.isAllowedOrigin(request.headers["origin"], port: port) else {
+                    return .raw(403, "Forbidden", [:], nil)
+                }
+                return nil
+            },
+        ]
+    }
+
+    /// Brings the server back if its accept loop has quietly died.
+    ///
+    /// Swifter's loop is `while let socket = try? socket.acceptClientSocket()`, so *any*
+    /// `accept()` error ends it for good — `ECONNABORTED` when a peer resets between SYN and
+    /// accept (routine when a laptop sleeps or Wi-Fi flaps), `EINTR`, or `EMFILE` when the
+    /// process is briefly out of descriptors. It then closes the listening socket and marks
+    /// itself stopped.
+    ///
+    /// Nothing noticed. `isRunning` stayed true, no error was surfaced, the Library screen
+    /// went on displaying the address, and the broadcast timer kept writing to dead
+    /// sockets — the remote was simply unreachable until the user thought to toggle Connect
+    /// off and on. Checking Swifter's own state each second and restarting is cheap, and
+    /// makes the failure self-healing rather than permanent.
+    private func restartIfAcceptLoopDied() {
+        guard isRunning, !server.operating else { return }
+        NSLog("[Connect] accept loop stopped on its own — restarting")
+        do {
+            try server.start(port, forceIPv4: true, priority: .userInitiated)
+            startupError = nil
+        } catch {
+            // Left for the next tick: the port is often still in TIME_WAIT for a moment.
+            startupError = error.localizedDescription
+        }
+    }
+
     func start() {
         guard !isRunning else { return }
         registerRoutes()
+        installGuards()
         do {
             // Swifter defaults its accept loop and every connection thread to `.background`
             // QoS, which under any UI load starved `/api/state`, `/api/toggle` and
@@ -160,7 +255,10 @@ final class LocalControlServer: ObservableObject {
             startupError = nil
             localAddress = Self.currentWiFiAddress()
             let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.broadcastState() }
+                Task { @MainActor in
+                    self?.restartIfAcceptLoopDied()
+                    self?.broadcastState()
+                }
             }
             // `.common`, not the default mode: while a SwiftUI list is being scrolled the
             // run loop is in tracking mode and a default-mode timer stops firing entirely,
