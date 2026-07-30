@@ -37,6 +37,15 @@ protocol PlaybackEngine: AnyObject {
     var onItemFailed: ((Error?) -> Void)? { get set }
     /// Fired on the main actor roughly twice a second while an item is attached.
     var onPeriodicTime: ((Double) -> Void)? { get set }
+    /// Where forward playback must stop, so `onItemDidPlayToEnd` arrives at the real end of
+    /// the audio rather than at the end of a timeline that cannot be true. `nil` plays the
+    /// item to its own end, which is the default and right for every well-formed file.
+    ///
+    /// Needed because AVFoundation reports exactly twice the real length for YouTube's
+    /// audio-only MP4s (see `PlayerService.trimmedPlaybackEnd`), and the queue advances on
+    /// nothing but the engine saying the item finished.
+    var forwardPlaybackEndTime: Double? { get set }
+
     /// Whether the engine wants to play but has run dry — as opposed to the ordinary
     /// buffering that starts every track. `.waitingToPlayAtSpecifiedRate` covers both, so
     /// this is what tells them apart.
@@ -97,6 +106,22 @@ final class AVPlaybackEngine: PlaybackEngine {
     var itemDurationSeconds: Double? {
         guard let duration = player.currentItem?.duration.seconds, duration.isFinite, duration > 0 else { return nil }
         return duration
+    }
+
+    /// Set on the item rather than remembered here, so it survives nothing: a new item starts
+    /// with no limit, which is what `replaceItem` should mean.
+    var forwardPlaybackEndTime: Double? {
+        get {
+            guard let end = player.currentItem?.forwardPlaybackEndTime,
+                  end.isValid, end.seconds.isFinite else { return nil }
+            return end.seconds
+        }
+        set {
+            guard let item = player.currentItem else { return }
+            // `.invalid` is AVFoundation's "no limit", not a zero-length one.
+            item.forwardPlaybackEndTime = newValue
+                .map { CMTime(seconds: $0, preferredTimescale: 600) } ?? .invalid
+        }
     }
 
     /// True unless the player is genuinely stopped.

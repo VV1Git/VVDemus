@@ -51,9 +51,7 @@
 		71F05D4EA18525036617D681 /* ConnectCastLivenessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42D564F837E8E34909D3D329 /* ConnectCastLivenessTests.swift */; };
 		730FA1B64CC74C2CD04F48A7 /* LibraryDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52994059AB22AB5A4FD1C32D /* LibraryDestination.swift */; };
 		75B5EB7490533F1DA9CA7CD9 /* LoadAndResumeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C5C961DB1B1B1967CE23DCE /* LoadAndResumeTests.swift */; };
-		75B603FD062548FE8640946D /* BottomBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B31B39CDD13B2C0AAF068D9F /* BottomBar.swift */; };
 		7649E5A7DC843C20E85C434E /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E5DFE4DA1AF52C9AF6172F7 /* NowPlayingView.swift */; };
-		78BAA32296638B17E0131EB7 /* LiquidGlass.swift in Sources */ = {isa = PBXBuildFile; fileRef = A453118679197255E34BF8F7 /* LiquidGlass.swift */; };
 		7963F691E6DAED422CAC108E /* Swifter in Frameworks */ = {isa = PBXBuildFile; productRef = D35547D177DF48119FB3C75D /* Swifter */; };
 		7DC0BC48FEE5673360991904 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1408988D40442F8C2D74EDB9 /* APIClient.swift */; };
 		7E2F37BC5E54BFC545248DD9 /* RadioHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C57FFD369DF49FF64FEBBBBE /* RadioHistoryStore.swift */; };
@@ -89,7 +87,6 @@
 		C521D76F37BBFE20E1E99446 /* ConnectServerRoutesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51C67A0D69A2630240DD7B50 /* ConnectServerRoutesTests.swift */; };
 		C864A6CDD28C8E3B3363AC39 /* QueueAndTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F64AC8017670B94E6B96A579 /* QueueAndTransportTests.swift */; };
 		C8DFDDB6D3B9A85B0D4FF9EE /* PlayerClientProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 857E97DBEAE1A88F1E590651 /* PlayerClientProbe.swift */; };
-		CBCF4E189D160AC5263F287E /* MiniPlayerInset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A081681572E6482988F206 /* MiniPlayerInset.swift */; };
 		CC0161E4E3E2D5FBF6F87313 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3CA302A2DB3434962F85900 /* NetworkMonitor.swift */; };
 		CF48CA595A0A56564A24C480 /* PlayPauseStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CF8EDD2ECCA0C4852411E42 /* PlayPauseStateTests.swift */; };
 		D0167BE9475F20A88285CED5 /* RateLimitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F64CCCA10A78A807AF78D71 /* RateLimitTests.swift */; };
@@ -159,7 +156,6 @@
 		51C67A0D69A2630240DD7B50 /* ConnectServerRoutesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectServerRoutesTests.swift; sourceTree = "<group>"; };
 		52994059AB22AB5A4FD1C32D /* LibraryDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDestination.swift; sourceTree = "<group>"; };
 		531CDB2CD96A3B2898813D74 /* QueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueView.swift; sourceTree = "<group>"; };
-		59A081681572E6482988F206 /* MiniPlayerInset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniPlayerInset.swift; sourceTree = "<group>"; };
 		5B5F85AA2A70538931EF9CEE /* PersistenceAndParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceAndParsingTests.swift; sourceTree = "<group>"; };
 		5D3A453163BFAC3310F05268 /* NavigationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationCoordinator.swift; sourceTree = "<group>"; };
 		65807ECA760D586605EBE794 /* PlayHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayHistoryStore.swift; sourceTree = "<group>"; };
@@ -181,7 +177,6 @@
 		9F64CCCA10A78A807AF78D71 /* RateLimitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RateLimitTests.swift; sourceTree = "<group>"; };
 		A08A4ABE916CE07C4049C720 /* InterruptionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterruptionTests.swift; sourceTree = "<group>"; };
 		A0FF9459C240476A38E6415B /* DownloadIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadIntegrationTests.swift; sourceTree = "<group>"; };
-		A453118679197255E34BF8F7 /* LiquidGlass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiquidGlass.swift; sourceTree = "<group>"; };
 		A50964CDD65DBD8591D6D540 /* VVDemusApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VVDemusApp.swift; sourceTree = "<group>"; };
 		A6A0C5404D66AE5F823E4576 /* BackgroundAudioPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundAudioPolicyTests.swift; sourceTree = "<group>"; };
 		A7C73BE8983E44C1581A2E34 /* JumpBackInCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JumpBackInCard.swift; sourceTree = "<group>"; };
@@ -192,7 +187,6 @@
 		AEE323A81C0D0F79A7A1CCB9 /* HomeShelf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeShelf.swift; sourceTree = "<group>"; };
 		B199BDB292F52DCB8B3A18D5 /* ListeningStatsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListeningStatsStore.swift; sourceTree = "<group>"; };
 		B2ADCA13CEBD6AB94C16E404 /* LocalControlServerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalControlServerTests.swift; sourceTree = "<group>"; };
-		B31B39CDD13B2C0AAF068D9F /* BottomBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottomBar.swift; sourceTree = "<group>"; };
 		B3B80BE79C4EDFDBC603648B /* PlaybackSmokeTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackSmokeTest.swift; sourceTree = "<group>"; };
 		B427E2A099A341CCA4F4154B /* VVDemusTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VVDemusTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B4EE183565BC8CDAC04DDA81 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -328,13 +322,11 @@
 		65791B4F7A47E2B4BFF1E8FF /* Components */ = {
 			isa = PBXGroup;
 			children = (
-				B31B39CDD13B2C0AAF068D9F /* BottomBar.swift */,
 				063C2F7268A715E66472D390 /* DaylistCard.swift */,
 				7FDC0CAE84142D3EEAB5F41D /* ErrorRow.swift */,
 				AEE323A81C0D0F79A7A1CCB9 /* HomeShelf.swift */,
 				A7C73BE8983E44C1581A2E34 /* JumpBackInCard.swift */,
 				A8435F1A3A9C3B73536259A1 /* MiniPlayerBar.swift */,
-				59A081681572E6482988F206 /* MiniPlayerInset.swift */,
 				E17E32E089B5719C65506BB2 /* MixDetailHeader.swift */,
 				2F31636C2C095A73EB1B5E1E /* MixSortOption.swift */,
 				DF660773C7BC7989E7E05D5B /* RemoteImage.swift */,
@@ -478,7 +470,6 @@
 			isa = PBXGroup;
 			children = (
 				69462CBED0F68B02C8DF2CD5 /* ArtworkColorLoader.swift */,
-				A453118679197255E34BF8F7 /* LiquidGlass.swift */,
 				B4EE183565BC8CDAC04DDA81 /* Theme.swift */,
 			);
 			path = Theme;
@@ -632,7 +623,6 @@
 				E4DDFBB8DACEAF0D0AF20591 /* ArtworkColorLoader.swift in Sources */,
 				0DAD2F52F8988FA75D4B81DD /* BackgroundAudioPolicy.swift in Sources */,
 				EAA784217508A6CA5260198A /* BackgroundKeepAlive.swift in Sources */,
-				75B603FD062548FE8640946D /* BottomBar.swift in Sources */,
 				9789DC27046060FE6B29F5D3 /* DaylistCard.swift in Sources */,
 				7E525D12E72D63EFA8EAA750 /* DaylistDetailView.swift in Sources */,
 				EF37DC6C094E8164A906F80B /* DaylistStore.swift in Sources */,
@@ -650,13 +640,11 @@
 				50D63D77339D1E369D41A1A4 /* LibraryView.swift in Sources */,
 				62BAB33EABE72D940B4B2788 /* LikedSongsStore.swift in Sources */,
 				81BDFFE48C64064A494FBE52 /* LikedSongsView.swift in Sources */,
-				78BAA32296638B17E0131EB7 /* LiquidGlass.swift in Sources */,
 				A1034084A54014007E68A8CB /* ListeningStatsStore.swift in Sources */,
 				7F6AC4D26DE44F3A8FF0A736 /* LocalControlModels.swift in Sources */,
 				265389D011C9A342EBE7F929 /* LocalControlServer.swift in Sources */,
 				6D4B5E5F613415B442F862CA /* MemoryDiagnostics.swift in Sources */,
 				5AECAB7DC0B793C3FAE846AF /* MiniPlayerBar.swift in Sources */,
-				CBCF4E189D160AC5263F287E /* MiniPlayerInset.swift in Sources */,
 				D206190078985BFE103A9AE4 /* MixDetailHeader.swift in Sources */,
 				0F189141B4387ED956FEA49B /* MixSortOption.swift in Sources */,
 				B3B818FC353E3F4018990D9C /* NavigationCoordinator.swift in Sources */,
@@ -756,7 +744,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -775,7 +763,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -834,7 +822,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -852,7 +840,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -878,7 +866,7 @@
 				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = Generated/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -903,7 +891,7 @@
 				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = Generated/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

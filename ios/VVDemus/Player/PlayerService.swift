@@ -252,7 +252,11 @@ final class PlayerService: ObservableObject {
             guard self.activeDevice == .iphone, !self.isResumingAfterDeviceSwitch,
                   !self.isLoading else { return }
             guard seconds.isFinite else { return }
+            // Before `progress` is written: if this returns true the track is over and a new
+            // one is loading, and the position belongs to an item that is on its way out.
+            if self.advanceIfPlayedPastTheRealEnd(seconds) { return }
             self.progress = seconds
+            self.limitPlaybackToTheRealEndIfNeeded()
             if let itemDuration = self.engine.itemDurationSeconds,
                let reconciled = Self.reconciledDuration(
                    itemDuration: itemDuration,
@@ -281,6 +285,61 @@ final class PlayerService: ObservableObject {
             self?.handleStall()
         }
     }
+
+    // MARK: - Ending a track when the track actually ends
+
+    /// Where forward playback should stop for the attached item, once decided. `nil` when the
+    /// item's own end is trustworthy, which is the ordinary case.
+    private var trimmedEnd: Double?
+    /// Whether the decision has been made for the attached item. The item's duration is not
+    /// known at attach time — the asset loads asynchronously — so the decision waits for the
+    /// first tick that can see it, and must then not be remade on every tick after.
+    private var hasDecidedPlaybackEnd = false
+
+    /// Tells the engine to end the item at the real end of its audio, when AVFoundation's idea
+    /// of the item's length cannot be true.
+    ///
+    /// Applied on the first tick where the item's duration is known, and once only.
+    private func limitPlaybackToTheRealEndIfNeeded() {
+        guard !hasDecidedPlaybackEnd, let itemDuration = engine.itemDurationSeconds else { return }
+        hasDecidedPlaybackEnd = true
+        guard let end = Self.trimmedPlaybackEnd(
+            itemDuration: itemDuration,
+            metadataSeconds: currentTrack?.durationSeconds
+        ) else { return }
+        NSLog("[PlayerService] item claims %.1fs for a track stated as %ds — ending playback at %.1fs",
+              itemDuration, currentTrack?.durationSeconds ?? 0, end)
+        trimmedEnd = end
+        engine.forwardPlaybackEndTime = end
+    }
+
+    /// The belt to `forwardPlaybackEndTime`'s braces.
+    ///
+    /// `forwardPlaybackEndTime` is the right mechanism: AVFoundation ends the item itself, so
+    /// the queue advances through exactly the same path as an untrimmed track, with no timer of
+    /// ours to keep running while the screen is off. But the whole of the bug being fixed here
+    /// was one end-of-track trigger not firing when it should have, and the price of a second,
+    /// independent trigger is one comparison per tick. If playback runs past the real end
+    /// anyway, that is the end of the track.
+    ///
+    /// - Returns: whether the queue was advanced, in which case the caller must not go on to
+    ///   write this position anywhere.
+    private func advanceIfPlayedPastTheRealEnd(_ seconds: Double) -> Bool {
+        guard let trimmedEnd, seconds > trimmedEnd + Self.playedPastEndMargin,
+              isPlaying, !isLoading else { return false }
+        NSLog("[PlayerService] ran %.1fs past a %.1fs end without the engine reporting it — advancing",
+              seconds - trimmedEnd, trimmedEnd)
+        // Cleared first: `advance()` can re-enter this observer, and a second advance for the
+        // same track would skip one.
+        self.trimmedEnd = nil
+        advance()
+        return true
+    }
+
+    /// How far past the real end playback may run before the safety net calls it over. Wider
+    /// than the gap between two periodic ticks — they are half a second apart, so an ordinary
+    /// overshoot is not a missed trigger — and narrow enough to be inaudible.
+    nonisolated static let playedPastEndMargin: Double = 1.5
 
     /// Playback ran out of buffered data.
     ///
@@ -1515,6 +1574,11 @@ final class PlayerService: ObservableObject {
         // recovered retry plays underneath "Couldn't play…".
         errorMessage = nil
         attachedURL = url
+        // Per item, and reset before the new one arrives: a fresh item starts with no limit and
+        // its own duration to be judged on. Left set, the previous track's end would cut this
+        // one short — or, worse, a track whose length matched would never be trimmed at all.
+        trimmedEnd = nil
+        hasDecidedPlaybackEnd = false
         engine.replaceItem(url: url, forwardBufferDuration: Self.forwardBufferDuration)
         if resumeAt > 0 {
             engine.seek(to: resumeAt)
@@ -1567,6 +1631,38 @@ final class PlayerService: ObservableObject {
     /// more precise of the two, and used outright when there is no metadata to check against —
     /// this rejects a measurement that cannot be true, rather than assuming YouTube is always
     /// right.
+    /// Where forward playback must stop, when AVFoundation's idea of the item's length cannot be
+    /// true. `nil` means play the item to its own end.
+    ///
+    /// This is the half of `reconciledDuration` that was missing. That function corrects the
+    /// figure on the *scrubber*, and stops there: the player itself was left running on the
+    /// doubled timeline, and the queue advances on nothing but the engine reporting the item
+    /// finished. So a 5:21 track played its audio, then five and a half more minutes of silence,
+    /// and only then moved on — "it doesn't go to the next song, or takes a very long time to".
+    /// Nothing looked wrong on screen except a scrubber sitting past the end, which is why this
+    /// survived so long: it is only audible, and only when nobody is watching the screen.
+    ///
+    /// Measured on a real device: a 321s track advanced at 640.7s.
+    ///
+    /// Streaming was believed immune, because the item's duration stayed indefinite behind
+    /// `StreamingResourceLoader`. It no longer does. The loader has to report a real
+    /// `contentLength` from `Content-Range` or the asset refuses to open at all, so AVFoundation
+    /// now parses the container and inherits the same doubled duration downloads always had.
+    ///
+    /// Only ever halves, and only when halving is what makes the two sources agree — the
+    /// documented failure is a one-entry `elst` counted exactly twice. Anything else (a live
+    /// stream, a genuinely mislabelled upload, metadata that is simply wrong) is left alone:
+    /// truncating a song on a guess is worse than a late advance.
+    nonisolated static func trimmedPlaybackEnd(itemDuration: Double, metadataSeconds: Int?) -> Double? {
+        guard let itemDuration = sanitisedSeconds(itemDuration), itemDuration > 0,
+              let metadataSeconds, metadataSeconds > 0 else { return nil }
+        let halved = itemDuration / 2
+        guard abs(halved - Double(metadataSeconds)) <= durationAgreementMargin else { return nil }
+        // The halved measurement, not the metadata: it comes from the container and is exact to
+        // the sample, where YouTube's figure is rounded to the whole second.
+        return halved
+    }
+
     nonisolated static func reconciledDuration(itemDuration: Double, metadataSeconds: Int?) -> Double? {
         guard let itemDuration = sanitisedSeconds(itemDuration), itemDuration > 0 else { return nil }
         guard let metadataSeconds, metadataSeconds > 0 else { return itemDuration }

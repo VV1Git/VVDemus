@@ -105,10 +105,9 @@ struct NowPlayingView: View {
             transportControls
         }
         .padding(.vertical, 18)
-        .glassSurface(
-            cornerRadius: 28,
-            tint: colorLoader.color(for: player.currentTrack),
-            elevation: .raised
+        .glassEffect(
+            .regular.tint(colorLoader.color(for: player.currentTrack)),
+            in: .rect(cornerRadius: 28)
         )
         .padding(.horizontal, 12)
     }
@@ -119,8 +118,10 @@ struct NowPlayingView: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
             }
-            .buttonStyle(.glassCircle)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
             .accessibilityLabel("Close")
             Spacer()
             VStack(spacing: 2) {

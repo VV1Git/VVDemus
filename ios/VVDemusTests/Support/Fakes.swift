@@ -70,6 +70,9 @@ final class FakePlaybackEngine: PlaybackEngine {
 
     var currentTimeSeconds: Double = 0
     var itemDurationSeconds: Double?
+    /// What the player told the engine to treat as the end of the item, so a test can assert
+    /// that a doubled item duration is cut back to the real one.
+    var forwardPlaybackEndTime: Double?
     private(set) var state: EngineState = .paused
 
     /// Mirrors the real engine: false only when genuinely stopped.
@@ -102,6 +105,11 @@ final class FakePlaybackEngine: PlaybackEngine {
         attachCount += 1
         currentTimeSeconds = 0
         state = .paused
+        // A fresh AVPlayerItem carries no end limit, so neither does this one. Deliberately
+        // not auto-firing `onItemDidPlayToEnd` when a tick passes the limit: the real engine
+        // would, but keeping the two triggers separate here is what lets a test tell the
+        // primary mechanism (`finishTrack`) apart from the safety net (ticking past the end).
+        forwardPlaybackEndTime = nil
     }
 
     /// Enters `.buffering`, not `.playing` — a real player does not produce sound the

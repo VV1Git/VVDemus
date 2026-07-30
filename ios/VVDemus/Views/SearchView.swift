@@ -52,7 +52,6 @@ struct SearchView: View {
                         }
                     }
                     .listStyle(.plain)
-                    .miniPlayerInset()
                     .scrollContentBackground(.hidden)
                 }
             }
@@ -133,7 +132,6 @@ struct SearchView: View {
             }
         }
         .listStyle(.plain)
-        .miniPlayerInset()
         .scrollContentBackground(.hidden)
     }
 

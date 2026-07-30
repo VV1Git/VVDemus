@@ -37,6 +37,6 @@ struct ShortcutRow: View {
         // Clipped before the glass goes behind it: the artwork runs right into the leading
         // edge, so it has to take the corner radius with it.
         .clipShape(shape)
-        .glassSurface(in: shape, elevation: .flush)
+        .glassEffect(in: shape)
     }
 }

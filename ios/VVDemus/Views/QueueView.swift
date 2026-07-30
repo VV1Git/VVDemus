@@ -165,6 +165,6 @@ struct QueueView: View {
         // Glass sets the current track apart from the plain rows queued behind it, which a
         // green title alone was carrying on its own.
         .padding(10)
-        .glassSurface(cornerRadius: 16, elevation: .flush)
+        .glassEffect(in: .rect(cornerRadius: 16))
     }
 }
