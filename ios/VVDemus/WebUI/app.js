@@ -4,13 +4,71 @@
 // reload (or navigating away and back) left the phone casting to a tab that no longer
 // considered itself the cast tab — no audio anywhere, progress frozen, and no fallback
 // either, since a socket was still connected.
-const CLIENT_ID = (() => {
+/// Fisher-Yates.
+///
+/// This was `sort(() => Math.random() - 0.5)`, which is not a shuffle: a comparator that
+/// returns random values isn't a consistent ordering, so the result is strongly biased
+/// towards the original sequence and the bias varies by engine. The phone shuffles the
+/// same list with `Array.shuffled()`, which is uniform — so the same button gave
+/// measurably different results depending on which device you pressed it from.
+function shuffle(items) {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+function newClientId() {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+let CLIENT_ID = (() => {
   let id = sessionStorage.getItem("vvdemus_client_id");
   if (!id) {
-    id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    id = newClientId();
     sessionStorage.setItem("vvdemus_client_id", id);
   }
   return id;
+})();
+
+/// Guarantees the id is unique to this tab, which sessionStorage alone does not.
+///
+/// Chrome, Edge, Firefox and Safari all **copy** sessionStorage into the new tab on
+/// "Duplicate Tab" (and on window.open from the page), so the clone starts life claiming
+/// the original's identity. `isCastTab` is then true in both, both load the same stream
+/// and call play(), and the same track comes out of the speakers twice a fraction of a
+/// second apart — an audible flange — while both post progress reports under the one
+/// clientId and the phone's position jitters between them.
+///
+/// Tabs announce their id on load; whichever was born later gives up its id and takes a
+/// fresh one. The older tab keeps the id, so a genuine reload still reclaims casting.
+const CLIENT_BORN_AT = Date.now() + Math.random();
+
+(() => {
+  if (!("BroadcastChannel" in window)) return;
+  const channel = new BroadcastChannel("vvdemus_client_id");
+  channel.onmessage = (e) => {
+    const msg = e.data;
+    if (!msg || msg.id !== CLIENT_ID) return;
+    if (msg.type === "claim") {
+      // Another tab is using our id. The older tab keeps it.
+      if (CLIENT_BORN_AT < msg.bornAt) {
+        channel.postMessage({ type: "taken", id: CLIENT_ID, bornAt: CLIENT_BORN_AT });
+      }
+    } else if (msg.type === "taken" && msg.bornAt < CLIENT_BORN_AT) {
+      CLIENT_ID = newClientId();
+      sessionStorage.setItem("vvdemus_client_id", CLIENT_ID);
+      // This tab is no longer whoever the phone is casting to; stop producing sound.
+      if (state.isCastTab) {
+        state.isCastTab = false;
+        releaseAudioElement();
+        renderDeviceLabel();
+      }
+    }
+  };
+  channel.postMessage({ type: "claim", id: CLIENT_ID, bornAt: CLIENT_BORN_AT });
 })();
 
 const state = {
@@ -43,8 +101,20 @@ const state = {
   // restart. See isStaleSnapshot.
   serverInstanceId: null,
   lastAppliedAt: 0,
+  // Whether the 1 Hz push is live. Snapshot freshness expectations depend on it: with the
+  // socket down the only source is the 5 s poll.
+  socketConnected: false,
   failedSrc: null,
   failedAt: 0,
+  // Throttles re-resolve requests for a stream URL the browser could not play.
+  streamFailureReportedFor: null,
+  streamFailureReportedAt: 0,
+  // Stall watchdog bookkeeping.
+  lastObservedTime: -1,
+  lastProgressAt: 0,
+  // Set once the sidebar has been populated at least once; a first load that failed must
+  // be retried rather than recorded as done.
+  librarySignatureLoaded: false,
   // What the phone says plays next, with a resolved URL — this tab's lifeline if the
   // phone goes away mid-song.
   upNext: null,
@@ -113,9 +183,97 @@ async function api(path, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
     const res = await fetch(path, { ...options, signal: controller.signal });
     if (!res.ok) throw new Error(`${path} -> ${res.status}`);
     const contentType = res.headers.get("content-type") || "";
-    return contentType.includes("application/json") ? res.json() : res.text();
+    // `await`, not a bare `return` of the promise. Returning it from inside `try/finally`
+    // runs the `finally` — and so `clearTimeout` — as soon as the promise is *created*,
+    // which is the moment the headers arrive. The body download was then completely
+    // unbounded: if the connection broke after the headers were flushed, this hung until
+    // the OS TCP timeout, minutes later. That silently voided the 1500ms budget on the
+    // `/api/next` call that the whole gapless-prefetch mechanism depends on, so instead of
+    // continuing to the next track the music just stopped.
+    return await (contentType.includes("application/json") ? res.json() : res.text());
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/// Tells the user something failed.
+///
+/// Almost every action in this file used to be fire-and-forget: a handler would `await` a
+/// request, the request would time out against a briefly-busy phone, the rejection went
+/// nowhere, and the UI simply did nothing. Silent no-ops are indistinguishable from a
+/// click that didn't register, so people click again — which is how a slow refresh turns
+/// into four queued mix fetches.
+let toastTimer = null;
+
+function showError(message) {
+  let el = document.getElementById("toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    el.setAttribute("role", "status");
+    el.setAttribute("aria-live", "polite");
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 4000);
+}
+
+/// Wraps a handler so a failure is reported rather than swallowed.
+///
+/// `AbortError` is reported as a timeout because that is what it always means here — the
+/// only aborts are our own deadline firing.
+function reporting(what, fn) {
+  return async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (e) {
+      const timedOut = e && (e.name === "AbortError" || /abort/i.test(String(e && e.message)));
+      showError(timedOut ? `${what} timed out — is your phone awake?` : `${what} failed`);
+      return undefined;
+    }
+  };
+}
+
+/// Makes a clickable `<div>` behave like a button for keyboard and screen-reader users.
+///
+/// Track rows, grid cards, radio chips and library rows are all divs with click handlers,
+/// so none of them could take focus. Tabbing through search results stepped through each
+/// row's Like and Add-to-queue buttons — two stops per result — while skipping the row
+/// itself, so there was **no keyboard path to playing a song at all**, or to opening a
+/// radio or a playlist. The right-click menu was unreachable for the same reason: a row
+/// that can't be focused can't be sent Shift+F10.
+function makeActivatable(el, label, activate) {
+  el.tabIndex = 0;
+  el.setAttribute("role", "button");
+  if (label) el.setAttribute("aria-label", label);
+  el.onclick = activate;
+  el.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+    // Leave the key alone if focus is on a nested control (Like, Add to queue) that has
+    // its own activation behaviour.
+    if (e.target !== el) return;
+    // Space would otherwise scroll the list out from under the user.
+    e.preventDefault();
+    activate(e);
+  });
+}
+
+/// Marks a control busy for the duration of an async action, so a slow phone can't be
+/// turned into a queue of duplicate requests by an impatient second click.
+async function withBusy(el, fn) {
+  if (!el) return fn();
+  if (el.dataset.busy === "1") return undefined;
+  el.dataset.busy = "1";
+  el.disabled = true;
+  el.classList.add("busy");
+  try {
+    return await fn();
+  } finally {
+    delete el.dataset.busy;
+    el.disabled = false;
+    el.classList.remove("busy");
   }
 }
 
@@ -222,6 +380,24 @@ function selectSidebarRow(el) {
   sidebarSelection = el;
 }
 
+/// Opens something from the sidebar, marking the row selected only if it actually opens.
+///
+/// The selection has to be set *before* the navigation, because the navigation ends in
+/// `showView`, which is what applies it. But the row used to be painted selected up front
+/// and left that way on failure: a timed-out fetch showed the sidebar claiming a section
+/// was open while the content area still showed the previous one. Restoring the previous
+/// selection on failure needs no DOM work — `showView` never ran, so nothing was repainted.
+async function navigateFromSidebar(row, open) {
+  const previous = sidebarSelection;
+  selectSidebarRow(row);
+  try {
+    await open();
+  } catch (e) {
+    selectSidebarRow(previous);
+    throw e;
+  }
+}
+
 /// Whether the detail view is the one on screen.
 ///
 /// `detail` itself is only ever reassigned by `openDetail`, so after visiting a radio once
@@ -280,6 +456,13 @@ const MENU_ICONS = {
 /// list can be long), so it's fetched when a menu opens and cached briefly.
 let downloadsCache = { ids: new Set(), at: 0 };
 
+/// Forces the next reader to refetch. The phone folds the download count into
+/// `librarySignature`, so a finished download is observable — it just wasn't being acted
+/// on, leaving the menu offering "Download" for a track already on the device.
+function invalidateDownloadsCache() {
+  downloadsCache.at = 0;
+}
+
 async function downloadedIds() {
   if (Date.now() - downloadsCache.at < 15000) return downloadsCache.ids;
   try {
@@ -291,7 +474,12 @@ async function downloadedIds() {
   return downloadsCache.ids;
 }
 
+/// Bumped every time the menu is opened or closed, so an async continuation started for
+/// one track can detect that a different one has since taken over.
+let contextMenuGeneration = 0;
+
 function closeContextMenu() {
+  contextMenuGeneration++;
   contextMenuEl.classList.remove("open");
   contextMenuEl.setAttribute("aria-hidden", "true");
   contextMenuEl.innerHTML = "";
@@ -404,10 +592,17 @@ async function openTrackMenu(event, track, { onRemove, removeLabel } = {}) {
     contextMenuEl.appendChild(menuButton(removeLabel || "Remove from Queue", MENU_ICONS.trash, () => onRemove(track)));
   }
 
+  // Stamped so a slow continuation can tell whether it still owns the menu.
+  const generation = ++contextMenuGeneration;
   placeContextMenu(event.clientX, event.clientY);
 
   const downloaded = await downloadedIds();
   if (!contextMenuEl.classList.contains("open")) return; // closed while we waited
+  // Checking "still open" was not enough: right-clicking track A and then track B before
+  // this resolved let A's continuation append its Download row into a detached node and
+  // then re-place the menu at A's coordinates, visibly teleporting B's menu to where A had
+  // been clicked.
+  if (generation !== contextMenuGeneration) return;
   downloadSlot.appendChild(
     downloaded.has(track.videoId)
       ? menuButton("Remove Download", MENU_ICONS.trash, async () => {
@@ -451,18 +646,26 @@ async function showPlaylistPicker(track) {
   newInput.type = "text";
   newInput.placeholder = "New playlist name…";
   newInput.onclick = (e) => e.stopPropagation();
-  newInput.onkeydown = async (e) => {
+  newInput.onkeydown = (e) => {
     e.stopPropagation();
     if (e.key !== "Enter") return;
     const name = newInput.value.trim();
     if (!name) return;
     closeContextMenu();
-    await post("/api/library/playlists/create", { name });
-    // create doesn't hand back an id, so find the playlist it just made by name.
-    const playlists = await api("/api/library/playlists");
-    const created = playlists.find((p) => p.name === name);
-    if (created) await post(`/api/library/playlists/${created.id}/add`, { track });
-    loadLibraryList();
+    // Three chained requests with no error handling at all: if the middle one timed out
+    // the playlist existed on the phone but the track was never added and the sidebar
+    // never reloaded, so nothing on screen indicated it had half-happened. The menu is
+    // already closed by this point, so the toast is the only possible feedback.
+    reporting("Creating playlist", async () => {
+      await post("/api/library/playlists/create", { name });
+      // create doesn't hand back an id, so find the playlist it just made by name.
+      const playlists = await api("/api/library/playlists");
+      const created = playlists.find((p) => p.name === name);
+      if (!created) throw new Error("created playlist not found");
+      await post(`/api/library/playlists/${created.id}/add`, { track });
+      await loadLibraryList();
+      refreshOpenPlaylistDetail(created.id);
+    })();
   };
   newRow.appendChild(newInput);
   contextMenuEl.appendChild(newRow);
@@ -480,12 +683,28 @@ async function showPlaylistPicker(track) {
     listSlot.appendChild(
       menuButton(playlist.name, MENU_ICONS.playlist, async () => {
         await post(`/api/library/playlists/${playlist.id}/add`, { track });
-        loadLibraryList();
+        await loadLibraryList();
+        // The sidebar was rebuilt but the open detail view never was, so adding a song to
+        // the playlist you were looking at didn't show it until you re-clicked the row.
+        refreshOpenPlaylistDetail(playlist.id);
       })
     );
   });
   placeContextMenu(lastMenuPosition.x, lastMenuPosition.y);
   newInput.focus();
+}
+
+/// Re-opens the playlist detail view if it is the one currently on screen and its contents
+/// just changed, so the track that was added actually appears.
+async function refreshOpenPlaylistDetail(playlistId) {
+  if (!detailVisible || detail.kind !== "playlist" || detail.playlistId !== playlistId) return;
+  try {
+    const playlists = await api("/api/library/playlists");
+    const fresh = playlists.find((p) => p.id === playlistId);
+    if (fresh) openPlaylistDetail(fresh);
+  } catch (e) {
+    /* the sidebar reload already reported any failure */
+  }
 }
 
 /// Remembered so the picker (and the way back out of it) can reopen in the same spot.
@@ -496,15 +715,55 @@ function attachTrackMenu(element, track, opts) {
     lastMenuPosition = { x: e.clientX, y: e.clientY };
     openTrackMenu(e, track, opts);
   });
+  // Keyboard equivalent. Without it the menu was unreachable without a mouse, since the
+  // rows could not be focused at all before `makeActivatable`.
+  element.addEventListener("keydown", (e) => {
+    const wantsMenu = e.key === "ContextMenu" || (e.shiftKey && e.key === "F10");
+    if (!wantsMenu || e.target !== element) return;
+    e.preventDefault();
+    const box = element.getBoundingClientRect();
+    lastMenuPosition = { x: box.left + 24, y: box.top + box.height };
+    openTrackMenu(
+      { preventDefault() {}, stopPropagation() {}, clientX: lastMenuPosition.x, clientY: lastMenuPosition.y },
+      track,
+      opts
+    );
+  });
+
   // Touch equivalent, for driving the remote from a tablet.
+  //
+  // `longPressFired` exists because this listener cannot be non-passive without giving up
+  // scroll performance, so it cannot `preventDefault()` the synthetic click the browser
+  // emits on touchend. That click used to reach the row's own handler and the document's
+  // dismiss handler: the menu appeared under your finger, then on lift the track started
+  // playing and the menu vanished. Any deliberate, slow tap did it.
   let longPress = null;
-  element.addEventListener("touchstart", (e) => {
-    const touch = e.touches[0];
-    longPress = setTimeout(() => {
-      lastMenuPosition = { x: touch.clientX, y: touch.clientY };
-      openTrackMenu({ preventDefault() {}, stopPropagation() {}, clientX: touch.clientX, clientY: touch.clientY }, track, opts);
-    }, 500);
-  }, { passive: true });
+  let longPressFired = false;
+  element.addEventListener(
+    "touchstart",
+    (e) => {
+      const touch = e.touches[0];
+      longPressFired = false;
+      longPress = setTimeout(() => {
+        longPressFired = true;
+        lastMenuPosition = { x: touch.clientX, y: touch.clientY };
+        openTrackMenu({ preventDefault() {}, stopPropagation() {}, clientX: touch.clientX, clientY: touch.clientY }, track, opts);
+      }, 500);
+    },
+    { passive: true }
+  );
+  // Capture phase, so it runs before the row's own click handler and before the
+  // document-level dismiss.
+  element.addEventListener(
+    "click",
+    (e) => {
+      if (!longPressFired) return;
+      longPressFired = false;
+      e.stopPropagation();
+      e.preventDefault();
+    },
+    true
+  );
   ["touchend", "touchmove", "touchcancel"].forEach((ev) =>
     element.addEventListener(ev, () => clearTimeout(longPress), { passive: true })
   );
@@ -576,7 +835,7 @@ function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
   }
 
   row.appendChild(actions);
-  row.onclick = () => onPlay && onPlay(track);
+  makeActivatable(row, `Play ${track.title} by ${track.artist}`, () => onPlay && onPlay(track));
   attachTrackMenu(row, track, showRemove ? { onRemove, removeLabel: "Remove from Queue" } : {});
   return row;
 }
@@ -622,8 +881,15 @@ function renderList(container, tracks, opts) {
 
 // ---------- generic detail view (playlist / radio / daylist / liked / downloads) ----------
 
-function openDetail(tracks, { title, subtitle, badge, imageURL, kind, seedTrack, showRefresh }) {
-  detail = { tracks, title, kind: kind || null, seedTrack: seedTrack || null };
+function openDetail(tracks, { title, subtitle, badge, imageURL, kind, seedTrack, showRefresh, playlistId }) {
+  detail = {
+    tracks,
+    title,
+    kind: kind || null,
+    seedTrack: seedTrack || null,
+    // Identifies *which* playlist is open, so a change to it can be reflected live.
+    playlistId: playlistId || null,
+  };
 
   document.getElementById("detail-badge").textContent = badge || "";
   document.getElementById("detail-title").textContent = title;
@@ -660,7 +926,7 @@ document.getElementById("detail-play").onclick = () => {
 
 document.getElementById("detail-shuffle").onclick = () => {
   if (!detail.tracks.length) return;
-  const shuffled = [...detail.tracks].sort(() => Math.random() - 0.5);
+  const shuffled = shuffle(detail.tracks);
   post("/api/play", {
     track: shuffled[0],
     context: shuffled,
@@ -669,15 +935,24 @@ document.getElementById("detail-shuffle").onclick = () => {
   }).then(refreshState);
 };
 
-document.getElementById("detail-refresh").onclick = async () => {
-  if (detail.kind === "radio" && detail.seedTrack) {
-    const tracks = await post("/api/radio/refresh", { videoId: detail.seedTrack.videoId }, CONTENT_TIMEOUT_MS);
-    openRadioDetail(detail.seedTrack, tracks);
-  } else if (detail.kind === "daylist") {
-    await post("/api/library/daylist/refresh", {}, CONTENT_TIMEOUT_MS);
-    await openDaylistDetail();
-  }
-};
+// Busy-marked and error-reported. A refresh genuinely takes seconds (the phone goes out to
+// YouTube), and with no busy state and no error surface the button looked broken: people
+// clicked it repeatedly, each click starting another mix fetch, and a failure was
+// indistinguishable from success.
+{
+  const refreshBtn = document.getElementById("detail-refresh");
+  refreshBtn.onclick = reporting("Refresh", () =>
+    withBusy(refreshBtn, async () => {
+      if (detail.kind === "radio" && detail.seedTrack) {
+        const tracks = await post("/api/radio/refresh", { videoId: detail.seedTrack.videoId }, CONTENT_TIMEOUT_MS);
+        openRadioDetail(detail.seedTrack, tracks);
+      } else if (detail.kind === "daylist") {
+        await post("/api/library/daylist/refresh", {}, CONTENT_TIMEOUT_MS);
+        await openDaylistDetail();
+      }
+    })
+  );
+}
 
 function radioSubtitle(seedTrack, tracks) {
   const others = tracks
@@ -720,6 +995,7 @@ async function openPlaylistDetail(playlist) {
     badge: "Playlist",
     imageURL: playlist.tracks[0] ? art(playlist.tracks[0].thumbnailUrl, 180) : null,
     kind: "playlist",
+    playlistId: playlist.id,
   });
 }
 
@@ -744,13 +1020,16 @@ async function openDownloadsDetail() {
 }
 
 document.querySelectorAll(".lib-shortcut").forEach((btn) => {
-  btn.onclick = async () => {
-    selectSidebarRow(btn);
-    const which = btn.dataset.detail;
-    if (which === "daylist") await openDaylistDetail();
-    else if (which === "liked") await openLikedDetail();
-    else if (which === "downloads") await openDownloadsDetail();
-  };
+  btn.onclick = reporting("Opening", () =>
+    withBusy(btn, () =>
+      navigateFromSidebar(btn, async () => {
+        const which = btn.dataset.detail;
+        if (which === "daylist") await openDaylistDetail();
+        else if (which === "liked") await openLikedDetail();
+        else if (which === "downloads") await openDownloadsDetail();
+      })
+    )
+  );
 });
 
 // ---------- device switching (VVDemus Connect) ----------
@@ -918,7 +1197,19 @@ document.querySelectorAll("#np-device-menu button").forEach((btn) => {
 function playCastAudio() {
   suppressPlaybackEcho();
   const p = audioEl.play();
-  if (p && p.catch) p.catch(() => armGestureRetry());
+  if (p && p.catch) {
+    p.catch((err) => {
+      // Only a genuine autoplay block should arm the gesture retry. `play()` also rejects
+      // with `AbortError` whenever a pending play is interrupted by `load()` or `pause()`,
+      // which happens on completely ordinary paths — skipping twice quickly, or pausing
+      // within a second of a track starting. Treating those as "blocked" put "Click
+      // anywhere to resume" on screen *while music was playing perfectly*, and clicking it
+      // then restarted audio the user had just paused for up to a second, which is exactly
+      // the half-second of sound that stops AirPods handing over.
+      if (err && err.name === "AbortError") return;
+      armGestureRetry();
+    });
+  }
 }
 
 function armGestureRetry() {
@@ -938,11 +1229,14 @@ function armGestureRetry() {
 /// with the remote in the background — which is where it spends most of its time.
 /// Rewritten only when it actually changes: this runs on every state broadcast, and
 /// assigning document.title once a second makes the tab flicker in some browsers.
-function renderDocumentTitle(s) {
+/// `playing` is passed in rather than read off the snapshot. Using raw `s.isPlaying` here
+/// while every other indicator used the resolved value meant the tab title still showed
+/// the track as playing after a media-key pause, for as long as the phone took to agree.
+function renderDocumentTitle(s, playing) {
   const track = s && s.currentTrack;
   const next = !track
     ? "Spotify"
-    : s.isPlaying
+    : playing
       ? `${track.title} • ${track.artist}`
       : `${track.title} • ${track.artist} — paused`;
   if (document.title !== next) document.title = next;
@@ -1016,7 +1310,19 @@ function syncCastAudio(s, shouldPlay) {
     // or, worse, still holds the *previous* track's URL. `streamVideoId` says which track
     // the URL was resolved for; anything else means "not ready yet", and loading it would
     // leave this computer playing one track behind the phone with nothing to correct it.
-    if (!s.streamUrl || s.streamVideoId !== videoId) return;
+    if (!s.streamUrl || s.streamVideoId !== videoId) {
+      // Silence the outgoing track first. This `return` exits before the pause branch at
+      // the bottom of the function, so for the 1-2s the phone spends resolving the new
+      // URL the *previous* track carried on playing — the page showing track B with a
+      // spinner while track A was still audible. Pressing pause during that window did
+      // nothing for the same reason. The phone's own path pauses its engine here; the
+      // browser had no equivalent.
+      if (!audioEl.paused && state.loadedVideoId && state.loadedVideoId !== videoId) {
+        suppressPlaybackEcho();
+        audioEl.pause();
+      }
+      return;
+    }
     // Don't hammer a URL that just failed to load; let the next track (or a re-resolve
     // after a device switch) get a fresh one instead of retrying every broadcast tick.
     if (s.streamUrl === state.failedSrc && Date.now() - state.failedAt < 5000) return;
@@ -1123,6 +1429,60 @@ function desiredPlayState(s) {
 audioEl.addEventListener("pause", () => onPlaybackEcho(false));
 audioEl.addEventListener("play", () => onPlaybackEcho(true));
 
+/// Watches for playback that has quietly stopped moving.
+///
+/// A stalled element is `paused === false` and `ended === false`, so `syncCastAudio` takes
+/// neither of its branches, no play/pause echo fires, and `timeupdate` stops — which means
+/// progress reports stop too. The phone's only remaining signal is the tab's heartbeat,
+/// which says "alive", so it never falls back either. The result was silence behind a
+/// "playing" UI, indefinitely, with nothing on either side noticing. The phone has exactly
+/// this watchdog for its own player; the browser had none.
+const STALL_TIMEOUT_MS = 12000;
+
+setInterval(() => {
+  if (!state.isCastTab || !state.loadedVideoId) return;
+  if (audioEl.paused || audioEl.ended) return;
+  if (audioEl.currentSrc === SILENT_UNLOCK_SRC) return;
+
+  const now = Date.now();
+  const t = audioEl.currentTime;
+  if (t !== state.lastObservedTime) {
+    state.lastObservedTime = t;
+    state.lastProgressAt = now;
+    return;
+  }
+  if (!state.lastProgressAt) {
+    state.lastProgressAt = now;
+    return;
+  }
+  if (now - state.lastProgressAt < STALL_TIMEOUT_MS) return;
+
+  // Buffering legitimately holds `currentTime` still. Distinguish it: if the element has
+  // buffered past where it is sitting, this is not a network stall and nudging it is the
+  // wrong move.
+  let buffered = 0;
+  try {
+    for (let i = 0; i < audioEl.buffered.length; i++) {
+      if (audioEl.buffered.start(i) <= t && t <= audioEl.buffered.end(i)) buffered = audioEl.buffered.end(i);
+    }
+  } catch (e) {
+    /* buffered can throw before metadata */
+  }
+  state.lastProgressAt = now;
+  if (buffered - t > 1) return;
+
+  showError("Playback stalled — reloading the track");
+  reportStreamFailure();
+}, 2000);
+
+// `waiting` and `stalled` are the browser telling us the same thing earlier; recording the
+// moment keeps the watchdog above from counting buffering time twice.
+["waiting", "stalled"].forEach((ev) =>
+  audioEl.addEventListener(ev, () => {
+    state.lastProgressAt = Date.now();
+  })
+);
+
 audioEl.addEventListener("error", () => {
   // Lets the next state sync retry the load (e.g. a transiently expired/failed stream
   // URL) instead of leaving this videoId permanently marked "loaded" with nothing
@@ -1132,7 +1492,40 @@ audioEl.addEventListener("error", () => {
   state.failedSrc = audioEl.getAttribute("src");
   state.failedAt = Date.now();
   state.loadedVideoId = null;
+  reportStreamFailure();
 });
+
+/// Tells the phone the stream URL it gave us is dead, so it can re-resolve.
+///
+/// Without this the failure was terminal. The browser retried the *identical* URL every
+/// 5 s forever: nothing on either side re-resolved it, the phone's own recovery path is
+/// gated to `activeDevice == .iphone`, and `APIClient` serves the same string from its
+/// cache until expiry anyway. Meanwhile the tab's WebSocket heartbeat kept
+/// `computerIsReportingPlayback` true, so the phone never took playback back either.
+/// One 403 — an expired URL after a long pause, or a phone resolving on cellular while the
+/// computer fetches over Wi-Fi — meant silence behind a "Playing on This Computer" label
+/// until the page was reloaded.
+async function reportStreamFailure() {
+  const videoId = state.last && state.last.currentTrack ? state.last.currentTrack.videoId : null;
+  if (!videoId) return;
+  // Throttled per track: a failing element can fire `error` repeatedly, and each report
+  // makes the phone do a fresh network resolve.
+  if (state.streamFailureReportedFor === videoId && Date.now() - (state.streamFailureReportedAt || 0) < 10000) {
+    return;
+  }
+  state.streamFailureReportedFor = videoId;
+  state.streamFailureReportedAt = Date.now();
+  try {
+    await post("/api/playback/stream-failed", { videoId, clientId: CLIENT_ID });
+    // A fresh URL arrives in the next snapshot; clear the throttle so it is actually tried
+    // rather than being suppressed as "the same failure".
+    state.failedSrc = null;
+    await refreshState();
+  } catch (e) {
+    // An older phone build has no such route. Nothing more to do — the existing 5s retry
+    // stays as the fallback.
+  }
+}
 
 audioEl.addEventListener("timeupdate", () => {
   // No loaded track means there's nothing meaningful to report — and an untagged report
@@ -1271,7 +1664,15 @@ function isStaleSnapshot(s) {
   }
   // Belt and braces: no correctness guard is worth a permanently dead page. If nothing has
   // been applied for several seconds, take whatever arrives.
-  if (state.lastAppliedAt && Date.now() - state.lastAppliedAt > 4000) return false;
+  //
+  // Scaled to how often snapshots are actually arriving. With the WebSocket up they come
+  // at 1 Hz and 4s is a generous margin, but with it down the only source is the 5s poll —
+  // so *every* snapshot was older than the threshold and the bypass fired unconditionally,
+  // switching the ordering guard off entirely at precisely the moment two `/api/state`
+  // responses are most likely to be in flight together (each command chases its own
+  // refresh). That restored the exact reordering this guard exists to prevent.
+  const staleBypassMs = state.socketConnected ? 4000 : 12000;
+  if (state.lastAppliedAt && Date.now() - state.lastAppliedAt > staleBypassMs) return false;
   if (state.appliedEpoch === null || state.appliedEpoch === undefined) return false;
   if (s.playbackEpoch > state.appliedEpoch) return false;
   if (s.playbackEpoch < state.appliedEpoch) return true;
@@ -1300,7 +1701,7 @@ function renderNowPlaying(s) {
   const playing = desiredPlayState(s);
   syncCastAudio(s, playing); // sets state.isCastTab, which the label depends on
   renderDeviceLabel();
-  renderDocumentTitle(s);
+  renderDocumentTitle(s, playing);
   const npArt = document.getElementById("np-art");
   setArt(npArt, s.currentTrack ? s.currentTrack.thumbnailUrl : null, 56);
   // The phone resolving a stream can take a second or two; without any sign of it, the
@@ -1349,10 +1750,36 @@ function renderNowPlaying(s) {
 
   // A radio started from anywhere — this tab, the phone, or autoplay — shows up in the
   // sidebar as soon as the phone reports its library changed shape.
-  if (state.librarySignature !== null && s.librarySignature !== state.librarySignature) {
-    loadLibraryList();
+  //
+  // The signature is only recorded once the reload has actually *succeeded*. It used to be
+  // stored unconditionally next to a fire-and-forget reload, so if either of its two 2s
+  // requests missed the deadline the sidebar kept the old contents while the browser had
+  // already written down the new signature — and it would not try again until the library
+  // changed shape a second time. The new station simply never appeared.
+  //
+  // The `!== null` guard also meant the very first snapshot only *recorded* the signature,
+  // so a failed initial `loadLibraryList()` left the sidebar empty for the life of the tab.
+  // `librarySignatureLoaded` tracks that separately.
+  if (s.librarySignature !== state.librarySignature || !state.librarySignatureLoaded) {
+    const target = s.librarySignature;
+    loadLibraryList()
+      .then(() => {
+        state.librarySignature = target;
+        state.librarySignatureLoaded = true;
+      })
+      .catch(() => {
+        // Left unrecorded on purpose: the next snapshot retries.
+      });
   }
-  state.librarySignature = s.librarySignature;
+
+  // The signature also moves when a download finishes, and the reload above only refetches
+  // playlists and radios — so the Downloads view and the context menu's Download/Remove
+  // label went on showing stale information. Cheap to just drop the cache and let the next
+  // reader refetch.
+  if (s.librarySignature !== state.librarySignature) invalidateDownloadsCache();
+
+  // Home only loads once; if that attempt failed, a reachable phone is the cue to retry.
+  retryDeferredLoadsIfNeeded();
 
   renderList(document.getElementById("context-queue-list"), s.contextQueue, {
     onPlay: (t) => post("/api/queue/skip-to", { track: t }),
@@ -1482,7 +1909,14 @@ function gridTrackCard(track, tracks, contextTitle) {
     e.stopPropagation();
     post("/api/queue/add", { track });
   };
-  card.onclick = () => post("/api/play", { track, context: tracks, contextTitle }).then(refreshState);
+  makeActivatable(
+    card,
+    `Play ${track.title} by ${track.artist}`,
+    reporting("Play", async () => {
+      await post("/api/play", { track, context: tracks, contextTitle });
+      await refreshState();
+    })
+  );
   attachTrackMenu(card, track);
   return card;
 }
@@ -1498,18 +1932,33 @@ async function loadHomeRadios() {
       ${artImg(station.seedTrack.thumbnailUrl, 64, 'loading="lazy"')}
       <span class="r-title">${escapeHtml(station.seedTrack.title)} Radio</span>
     `;
-    chip.onclick = async () => {
-      const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`, {}, CONTENT_TIMEOUT_MS);
-      openRadioDetail(station.seedTrack, tracks);
-    };
+    // Busy-marked: a radio fetch goes out to YouTube and can take seconds, during which
+    // the chip used to give no sign at all — so people clicked it repeatedly and each
+    // click started another fetch.
+    makeActivatable(
+      chip,
+      `Open ${station.seedTrack.title} Radio`,
+      reporting("Opening radio", () =>
+        withBusy(chip, async () => {
+          const tracks = await api(
+            `/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`,
+            {},
+            CONTENT_TIMEOUT_MS
+          );
+          openRadioDetail(station.seedTrack, tracks);
+        })
+      )
+    );
     container.appendChild(chip);
   });
 }
 
 async function loadHomeRecommendations() {
   const container = document.getElementById("home-recommendations");
-  container.innerHTML = "";
+  // Fetch first, clear second. Clearing up front meant a failed reload destroyed a
+  // perfectly good Home on the way to showing nothing.
   const sections = await api("/api/home", {}, CONTENT_TIMEOUT_MS);
+  container.innerHTML = "";
   if (!sections.length) {
     const empty = document.createElement("div");
     empty.className = "empty-hint";
@@ -1535,24 +1984,98 @@ async function loadHomeRecommendations() {
 async function loadHome() {
   // Each half is allowed to fail on its own: one failing fetch shouldn't leave the whole
   // Home screen blank, and neither rejection had a handler before.
-  await Promise.allSettled([loadHomeRadios(), loadHomeRecommendations()]);
+  const results = await Promise.allSettled([loadHomeRadios(), loadHomeRecommendations()]);
+  homeLoaded = results.every((r) => r.status === "fulfilled");
+  renderHomeRetry();
+  return homeLoaded;
+}
+
+/// Whether Home has ever loaded successfully in this tab.
+///
+/// `loadHome()` ran exactly once at startup with its rejection discarded, and nothing ever
+/// re-ran it — not the WebSocket reconnect, not the 5s poll. So a phone that was asleep or
+/// briefly without internet at page load left Home permanently empty: no content, no
+/// error, no retry, and the internet coming back changed nothing. Only a manual reload
+/// helped. Now a failure is visible, retryable by hand, and retried automatically the next
+/// time the phone is known to be reachable.
+let homeLoaded = false;
+let homeRetryScheduled = false;
+
+function renderHomeRetry() {
+  const container = document.getElementById("home-recommendations");
+  const existing = document.getElementById("home-retry");
+  if (homeLoaded) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) return;
+  const box = document.createElement("div");
+  box.id = "home-retry";
+  box.className = "empty-hint";
+  const text = document.createElement("span");
+  text.textContent = "Couldn't load Home. ";
+  const btn = document.createElement("button");
+  btn.className = "link-button";
+  btn.textContent = "Try again";
+  btn.onclick = reporting("Loading Home", () => withBusy(btn, loadHome));
+  box.appendChild(text);
+  box.appendChild(btn);
+  container.appendChild(box);
+}
+
+/// Retries the things that only load once, when there is fresh evidence the phone is
+/// reachable. Called from the state path, which is the only place that knows.
+function retryDeferredLoadsIfNeeded() {
+  if (homeLoaded || homeRetryScheduled) return;
+  homeRetryScheduled = true;
+  loadHome()
+    .catch(() => {})
+    .finally(() => {
+      homeRetryScheduled = false;
+    });
 }
 
 // ---------- search ----------
 
 let searchTimer = null;
+/// Incremented per keystroke so a slow response for an older query can be discarded.
+let searchGeneration = 0;
+
 function runSearch(q) {
   clearTimeout(searchTimer);
   if (!q.trim()) {
     renderList(document.getElementById("search-list"), []);
     return;
   }
+  const list = document.getElementById("search-list");
+  // Debouncing only cancelled the *timer*, never an in-flight request, and there was no
+  // ordering guard. Typing "abc", pausing, then "def" left both fetches running; if the
+  // first was slower it rendered last and you were looking at results for "abc" with
+  // "def" in the box. `renderList`'s signature is scoped per query, so it did not
+  // deduplicate the stale render — it guaranteed it.
+  const generation = ++searchGeneration;
+  list.setAttribute("aria-busy", "true");
   searchTimer = setTimeout(async () => {
-    const tracks = await api(`/api/search?q=${encodeURIComponent(q)}`, {}, CONTENT_TIMEOUT_MS);
-    renderList(document.getElementById("search-list"), tracks, {
-      scope: `search:${q}`,
-      onPlay: (t) => post("/api/play", { track: t, context: tracks, contextTitle: "Search" }).then(refreshState),
-    });
+    try {
+      const tracks = await api(`/api/search?q=${encodeURIComponent(q)}`, {}, CONTENT_TIMEOUT_MS);
+      if (generation !== searchGeneration) return; // a newer query has since been typed
+      renderList(list, tracks, {
+        scope: `search:${q}`,
+        onPlay: (t) =>
+          reporting("Play", async () => {
+            await post("/api/play", { track: t, context: tracks, contextTitle: "Search" });
+            await refreshState();
+          })(),
+      });
+    } catch (e) {
+      if (generation !== searchGeneration) return;
+      // Previously the old query's results just stayed on screen with the new query in the
+      // box — actively misleading rather than merely empty.
+      renderList(list, [], { scope: `search-failed:${q}` });
+      showError("Search failed — is your phone awake?");
+    } finally {
+      if (generation === searchGeneration) list.removeAttribute("aria-busy");
+    }
   }, 350);
 }
 
@@ -1583,11 +2106,18 @@ async function loadLibraryList() {
         <span class="lib-icon">${artImg(station.seedTrack.thumbnailUrl, 32, 'loading="lazy"')}</span>
         <span class="track-title-sm">${escapeHtml(station.seedTrack.title)} Radio</span>
       `;
-      row.onclick = async () => {
-        selectSidebarRow(row);
-        const tracks = await api(`/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`, {}, CONTENT_TIMEOUT_MS);
-        openRadioDetail(station.seedTrack, tracks);
-      };
+      row.onclick = reporting("Opening radio", () =>
+        withBusy(row, () =>
+          navigateFromSidebar(row, async () => {
+            const tracks = await api(
+              `/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`,
+              {},
+              CONTENT_TIMEOUT_MS
+            );
+            openRadioDetail(station.seedTrack, tracks);
+          })
+        )
+      );
       container.appendChild(row);
     });
   }
@@ -1606,28 +2136,45 @@ async function loadLibraryList() {
     playlists.forEach((p) => {
       const row = document.createElement("button");
       row.className = "library-row";
-      const cover = p.tracks[0] ? art(p.tracks[0].thumbnailUrl, 32) : null;
       row.innerHTML = `
-        <span class="lib-icon">${cover ? `<img src="${cover}" alt="" loading="lazy">` : ICONS.note}</span>
+        <span class="lib-icon">${artImg(p.tracks[0] ? p.tracks[0].thumbnailUrl : null, 32, 'loading="lazy"')}</span>
         <span class="track-title-sm">${escapeHtml(p.name)}<span class="row-sub">${p.tracks.length} songs</span></span>
       `;
       row.onclick = () => {
         selectSidebarRow(row);
-        openPlaylistDetail(p);
+        openPlaylistDetail(p); // synchronous — nothing to fail
       };
       container.appendChild(row);
     });
   }
 }
 
-document.getElementById("new-playlist-btn").onclick = async () => {
-  const input = document.getElementById("new-playlist-name");
-  const name = input.value.trim();
-  if (!name) return;
-  await post("/api/library/playlists/create", { name });
-  input.value = "";
-  loadLibraryList();
-};
+{
+  const createBtn = document.getElementById("new-playlist-btn");
+  const nameInput = document.getElementById("new-playlist-name");
+
+  const createPlaylist = reporting("Creating playlist", () =>
+    withBusy(createBtn, async () => {
+      const name = nameInput.value.trim();
+      if (!name) return;
+      await post("/api/library/playlists/create", { name });
+      nameInput.value = "";
+      await loadLibraryList();
+    })
+  );
+
+  createBtn.onclick = createPlaylist;
+  // Enter in the field did nothing: the global key handler bails on any INPUT and there
+  // was no per-field handler, even though the identical field in the track menu has always
+  // submitted on Enter. Inconsistent within the same app, and Enter is the obvious thing
+  // to press after typing a name.
+  nameInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation();
+    createPlaylist();
+  });
+}
 
 // ---------- live sync ----------
 
@@ -1647,6 +2194,8 @@ function connectWebSocket() {
     };
     hello();
     heartbeat = setInterval(hello, 15000);
+    state.socketConnected = true;
+    reconnectDelay = 1000;
     markPhoneUnreachable(false);
     // Back in touch: if this tab kept playing without the phone, square that up now.
     reconcileAfterDisconnection();
@@ -1683,17 +2232,38 @@ function connectWebSocket() {
   };
   ws.onclose = () => {
     if (heartbeat) clearInterval(heartbeat);
+    state.socketConnected = false;
     markPhoneUnreachable(true);
     // Backed off rather than a flat 2 s: a phone that's asleep, off the network or simply
     // switched off stays unreachable for hours, and hammering it every two seconds for
     // that whole time is pure battery on both ends.
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-    setTimeout(connectWebSocket, reconnectDelay);
+    scheduleReconnect(reconnectDelay);
   };
   ws.onerror = () => ws.close();
 }
 
 let reconnectDelay = 1000;
+let reconnectTimer = null;
+
+function scheduleReconnect(delay) {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(connectWebSocket, delay);
+}
+
+/// Reconnects the socket now, because something else just proved the phone is reachable.
+///
+/// The backoff only ever grew. Resetting `reconnectDelay` in `markPhoneUnreachable` did
+/// nothing to the timer already scheduled, so after a minute away the page would sit for
+/// another 30s with the socket down — while its own 5s poll was succeeding and the UI
+/// looked perfectly healthy. Everything socket-only was simply lost in that window,
+/// including the lock-screen play/pause and seek relays, which are not retried anywhere:
+/// scrubbing on the phone moved its own scrubber and the Mac never budged.
+function reconnectSocketNow() {
+  if (state.socketConnected) return;
+  reconnectDelay = 1000;
+  scheduleReconnect(0);
+}
 
 /// Shows (or clears) the "can't reach your iPhone" state. Without it the page simply
 /// froze on its last snapshot — still captioned "Playing on iPhone" — while every click
@@ -1717,6 +2287,10 @@ connectWebSocket();
 // timer stops nothing but fills the console and hides real errors.
 setInterval(() => {
   refreshState()
-    .then(() => markPhoneUnreachable(false))
+    .then(() => {
+      markPhoneUnreachable(false);
+      // HTTP just worked, so the phone is back regardless of what the backoff thinks.
+      reconnectSocketNow();
+    })
     .catch(() => markPhoneUnreachable(true));
 }, 5000);
