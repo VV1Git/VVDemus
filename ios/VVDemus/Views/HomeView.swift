@@ -44,8 +44,7 @@ struct HomeView: View {
                                 .foregroundStyle(Theme.textSecondary)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
-                                .background(Theme.cardLight)
-                                .clipShape(Capsule())
+                                .glassSurface(in: Capsule(), elevation: .flush)
                         }
                     }
                     .padding(.horizontal)

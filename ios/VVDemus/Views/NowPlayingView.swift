@@ -82,8 +82,7 @@ struct NowPlayingView: View {
                         .accessibilityHint("Tap to dismiss")
                 }
 
-                progressSection
-                transportControls
+                controlPanel
 
                 Spacer()
             }
@@ -95,16 +94,34 @@ struct NowPlayingView: View {
         }
     }
 
+    /// Scrubber and transport on one slab of glass, tinted by the artwork behind it.
+    ///
+    /// Grouped rather than left as two loose rows floating on the gradient: the controls are
+    /// one region of the screen and the glass is what says so, and a tinted pane over the
+    /// artwork gradient is where the material actually has something to refract.
+    private var controlPanel: some View {
+        VStack(spacing: 18) {
+            progressSection
+            transportControls
+        }
+        .padding(.vertical, 18)
+        .glassSurface(
+            cornerRadius: 28,
+            tint: colorLoader.color(for: player.currentTrack),
+            elevation: .raised
+        )
+        .padding(.horizontal, 12)
+    }
+
     private var header: some View {
         HStack {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.down")
-                    .font(.title3)
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.pressable)
+            .buttonStyle(.glassCircle)
+            .accessibilityLabel("Close")
             Spacer()
             VStack(spacing: 2) {
                 Text("NOW PLAYING")
@@ -117,11 +134,11 @@ struct NowPlayingView: View {
                 }
             }
             Spacer()
-            // Balances the leading chevron so the title stack stays centered —
-            // the queue button now lives on the transport row, mirroring shuffle.
-            Image(systemName: "chevron.down")
-                .font(.title3)
-                .opacity(0)
+            // Balances the leading chevron so the title stack stays centered — the queue
+            // button now lives on the transport row, mirroring shuffle. Sized to the glass
+            // circle rather than to a bare glyph, which no longer matches its width.
+            Color.clear
+                .frame(width: 40, height: 40)
         }
         .padding(.horizontal)
     }

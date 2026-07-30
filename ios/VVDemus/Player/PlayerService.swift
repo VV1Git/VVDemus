@@ -253,8 +253,12 @@ final class PlayerService: ObservableObject {
                   !self.isLoading else { return }
             guard seconds.isFinite else { return }
             self.progress = seconds
-            if let itemDuration = self.engine.itemDurationSeconds {
-                self.duration = itemDuration
+            if let itemDuration = self.engine.itemDurationSeconds,
+               let reconciled = Self.reconciledDuration(
+                   itemDuration: itemDuration,
+                   metadataSeconds: self.currentTrack?.durationSeconds
+               ) {
+                self.duration = reconciled
             }
             // Whatever the app last asked for, the engine is the authority on whether
             // sound is actually coming out. They diverge when something outside the app
@@ -1505,9 +1509,42 @@ final class PlayerService: ObservableObject {
 
     /// A plausible number of seconds, or nil. Anything longer than a day is nonsense for a
     /// track, and letting it through means a later `Int(...)` conversion aborts the app.
-    static func sanitisedSeconds(_ value: Double) -> Double? {
+    /// `nonisolated`, like `artworkCacheKey`: a pure function of its argument, so callers off
+    /// the main actor have no reason to hop onto it just to sanity-check a number.
+    nonisolated static func sanitisedSeconds(_ value: Double) -> Double? {
         guard value.isFinite, value >= 0, value <= 86_400 else { return nil }
         return value
+    }
+
+    /// How far the player's own measurement may drift from YouTube's stated length before it
+    /// is treated as a misread container rather than a rounding difference. Encoder priming
+    /// accounts for hundredths of a second; the failure this guards is off by minutes.
+    nonisolated static let durationAgreementMargin: Double = 5
+
+    /// Which length to believe when the AVPlayer item and YouTube's metadata disagree.
+    ///
+    /// AVFoundation reports **exactly double** the real length for YouTube's audio-only MP4s.
+    /// The files themselves are not wrong: for a 4:00 track, `mvhd`, `tkhd` and `mdhd` all say
+    /// 239.6s and ffprobe agrees, but the file carries a one-entry `elst` edit list for the
+    /// AAC encoder's 1600-sample priming and `AVAsset.duration` comes back 479.19s, having
+    /// double-counted it. Both itag 140 and itag 139 do it.
+    ///
+    /// It only ever surfaced on downloads. Streaming goes through `StreamingResourceLoader`,
+    /// where the item's duration stays indefinite and this code path therefore never replaced
+    /// the metadata value — so a streamed track showed 4:00 and the same track played from
+    /// disk showed 7:59, with a scrubber at half scale and a seek to "halfway" landing at the
+    /// end.
+    ///
+    /// The item's figure is still preferred when it corroborates the metadata, since it is the
+    /// more precise of the two, and used outright when there is no metadata to check against —
+    /// this rejects a measurement that cannot be true, rather than assuming YouTube is always
+    /// right.
+    nonisolated static func reconciledDuration(itemDuration: Double, metadataSeconds: Int?) -> Double? {
+        guard let itemDuration = sanitisedSeconds(itemDuration), itemDuration > 0 else { return nil }
+        guard let metadataSeconds, metadataSeconds > 0 else { return itemDuration }
+        let stated = Double(metadataSeconds)
+        guard abs(itemDuration - stated) > durationAgreementMargin else { return itemDuration }
+        return stated
     }
 
     /// Logs how much of the *outgoing* track was actually heard, right before it's

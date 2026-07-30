@@ -7,6 +7,11 @@ struct MiniPlayerBar: View {
     var onExpand: () -> Void = {}
     @ObservedObject private var colorLoader = ArtworkColorLoader.shared
 
+    /// Matches the tab bar's curvature so the two slabs read as one stack.
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: BottomBar.cornerRadius, style: .continuous)
+    }
+
     var body: some View {
         if let track = player.currentTrack {
             VStack(spacing: 0) {
@@ -65,21 +70,18 @@ struct MiniPlayerBar: View {
                     .buttonStyle(.pressable)
                     .accessibilityLabel("Next track")
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 12)
                 .padding(.top, 8)
                 .padding(.bottom, 6)
 
                 progressLine
             }
-            .background(
-                ZStack {
-                    colorLoader.color(for: track)
-                    Color.black.opacity(0.35)
-                }
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            // Clipped first, then backed with glass. The hairline of progress runs the full
+            // width, so without the clip it pokes out through the rounded corners — and
+            // clipping *after* the background would take the slab's shadow with it.
+            .clipShape(shape)
+            .glassSurface(in: shape, tint: colorLoader.color(for: track), elevation: .floating)
             .task(id: track.thumbnailUrl) { await colorLoader.prepare(for: track) }
-            .padding(.horizontal, 8)
             .contentShape(Rectangle())
             .onTapGesture { onExpand() }
             // Sideways to skip, up to expand — the gestures people already expect from a

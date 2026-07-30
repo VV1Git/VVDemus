@@ -161,8 +161,7 @@ struct StatsView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
-        .background(Theme.cardLight)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .glassSurface(cornerRadius: 16, elevation: .flush)
     }
 
     private func artistRow(rank: Int, artist: ArtistStat) -> some View {

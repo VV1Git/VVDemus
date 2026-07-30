@@ -8,41 +8,33 @@ struct RootView: View {
     @StateObject private var coordinator = NavigationCoordinator()
     @ObservedObject private var controlServer = LocalControlServer.shared
     @State private var showNowPlaying = false
-    /// Height of the mini player, exported so each tab can inset its own content by it.
-    /// Without the inset the bar simply covers the last row of every list — it's an
-    /// overlay, so nothing underneath knows it's there.
-    static let miniPlayerHeight: CGFloat = 56
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
-
-    /// The system tab bar is shorter in compact height (landscape iPhone).
-    private var tabBarHeight: CGFloat { verticalSizeClass == .compact ? 32 : 49 }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             TabView(selection: $coordinator.selectedTab) {
+                // The `.tabItem` labels are kept even though `FloatingTabBar` draws the
+                // visible bar and the system one is hidden below. They're what registers
+                // each child as a tab, and if a future OS ever ignores the hide, the
+                // fallback is the ordinary labelled bar rather than three blank slots.
                 HomeView(player: player, coordinator: coordinator)
                     .tabItem { Label("Home", systemImage: "house.fill") }
                     .tag(Tab.home)
+                    .toolbar(.hidden, for: .tabBar)
 
                 SearchView(player: player, coordinator: coordinator)
                     .tabItem { Label("Search", systemImage: "magnifyingglass") }
                     .tag(Tab.search)
+                    .toolbar(.hidden, for: .tabBar)
 
                 LibraryView(player: player)
                     .tabItem { Label("Library", systemImage: "books.vertical.fill") }
                     .tag(Tab.library)
+                    .toolbar(.hidden, for: .tabBar)
             }
             .tint(Theme.accent)
 
-            if player.currentTrack != nil {
-                MiniPlayerBar(player: player) { showNowPlaying = true }
-                    // Sits directly above the tab bar. The height is read from the safe
-                    // area rather than hardcoded to 49 — that constant is the portrait tab
-                    // bar, and in landscape the real one is shorter, leaving the bar
-                    // floating in mid-air.
-                    .padding(.bottom, tabBarHeight)
-            }
+            bottomBar
         }
         .fullScreenCover(isPresented: $showNowPlaying) {
             NowPlayingView(player: player)
@@ -83,6 +75,27 @@ struct RootView: View {
         // below — and it can happen at any time from the web remote, including while the
         // screen is already locked.
         .onChange(of: player.activeDevice) { _, _ in updateBackgroundKeepAlive() }
+    }
+
+    /// Mini player and tab bar as two stacked glass slabs, inset from every edge.
+    ///
+    /// Both live in one container so the mini player's arrival pushes nothing around: the
+    /// stack grows upward from the tab bar, which stays exactly where it is. The old layout
+    /// positioned the mini player by padding it up by a guessed tab-bar height, which was
+    /// wrong in landscape and left it hanging in mid-air.
+    private var bottomBar: some View {
+        VStack(spacing: BottomBar.gap) {
+            if player.currentTrack != nil {
+                MiniPlayerBar(player: player) { showNowPlaying = true }
+                    // Slides up from behind the tab bar rather than fading in on top of it.
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            FloatingTabBar(selection: $coordinator.selectedTab)
+        }
+        .padding(.horizontal, BottomBar.horizontalInset)
+        .padding(.bottom, BottomBar.gap)
+        .animation(.spring(response: 0.38, dampingFraction: 0.82), value: player.currentTrack?.id)
     }
 
     private func updateBackgroundKeepAlive() {

@@ -7,6 +7,13 @@ struct ShortcutRow: View {
     let imageURL: String?
     var systemImageFallback: String = "music.note"
 
+    /// Wider than the 4pt this used to use. A tight radius reads as a square-cornered tile
+    /// whatever is behind it; glass needs enough curve for the rim highlight to travel
+    /// around.
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             if let imageURL {
@@ -27,7 +34,9 @@ struct ShortcutRow: View {
             Spacer(minLength: 0)
         }
         .frame(height: 56)
-        .background(Theme.cardLight)
-        .clipShape(RoundedRectangle(cornerRadius: 4))
+        // Clipped before the glass goes behind it: the artwork runs right into the leading
+        // edge, so it has to take the corner radius with it.
+        .clipShape(shape)
+        .glassSurface(in: shape, elevation: .flush)
     }
 }

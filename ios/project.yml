@@ -102,6 +102,9 @@ schemes:
             - PlaybackSmokeTest
             - StreamUrlRangeTests
             - ResourceLoaderUrlIntegrityTests
+            # Downloads a real track from YouTube. Same reasoning as the rest of this list:
+            # real bytes, real dependency on YouTube being up.
+            - DownloadIntegrationTests
     archive:
       config: Release
   # Measures real bytes over the wire — run deliberately, not on every build.
@@ -123,6 +126,8 @@ schemes:
             - LocalControlServerTests
             - NowPlayingInfoTests
             - PersistenceAndParsingTests
+            - DurationReconciliationTests
             - QueueAndTransportTests
+            - RateLimitTests
             - RemoteCommandTests
             - SystemMediaWiringTests
