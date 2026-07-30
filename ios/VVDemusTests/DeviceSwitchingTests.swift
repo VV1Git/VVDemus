@@ -395,13 +395,31 @@ final class DeviceSwitchingTests: XCTestCase {
         XCTAssertEqual(harness.player.upNextStream?.videoId, "b")
     }
 
-    func testNothingIsPrefetchedWhilePlayingOnThePhone() async {
+    /// The phone prefetches too, and used not to. Resolving a stream URL is a full
+    /// InnerTube round trip; leaving it until the previous track had ended put a second or
+    /// more of silence into every transition.
+    func testTheNextTrackIsPrefetchedWhilePlayingOnThePhone() async {
         let queue = Fixtures.tracks(["a", "b"])
         await harness.startPlaying(queue[0], context: queue)
-        await harness.drain()
+        await harness.settle { self.harness.player.upNextStream != nil }
 
-        XCTAssertNil(harness.player.upNextStream)
-        XCTAssertNil(harness.player.upNextTrack)
+        XCTAssertEqual(harness.player.upNextTrack?.videoId, "b")
+        XCTAssertEqual(harness.player.upNextStream?.videoId, "b")
+    }
+
+    /// The point of the prefetch: the gap between tracks is AVPlayer's buffering, not that
+    /// plus a network round trip.
+    func testAdvancingOnThePhoneReusesThePrefetchedUrl() async {
+        let queue = Fixtures.tracks(["a", "b"])
+        await harness.startPlaying(queue[0], context: queue)
+        await harness.settle { self.harness.player.upNextStream != nil }
+        let resolvesBefore = harness.streams.resolveCount["b"] ?? 0
+
+        harness.player.advance()
+        await harness.settle { self.harness.player.currentTrack?.videoId == "b" }
+
+        XCTAssertFalse(harness.player.isLoading, "The URL was already in hand; there is nothing to wait for")
+        XCTAssertEqual(harness.streams.resolveCount["b"] ?? 0, resolvesBefore, "It shouldn't be resolved a second time")
     }
 
     /// Re-resolving a URL that was already prefetched put a second of silence into every
@@ -421,7 +439,10 @@ final class DeviceSwitchingTests: XCTestCase {
         XCTAssertEqual(harness.streams.resolveCount["b"] ?? 0, resolvesBefore, "It shouldn't be resolved a second time")
     }
 
-    func testSwitchingBackToThePhoneClearsThePrefetch() async {
+    /// Switching back to the phone used to throw the prefetched URL away, on the reasoning
+    /// that only the browser had any use for one. Both devices want it now, and it is for
+    /// the same track either way, so the switch keeps it.
+    func testSwitchingBackToThePhoneKeepsThePrefetch() async {
         let queue = Fixtures.tracks(["a", "b"])
         await harness.startPlaying(queue[0], context: queue)
         harness.player.setActiveDevice(.computer)
@@ -430,8 +451,8 @@ final class DeviceSwitchingTests: XCTestCase {
         harness.player.setActiveDevice(.iphone)
         await harness.drain()
 
-        XCTAssertNil(harness.player.upNextStream)
-        XCTAssertNil(harness.player.upNextTrack)
+        XCTAssertEqual(harness.player.upNextStream?.videoId, "b")
+        XCTAssertEqual(harness.player.upNextTrack?.videoId, "b")
     }
 
     // MARK: - Epochs
