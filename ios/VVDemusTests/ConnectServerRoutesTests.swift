@@ -117,7 +117,10 @@ final class ConnectServerRoutesTests: XCTestCase {
     /// after trimming?" was checked, so a name of any size at all was persisted and
     /// re-rendered in every connected browser's sidebar.
     func testAnOverlongPlaylistNameIsRejected() async throws {
-        let tooLong = String(repeating: "a", count: LocalControlServer.maximumPlaylistNameLength + 1)
+        // Unique per run: playlists persist in the simulator's defaults, so a fixed name
+        // that some earlier run *did* manage to store would make this pass or fail on
+        // leftover state rather than on the bound.
+        let tooLong = uniqueId("x") + String(repeating: "a", count: LocalControlServer.maximumPlaylistNameLength)
         let response = try await post("/api/library/playlists/create", ["name": tooLong])
         XCTAssertEqual(response.status, 400)
 
@@ -126,7 +129,9 @@ final class ConnectServerRoutesTests: XCTestCase {
     }
 
     func testAPlaylistNameAtTheLimitIsAccepted() async throws {
-        let name = String(repeating: "b", count: LocalControlServer.maximumPlaylistNameLength)
+        let unique = uniqueId("b")
+        let name = unique + String(repeating: "b", count: LocalControlServer.maximumPlaylistNameLength - unique.count)
+        XCTAssertEqual(name.count, LocalControlServer.maximumPlaylistNameLength)
         let response = try await post("/api/library/playlists/create", ["name": name])
         XCTAssertEqual(response.status, 200)
 

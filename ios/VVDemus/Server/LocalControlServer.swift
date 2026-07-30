@@ -36,11 +36,10 @@ final class LocalControlServer: ObservableObject {
     /// turn every broadcast into megabytes.
     static let maximumContextTracks = 2_000
     static let maximumPlaylistNameLength = 200
-    /// Ceiling on the hand-queued track list. It is held in memory, persisted with the
-    /// player's state and re-encoded into the 1 Hz broadcast, so an unbounded one is a
-    /// growing per-second cost to every connected socket. Far more than anyone queues by
-    /// hand; low enough that a script hammering `/api/queue/add` can't grow the broadcast
-    /// without limit.
+    /// Ceiling on the hand-queued track list. It is re-encoded into the state broadcast
+    /// whenever it changes, so an unbounded one is an unbounded payload pushed to every
+    /// connected socket. Far more than anyone queues by hand; low enough that a script
+    /// hammering `/api/queue/add` can't grow that payload without limit.
     static let maximumManualQueueTracks = 500
     /// New on every launch — see `StateSnapshot.serverInstanceId`.
     private let instanceId = UUID().uuidString
@@ -559,10 +558,9 @@ final class LocalControlServer: ObservableObject {
             // that owns casting, reporting the track it is actually meant to be playing, and
             // not having just asked. `clientId` is optional for the same reason it is on
             // `/api/playback/report` — non-browser clients send none — but a caller that
-            // does send one must be the cast tab.
-            // Claiming the slot and checking eligibility happen in one main-actor hop, so a
-            // browser retrying every five seconds can only ever have one re-resolve in
-            // flight.
+            // does send one must be the cast tab. Checking and claiming happen in the same
+            // main-actor hop, so a browser retrying every five seconds can only ever have
+            // one re-resolve in flight.
             let permitted = self.onMain { () -> Bool in
                 let now = Date()
                 guard PlayerService.shared.activeDevice == .computer,
@@ -973,10 +971,10 @@ final class LocalControlServer: ObservableObject {
     private func pruneStaleSockets() {
         let now = Date()
         for session in sockets.staleSessions(before: now.addingTimeInterval(-socketStaleTimeout)) {
-            // Removing drops the last-seen time, the client id and the write queue together
-            // — they used to be four separate collections, and the pruner forgot three of
-            // them, so every laptop sleep, closed tab or Wi-Fi drop over the app's lifetime
-            // leaked one entry (and the file descriptor its retained Socket held) for good.
+            // One removal drops the last-seen time, the client id and the write queue with
+            // it. They were four parallel collections, so forgetting any one of them here
+            // leaked an entry — and the `WebSocketSession` (and file descriptor) it
+            // retained — on every laptop sleep, closed tab or Wi-Fi drop.
             sockets.remove(session)
             // Actually close it. Dropping our references frees nothing — Swifter's
             // connection thread holds its own strong reference while parked in a blocking
