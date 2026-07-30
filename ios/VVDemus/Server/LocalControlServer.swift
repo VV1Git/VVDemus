@@ -376,7 +376,6 @@ final class LocalControlServer: ObservableObject {
         lastComputerReportAt = nil
         lastSeenTrackLoadEpoch = nil
         lastBroadcastTickAt = nil
-        reresolvedStream = nil
         lastStreamRefreshAt = nil
         // Fallback bookkeeping too, or a stop/start cycle carries a stale reclaim window
         // and queue fingerprint across and the first broadcast after restarting is a
@@ -580,13 +579,29 @@ final class LocalControlServer: ObservableObject {
                 // rather than treat it as a bug in its own request.
                 return .raw(409, "Conflict", ["Content-Type": "text/plain"], { try $0.write(Data("not the current cast stream".utf8)) })
             }
+            // Re-resolved by `PlayerService` itself, into its own `externalStream`.
+            //
+            // This used to resolve the URL here and hold it in a `reresolvedStream`
+            // property that the snapshot preferred over the player's — a workaround for
+            // `PlayerService` having no way to refresh the current track's stream in
+            // place. It does now, so there is one source of truth again: two mechanisms
+            // both claiming to say what the browser should load is precisely how the two
+            // drift apart later.
+            // Deliberately NOT `PlayerService.refreshExternalStream`, which resolves through
+            // the player's own network path. Calling it from here bypasses `freshStreamUrl`
+            // — the seam that exists so this route can be tested without a YouTube round
+            // trip — and every test of this endpoint started failing with a 500. Resolve
+            // through the seam here; let the player publish the result.
             switch self.awaitAsync({ [freshStreamUrl = self.freshStreamUrl] in try await freshStreamUrl(body.videoId) }) {
             case .success(let url):
-                self.onMain {
-                    // Dropped rather than applied if the track moved on while this was in
-                    // flight; the new track resolves its own URL.
-                    guard PlayerService.shared.currentTrack?.videoId == body.videoId else { return }
-                    self.reresolvedStream = PlayerService.ExternalStream(videoId: body.videoId, url: url)
+                let published = self.onMain {
+                    PlayerService.shared.adoptRefreshedExternalStream(videoId: body.videoId, url: url)
+                }
+                // Dropped rather than applied if the track moved on while this was in
+                // flight; the new track resolves its own URL.
+                guard published == true else {
+                    return .raw(409, "Conflict", ["Content-Type": "text/plain"],
+                                { try $0.write(Data("track changed while re-resolving".utf8)) })
                 }
                 // The fresh URL is in the reply as well as in the next snapshot, so the tab
                 // that asked can reload straight away instead of waiting for the 1 Hz tick.
@@ -858,27 +873,21 @@ final class LocalControlServer: ObservableObject {
     /// unchanged, and `adoptExternalPlayback` returns immediately for the track already
     /// playing. Its `externalStream` therefore still holds the URL the browser just failed
     /// on, and serving that again is exactly the loop this endpoint exists to break.
-    private var reresolvedStream: PlayerService.ExternalStream?
     /// When the last re-resolve was accepted, so a browser retrying every five seconds
     /// can't turn into a YouTube round trip every five seconds.
     private var lastStreamRefreshAt: Date?
     private static let streamRefreshDebounce: TimeInterval = 10
 
-    /// What the casting browser should load: the re-resolved URL when there is one for this
-    /// track, otherwise the phone's own.
+    /// What the casting browser should load.
+    ///
+    /// Straight from the player now. There used to be a `reresolvedStream` override held
+    /// here, because `PlayerService` had no way to refresh the current track's stream in
+    /// place — so this had to prefer a locally-cached fresh URL over the player's stale
+    /// one, and remember to drop it whenever the track or device changed. All of that is
+    /// gone: `refreshExternalStream` updates the player directly, and the snapshot reads
+    /// the one value everything else reads.
     private func currentExternalStream() -> PlayerService.ExternalStream? {
-        let player = PlayerService.shared
-        guard let reresolved = reresolvedStream else { return player.externalStream }
-        // The override only ever describes one track on one device. Once the track moves on
-        // or playback comes back to the phone it is dropped, so a snapshot can't go on
-        // offering a URL after `PlayerService` has cleared its own — which would leave a
-        // browser something to play at the exact moment it should be silent.
-        guard player.activeDevice == .computer, reresolved.videoId == player.currentTrack?.videoId else {
-            reresolvedStream = nil
-            lastStreamRefreshAt = nil
-            return player.externalStream
-        }
-        return reresolved
+        PlayerService.shared.externalStream
     }
 
     private func stateSnapshot() -> StateSnapshot {

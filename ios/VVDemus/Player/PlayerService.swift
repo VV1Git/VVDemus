@@ -1417,21 +1417,38 @@ final class PlayerService: ObservableObject {
     /// Returns whether `externalStream` now holds a fresh URL for `videoId`.
     @discardableResult
     func refreshExternalStream(videoId: String) async -> Bool {
+        guard canRefreshExternalStream(videoId: videoId), let track = currentTrack else { return false }
+        streams.invalidate(videoId: videoId)
+        guard let urlString = try? await resolveComputerStreamUrl(for: track) else { return false }
+        return adoptRefreshedExternalStream(videoId: videoId, url: urlString)
+    }
+
+    /// Whether re-resolving this track's stream is a thing that makes sense right now.
+    ///
+    /// Downloaded tracks are served from this phone over the LAN and cannot go stale, so a
+    /// reported failure there is not something a fresh URL will fix.
+    func canRefreshExternalStream(videoId: String) -> Bool {
         guard activeDevice == .computer,
               let track = currentTrack,
               track.videoId == videoId else { return false }
+        return !downloads.isDownloaded(track)
+    }
 
-        // Downloaded tracks are served from this phone over the LAN and cannot go stale,
-        // so a reported failure there is not something re-resolving will fix.
-        guard !downloads.isDownloaded(track) else { return false }
-
-        streams.invalidate(videoId: videoId)
-        guard let urlString = try? await resolveComputerStreamUrl(for: track) else { return false }
-        // Re-checked after the await: the user can have skipped or switched device while
-        // the network round trip was in flight, and publishing then would point the
-        // browser at a track it is no longer playing.
+    /// Publishes a stream URL that was resolved elsewhere.
+    ///
+    /// Split from the resolve so a caller that already has its own injectable way of
+    /// reaching YouTube — `LocalControlServer`, whose route has to be testable without a
+    /// network round trip — can still land the result in the one place everything reads.
+    /// Going around this and holding the URL locally is what the server used to do, and it
+    /// meant two different answers to "what should the browser load".
+    ///
+    /// Returns false if the moment has passed: the user can skip or switch device while a
+    /// resolve is in flight, and publishing then would point the browser at a track it is
+    /// no longer playing.
+    @discardableResult
+    func adoptRefreshedExternalStream(videoId: String, url: String) -> Bool {
         guard activeDevice == .computer, currentTrack?.videoId == videoId else { return false }
-        externalStream = ExternalStream(videoId: videoId, url: urlString)
+        externalStream = ExternalStream(videoId: videoId, url: url)
         return true
     }
 
