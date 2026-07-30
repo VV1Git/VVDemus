@@ -17,7 +17,9 @@ struct StateSnapshot: Codable {
     let progress: Double
     let duration: Double
     let isShuffling: Bool
-    let hasPrevious: Bool
+    // No `hasPrevious`: it was encoded into every broadcast and read by nothing. The web
+    // UI's previous button is always enabled and simply POSTs `/api/previous`, which the
+    // phone no-ops when there is no back stack.
     let queueContextTitle: String?
     let currentTrack: Track?
     /// Omitted from a periodic broadcast when unchanged since the previous one — the queue
@@ -87,7 +89,6 @@ struct StateSnapshot: Codable {
             progress: progress,
             duration: duration,
             isShuffling: isShuffling,
-            hasPrevious: hasPrevious,
             queueContextTitle: queueContextTitle,
             currentTrack: currentTrack,
             manualQueue: nil,
@@ -198,9 +199,26 @@ struct VideoIdBody: Decodable {
     let videoId: String
 }
 
-struct RadioPlayBody: Decodable {
-    let seedTrack: Track
-    let shuffled: Bool?
+/// The casting browser reporting that its `<audio>` element could not load the URL the
+/// phone gave it — see `POST /api/playback/stream-failed`. (There is no `RadioPlayBody`
+/// here any more: it existed only for `POST /api/radio/play`, which nothing ever called.)
+struct StreamFailedBody: Decodable {
+    /// The track the failed URL belonged to. Checked against what the phone thinks is
+    /// playing, so a report about a track already skipped past is ignored rather than
+    /// costing a pointless re-resolve.
+    let videoId: String
+    /// Optional for the same reason it is on `PlaybackReportBody` — anything that isn't the
+    /// bundled web UI sends none — but a request that does carry one must come from the tab
+    /// that owns casting.
+    let clientId: String?
+}
+
+/// Answers `/api/playback/stream-failed` with the replacement URL directly, so the browser
+/// can reload immediately instead of waiting up to a second for the next state broadcast to
+/// carry it.
+struct StreamFailedResponse: Encodable {
+    let videoId: String
+    let streamUrl: String
 }
 
 struct CreatePlaylistBody: Decodable {
