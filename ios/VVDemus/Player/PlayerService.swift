@@ -106,7 +106,17 @@ final class PlayerService: ObservableObject {
     }
 
     private var currentTrackOrigin: QueueOrigin = .context
-    private var backStack: [(track: Track, origin: QueueOrigin)] = []
+    /// Where the current track sat in `orderedContextQueue` — the *unshuffled* running
+    /// order — at the moment it was taken off the queue. Meaningless while the origin is
+    /// `.manual`.
+    ///
+    /// `previous()` needs it to put the track back where it came from. While shuffling the
+    /// two queues are deliberately in different orders, so the front of `contextQueue` says
+    /// nothing about where a track belongs in the real one; the position has to be recorded
+    /// when it is consumed. It goes stale if the queue is edited in between, so it is
+    /// clamped on use rather than trusted.
+    private var currentTrackOrderedIndex = 0
+    private var backStack: [(track: Track, origin: QueueOrigin, orderedIndex: Int)] = []
     private let recentRadioAvoidCount = 12
     private let backStackLimit = 30
 
@@ -147,6 +157,17 @@ final class PlayerService: ObservableObject {
     /// cold cache. Transport commands issued inside that window are recorded as intent and
     /// applied by the reattach, rather than being silently undone by it.
     private var isResumingAfterDeviceSwitch = false
+
+    /// The queue ran out (or autoplay failed to find anything) with the finished track still
+    /// loaded, and whichever player is active is parked on its final frame. Play then has to
+    /// mean "start this track again", not "resume".
+    ///
+    /// Neither player resumes from there on its own: an AVPlayer sitting at the end of its
+    /// item ignores `play()`, and the browser's `<audio>` element is `ended`, which app.js
+    /// explicitly refuses to call `play()` on. `stopAtEndOfQueue` bumps no epoch either, so
+    /// the browser had nothing to key a reload on — pressing play flipped `isPlaying` to
+    /// true and produced silence, for good, until another track was chosen by hand.
+    private var isStoppedAtEndOfQueue = false
 
     /// Set while the audio session is interrupted (a call, Siri, an alarm, another app
     /// taking the route). Remembers whether playback was running when the interruption
@@ -561,7 +582,6 @@ final class PlayerService: ObservableObject {
         // The cached URL is the thing that just failed; without dropping it the "retry"
         // below would be handed the very same dead URL and fail identically.
         streams.invalidate(videoId: track.videoId)
-        let resumeAt = progress
         let wasPlaying = isPlaying
         isLoading = true
         loadTask?.cancel()
@@ -571,7 +591,10 @@ final class PlayerService: ObservableObject {
                 let urlString = try await self.streams.streamURL(videoId: track.videoId)
                 guard !Task.isCancelled, self.currentTrack?.videoId == track.videoId else { return }
                 guard let url = URL(string: urlString) else { throw APIError.invalidURL }
-                self.attach(url: url, track: track, resumeAt: resumeAt, autoplay: wasPlaying, recordHistory: false)
+                // Read now, not captured before the await, for the same reason as the
+                // ordinary load path: a scrub while the replacement URL was being fetched
+                // would otherwise be reverted to wherever playback happened to die.
+                self.attach(url: url, track: track, resumeAt: self.progress, autoplay: wasPlaying, recordHistory: false)
             } catch {
                 guard !Task.isCancelled else { return }
                 self.isLoading = false
@@ -639,9 +662,9 @@ final class PlayerService: ObservableObject {
         prefetchUpNextForComputer()
     }
 
-    /// Removes exactly one entry by position. `removeFromQueue(_:)` matches on id and
-    /// removes *every* copy, which is wrong when a track legitimately appears twice.
-    /// Removes one entry, verifying the position still holds the track the caller meant.
+    /// Removes exactly one entry, verifying the position still holds the track the caller
+    /// meant. Preferred over `removeFromQueue(_:)`, which can only find the first entry with
+    /// a given id and so can't tell two identical rows apart.
     ///
     /// A row captures its index when it renders, but the queue moves on its own — `advance()`
     /// pops from the front at every track boundary. A swipe on a row rendered before that
@@ -669,11 +692,19 @@ final class PlayerService: ObservableObject {
         prefetchUpNextForComputer()
     }
 
+    /// Removes one queue entry, addressed by track rather than by position — the web remote
+    /// has no position-carrying route, so this is what it has to use.
+    ///
+    /// One entry, not every entry with that id. A radio mix or a Home shelf can repeat a
+    /// videoId, and the `removeAll`-across-all-three-queues this used to do meant removing
+    /// one such row silently took every other copy with it. Manual queue first, then
+    /// context, matching the order the two are displayed in.
     func removeFromQueue(_ track: Track) {
-        manualQueue.removeAll { $0.id == track.id }
-        contextQueue.removeAll { $0.id == track.id }
-        orderedContextQueue.removeAll { $0.id == track.id }
-        prefetchUpNextForComputer()
+        if let index = manualQueue.firstIndex(where: { $0.id == track.id }) {
+            removeFromManualQueue(at: index)
+        } else if let index = contextQueue.firstIndex(where: { $0.id == track.id }) {
+            removeFromContextQueue(at: index)
+        }
     }
 
     func moveInManualQueue(from source: IndexSet, to destination: Int) {
@@ -691,25 +722,57 @@ final class PlayerService: ObservableObject {
 
     /// Jump straight to an item already in the queue, dropping whatever preceded it —
     /// manual queue first, then context queue, matching how they're displayed.
+    ///
+    /// Addressing by track can only ever find the *first* entry carrying that id, so with a
+    /// repeated videoId a tap on the second copy plays the first one and leaves the rows in
+    /// between still queued. Callers that know which row was tapped should use the `at:`
+    /// variants below; this one exists for the web remote, whose skip route sends a track
+    /// and nothing else.
     func skipTo(_ track: Track) {
         if let index = manualQueue.firstIndex(where: { $0.id == track.id }) {
-            manualQueue.removeFirst(index + 1)
-            load(track, origin: .manual)
-            return
+            skipToManualQueueEntry(at: index)
+        } else if let index = contextQueue.firstIndex(where: { $0.id == track.id }) {
+            skipToContextQueueEntry(at: index)
         }
-        guard let index = contextQueue.firstIndex(where: { $0.id == track.id }) else { return }
-        let skipped = contextQueue.prefix(index + 1).map(\.id)
+    }
+
+    /// `expecting` guards against a stale index exactly as it does for the remove routes:
+    /// `advance()` pops the front of the queue at every track boundary, so a row's captured
+    /// position can be one out by the time it's tapped.
+    func skipToManualQueueEntry(at index: Int, expecting track: Track? = nil) {
+        guard let index = Self.resolveIndex(index, expecting: track, in: manualQueue) else { return }
+        let target = manualQueue[index]
+        manualQueue.removeFirst(index + 1)
+        load(target, origin: .manual)
+    }
+
+    func skipToContextQueueEntry(at index: Int, expecting track: Track? = nil) {
+        guard let index = Self.resolveIndex(index, expecting: track, in: contextQueue) else { return }
+        let target = contextQueue[index]
+        let consumed = Array(contextQueue.prefix(index + 1))
         contextQueue.removeFirst(index + 1)
-        orderedContextQueue.removeAll { skipped.contains($0.id) }
-        load(track, origin: .context)
+        load(target, origin: .context, orderedIndex: consumeFromOrderedQueue(consumed))
     }
 
     // MARK: - Transport
 
     func togglePlayPause() {
         guard currentTrack != nil else { return }
+        // See `isStoppedAtEndOfQueue`: starting again from the end of a finished queue is a
+        // restart, not a resume. Cleared unconditionally — once the user has touched
+        // play/pause, whatever happens next is an ordinary transport state.
+        let restartsFinishedTrack = isStoppedAtEndOfQueue && !isPlaying
+        isStoppedAtEndOfQueue = false
         if activeDevice == .computer {
             bumpPlaybackEpoch()
+            if restartsFinishedTrack {
+                progress = 0
+                // `trackLoadEpoch` is the only thing app.js watches to decide it must
+                // reload its `<audio>` element while the videoId is unchanged
+                // (`phoneRestartedTrack`). Without the bump the element stays `ended` and
+                // the relayed toggle lands on nothing at all.
+                trackLoadEpoch &+= 1
+            }
             isPlaying.toggle()
             pendingPlayIntent = (playing: isPlaying, at: Date())
             onComputerCommand?(.toggle)
@@ -735,6 +798,12 @@ final class PlayerService: ObservableObject {
             isPlaying = false
         } else {
             wantsPlayback = true
+            if restartsFinishedTrack {
+                // An AVPlayer whose item has played to its end does nothing when told to
+                // play; it has to be wound back first.
+                engine.seek(to: 0)
+                progress = 0
+            }
             // Coming back from an interruption or a route change, the session may no
             // longer be active — playing into a dead session is silent, which is exactly
             // what "the first tap does nothing" felt like.
@@ -749,6 +818,9 @@ final class PlayerService: ObservableObject {
         // A scrub past the end (or a negative one from a jittery remote) otherwise pushed
         // the player into an unrecoverable position.
         let target = clampToTrack(seconds)
+        // Scrubbing back into a track the queue already finished picks its own starting
+        // point; play must resume from there rather than being rewound to 0:00.
+        isStoppedAtEndOfQueue = false
         guard activeDevice != .computer else {
             bumpPlaybackEpoch()
             progress = target
@@ -923,7 +995,7 @@ final class PlayerService: ObservableObject {
             let next = manualQueue.removeFirst()
             load(next, origin: .manual)
         } else if let next = popNextContextTrack() {
-            load(next, origin: .context)
+            load(next.track, origin: .context, orderedIndex: next.orderedIndex)
         } else if autoplayEnabled, let seed = currentTrack {
             continueAutoplay(from: seed)
         } else {
@@ -941,19 +1013,39 @@ final class PlayerService: ObservableObject {
         progress = 0
         isPlaying = false
         isLoading = false
+        isStoppedAtEndOfQueue = true
         updateNowPlayingInfo()
     }
 
-    private func popNextContextTrack() -> Track? {
+    private func popNextContextTrack() -> (track: Track, orderedIndex: Int)? {
         guard !contextQueue.isEmpty else { return nil }
         let next = contextQueue.removeFirst()
-        // A single `removeFirst`, not `removeAll` — the same track can legitimately
-        // appear more than once in a mix/playlist, and removing every matching id here
-        // would silently drop the other copy instead of just the one just consumed.
-        if let index = orderedContextQueue.firstIndex(where: { $0.id == next.id }) {
-            orderedContextQueue.remove(at: index)
+        return (next, consumeFromOrderedQueue([next]))
+    }
+
+    /// Takes a run of entries just consumed off the front of `contextQueue` out of the
+    /// unshuffled running order too, and reports where the last of them — the track about
+    /// to play — sat among the entries that remain.
+    ///
+    /// Exactly one removal per consumed entry, never `removeAll`: the same track can
+    /// legitimately appear more than once in a mix or playlist, and deleting every matching
+    /// id here dropped copies that were still queued to play. The loss was invisible until
+    /// shuffle was switched off, since that is when `contextQueue` is restored from this
+    /// list.
+    ///
+    /// Matching each entry by id is enough even when the run contains duplicates of the
+    /// track being skipped to: the copies are indistinguishable, so which one is removed
+    /// doesn't matter, only that the count comes out right.
+    private func consumeFromOrderedQueue(_ entries: [Track]) -> Int {
+        guard let target = entries.last else { return 0 }
+        for skipped in entries.dropLast() {
+            if let index = orderedContextQueue.firstIndex(where: { $0.id == skipped.id }) {
+                orderedContextQueue.remove(at: index)
+            }
         }
-        return next
+        guard let index = orderedContextQueue.firstIndex(where: { $0.id == target.id }) else { return 0 }
+        orderedContextQueue.remove(at: index)
+        return index
     }
 
     /// Walking backward and then forward again now retraces the same path: `previous`
@@ -976,13 +1068,23 @@ final class PlayerService: ObservableObject {
                 manualQueue.insert(outgoing, at: 0)
             case .context:
                 contextQueue.insert(outgoing, at: 0)
-                // While shuffling the two queues deliberately differ in order; inserting
-                // into the unshuffled one at position 0 would rewrite the real running
-                // order, which is what gets restored when shuffle is switched off.
-                if !isShuffling { orderedContextQueue.insert(outgoing, at: 0) }
+                // The unshuffled order has to take the track back as well, at the position
+                // it was taken from. Skipping this while shuffling — on the grounds that
+                // writing to the unshuffled list at index 0 would rewrite the real running
+                // order — lost the track outright: rewinding un-plays it, so it belongs in
+                // both lists again, and switching shuffle off replaces `contextQueue`
+                // wholesale with this list. Shuffle, next, previous, shuffle-off deleted a
+                // track from the queue permanently.
+                //
+                // Index 0 was the wrong destination, not the write itself. With shuffle off
+                // the two are the same thing (a track is always popped from the front of
+                // both), which is why the unshuffled case looked correct.
+                let position = min(max(0, currentTrackOrderedIndex), orderedContextQueue.count)
+                orderedContextQueue.insert(outgoing, at: position)
             }
         }
         currentTrackOrigin = entry.origin
+        currentTrackOrderedIndex = entry.orderedIndex
         // Bypass load()'s backStack push: walking backward shouldn't re-push the track
         // we're leaving, or repeated "previous" presses would just bounce between two tracks.
         beginLoad(entry.track)
@@ -1039,15 +1141,19 @@ final class PlayerService: ObservableObject {
 
     // MARK: - Loading a track
 
-    private func load(_ track: Track, origin: QueueOrigin = .context) {
+    /// `orderedIndex` defaults to 0 because every caller that doesn't pass one is starting a
+    /// context from the top — `play(track:context:)` queues everything *after* the track, and
+    /// autoplay queues everything after `fresh.first`.
+    private func load(_ track: Track, origin: QueueOrigin = .context, orderedIndex: Int = 0) {
         pushOntoBackStack()
         currentTrackOrigin = origin
+        currentTrackOrderedIndex = orderedIndex
         beginLoad(track)
     }
 
     private func pushOntoBackStack() {
         guard let outgoing = currentTrack else { return }
-        backStack.append((outgoing, currentTrackOrigin))
+        backStack.append((outgoing, currentTrackOrigin, currentTrackOrderedIndex))
         if backStack.count > backStackLimit {
             backStack.removeFirst(backStack.count - backStackLimit)
         }
@@ -1067,6 +1173,8 @@ final class PlayerService: ObservableObject {
         // `togglePlayPause` took its "record the intent" branch, which never touches the
         // player — play/pause was dead for the rest of the session.
         isResumingAfterDeviceSwitch = false
+        // There is a track to play again, so the queue is no longer exhausted.
+        isStoppedAtEndOfQueue = false
         pendingPlayIntent = nil
         stallRecoveryTask?.cancel()
         bumpPlaybackEpoch()
@@ -1107,7 +1215,13 @@ final class PlayerService: ObservableObject {
                 let urlString = try await self.streams.streamURL(videoId: track.videoId)
                 guard !Task.isCancelled, self.currentTrack?.videoId == track.videoId else { return }
                 guard let url = URL(string: urlString) else { throw APIError.invalidURL }
-                self.attach(url: url, track: track)
+                // `self.progress` rather than the implicit 0. Resolving a stream takes
+                // seconds on a cold cache, and the scrubber is live throughout — a drag
+                // during that window already moved `progress`, and attaching at zero threw
+                // it away, so the scrubber visibly sprang back to 0:00 the instant the
+                // track started. `beginLoad` zeroes `progress` before this task runs, so
+                // with no scrub this is still an ordinary start from the top.
+                self.attach(url: url, track: track, resumeAt: self.progress)
             } catch {
                 guard !Task.isCancelled else { return }
                 self.isLoading = false
@@ -1219,22 +1333,28 @@ final class PlayerService: ObservableObject {
 
         // Consume the queue up to and including the adopted track, so what plays next
         // follows on from where the browser actually got to.
+        //
+        // First match is the right one here even with a repeated videoId: the browser works
+        // through the queue from the front, so the earliest unplayed copy is the one it
+        // reached. Mirroring that into the unshuffled order with `removeAll` over the set of
+        // consumed ids was not — that deleted copies still sitting further down
+        // `contextQueue`, which then vanished the next time shuffle was switched off.
         if let index = manualQueue.firstIndex(where: { $0.videoId == videoId }) {
             let adopted = manualQueue[index]
             manualQueue.removeFirst(index + 1)
-            finishAdopting(adopted, origin: .manual, progress: progress)
+            finishAdopting(adopted, origin: .manual, orderedIndex: 0, progress: progress)
         } else if let index = contextQueue.firstIndex(where: { $0.videoId == videoId }) {
             let adopted = contextQueue[index]
-            let skipped = contextQueue.prefix(index + 1).map(\.id)
+            let consumed = Array(contextQueue.prefix(index + 1))
             contextQueue.removeFirst(index + 1)
-            orderedContextQueue.removeAll { skipped.contains($0.id) }
-            finishAdopting(adopted, origin: .context, progress: progress)
+            let orderedIndex = consumeFromOrderedQueue(consumed)
+            finishAdopting(adopted, origin: .context, orderedIndex: orderedIndex, progress: progress)
         }
         // A track that isn't in either queue can't be reconciled — the phone keeps its own
         // idea of the queue and the next state broadcast pulls the browser back into line.
     }
 
-    private func finishAdopting(_ track: Track, origin: QueueOrigin, progress: Double) {
+    private func finishAdopting(_ track: Track, origin: QueueOrigin, orderedIndex: Int, progress: Double) {
         // Unconditionally, not just on the `externalStream == nil` path below. The adopt
         // handler switches the device first, which starts a task resolving the *outgoing*
         // track's URL; when the prefetched URL matched (the common case) that task survived
@@ -1245,6 +1365,9 @@ final class PlayerService: ObservableObject {
         recordListeningStats()
         pushOntoBackStack()
         currentTrackOrigin = origin
+        currentTrackOrderedIndex = orderedIndex
+        // The browser found something to play, so the queue plainly hasn't run out.
+        isStoppedAtEndOfQueue = false
         currentTrack = track
         self.progress = progress
         // Seeded from the track's own metadata like `beginLoad` does, so the scrubber isn't
