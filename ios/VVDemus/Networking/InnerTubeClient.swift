@@ -14,7 +14,6 @@ enum InnerTubeClient {
     private static let webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0"
     private static let androidUserAgent = "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip"
     private static let androidVRUserAgent = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-    private static let iosUserAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)"
     /// InnerTube "params" blob selecting the Songs filter — reverse-engineered value,
     /// stable in practice (it's what music.youtube.com itself sends for this filter).
     private static let songsFilterParams = "EgWKAQIIAWoMEA4QChADEAQQCRAF"

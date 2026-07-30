@@ -14,10 +14,6 @@ enum BackgroundAudioPolicy {
         var isPlaying: Bool
         var activeDevice: PlaybackDevice
         var isConnectServerRunning: Bool
-
-        /// Whether this phone is the thing actually making sound. While casting, `isPlaying`
-        /// describes the browser, and this phone's own player is silent.
-        var phoneIsProducingAudio: Bool { isPlaying && activeDevice == .iphone }
     }
 
     struct Decision: Equatable {

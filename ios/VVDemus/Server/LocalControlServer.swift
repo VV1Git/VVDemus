@@ -1,6 +1,5 @@
 import Foundation
 import Swifter
-import Network
 import UIKit
 
 /// Manually synchronized (via the caller's semaphore) box for bridging an async result
