@@ -1273,6 +1273,26 @@ final class PlayerService: ObservableObject {
     /// `/api/audio/local` route for a downloaded track (the browser can't reach a
     /// `file://` URL on the phone's disk), or the directly-fetchable resolved stream URL
     /// otherwise.
+    /// Invalidates the cached stream for the track the computer is playing and resolves a
+    /// fresh one into `externalStream`. For the case where the browser reports the URL it
+    /// was given is dead.
+    ///
+    /// PLACEHOLDER — the coordinator is landing their own version of this method ahead of
+    /// this branch; drop this one on rebase. It exists so the branch builds and its tests
+    /// run on their own.
+    func refreshExternalStream(videoId: String) async -> Bool {
+        guard activeDevice == .computer, let track = currentTrack, track.videoId == videoId else { return false }
+        streams.invalidate(videoId: videoId)
+        do {
+            let urlString = try await resolveComputerStreamUrl(for: track)
+            guard activeDevice == .computer, currentTrack?.videoId == videoId else { return false }
+            externalStream = ExternalStream(videoId: videoId, url: urlString)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private func resolveComputerStreamUrl(for track: Track) async throws -> String {
         if downloads.isDownloaded(track) {
             return "/api/audio/local/\(track.videoId)"
