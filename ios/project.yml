@@ -8,9 +8,12 @@ configs:
   Debug: debug
   Release: release
 packages:
+  # A vendored fork, not the upstream release. Swifter 1.5.0 has defects that can only be
+  # fixed inside the library (an accept() loop that dies for good on any transient error,
+  # a racy stop(), a double close(2) that can destroy an unrelated descriptor). The source
+  # lives in VVDemus/Vendor/Swifter with a README recording what was changed and why.
   Swifter:
-    url: https://github.com/httpswift/swifter.git
-    from: 1.5.0
+    path: VVDemus/Vendor/Swifter
 targets:
   VVDemus:
     type: application
@@ -20,6 +23,9 @@ targets:
       - path: VVDemus
         excludes:
           - "Info.plist"
+          # Built as a package (above), so its sources must not also be compiled straight
+          # into the app — that would be two copies of every Swifter type.
+          - "Vendor/**"
     dependencies:
       - package: Swifter
     info:
@@ -62,6 +68,9 @@ targets:
       - path: VVDemusTests
     dependencies:
       - target: VVDemus
+      # So SwifterHardeningTests can `import Swifter` and exercise the vendored fork's
+      # primitives directly rather than only through the app.
+      - package: Swifter
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.vvdemus.app.tests
