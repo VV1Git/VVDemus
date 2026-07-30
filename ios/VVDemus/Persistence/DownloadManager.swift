@@ -183,20 +183,40 @@ final class DownloadManager: NSObject, ObservableObject {
         guard !isDownloaded(track), !isDownloading(track) else { return }
         progress[track.id] = 0
         pendingDownloads[track.videoId] = track
-        Task {
-            do {
-                let stream = try await APIClient.shared.stream(videoId: track.videoId)
-                guard let remoteURL = URL(string: stream.url) else { throw APIError.invalidURL }
-                let task = session.downloadTask(with: remoteURL)
-                task.taskDescription = track.videoId
-                task.resume()
-            } catch {
-                progress[track.id] = nil
-                pendingDownloads[track.videoId] = nil
-                errorMessage = "Couldn't download \"\(track.title)\"."
-            }
-        }
+        Task { await startTransfer(for: track) }
         prewarmArtwork(for: track)
+    }
+
+    /// Resolves the stream and hands the transfer to the background session.
+    ///
+    /// Shared by the single-track path and the bulk queue so both report failures the same
+    /// way — and so there is one place that knows a failed resolve has to clear the spinner,
+    /// which is what `download()` refuses to restart on.
+    private func startTransfer(for track: Track) async {
+        do {
+            let stream = try await APIClient.shared.stream(videoId: track.videoId)
+            guard let remoteURL = URL(string: stream.url) else { throw APIError.invalidURL }
+            let task = session.downloadTask(with: remoteURL)
+            task.taskDescription = track.videoId
+            task.resume()
+        } catch {
+            progress[track.id] = nil
+            pendingDownloads[track.videoId] = nil
+            errorMessage = Self.failureMessage(for: track, error: error)
+        }
+    }
+
+    /// A rate limit is worth naming rather than flattening into "couldn't download".
+    ///
+    /// Every failure used to produce the same sentence, so the one case where waiting is the
+    /// entire fix looked identical to a track that will never download — and the natural
+    /// response to a vague failure, tapping download again on the rest of the playlist, is
+    /// precisely what makes a rate limit worse.
+    nonisolated static func failureMessage(for track: Track, error: Error) -> String {
+        if let apiError = error as? APIError, apiError.isRateLimit {
+            return "\(apiError.localizedDescription) \"\(track.title)\" wasn't downloaded."
+        }
+        return "Couldn't download \"\(track.title)\"."
     }
 
     /// So a downloaded track's own lock-screen artwork never has to hit the network at
@@ -219,8 +239,35 @@ final class DownloadManager: NSObject, ObservableObject {
         }
     }
 
+    /// Bulk downloads resolve one at a time instead of all at once.
+    ///
+    /// This was a loop calling `download`, and each of those spawned its own Task to resolve
+    /// a stream URL — so "download this playlist" fired one InnerTube player request per
+    /// track simultaneously, thirty deep. That is the most reliable way there is to earn the
+    /// 429 that `RateLimit` now has to absorb, and the transfers gain nothing from it: the
+    /// files are handed to a background session that paces itself regardless.
+    ///
+    /// Resolving in sequence also makes a rate limit self-correcting rather than fatal. The
+    /// first refusal closes `RateLimitGate`, and each remaining track waits out the cool-down
+    /// on its way through instead of piling onto it.
     func downloadAll(_ tracks: [Track]) {
-        for track in tracks { download(track) }
+        let queued = tracks.filter { !isDownloaded($0) && !isDownloading($0) }
+        guard !queued.isEmpty else { return }
+        // Marked as queued up front, so a long playlist doesn't sit looking inert while the
+        // resolutions trickle through one by one.
+        for track in queued {
+            progress[track.id] = 0
+            pendingDownloads[track.videoId] = track
+            prewarmArtwork(for: track)
+        }
+        Task {
+            for track in queued {
+                // Skips anything cancelled or deleted while the queue was draining — its
+                // progress entry is gone, and starting a transfer now would resurrect it.
+                guard progress[track.id] != nil else { continue }
+                await startTransfer(for: track)
+            }
+        }
     }
 
     /// Stops an in-flight download. Without this, deleting a track that was still
@@ -330,7 +377,20 @@ extension DownloadManager: URLSessionDownloadDelegate {
             // Drop the cached URL, or every retry resolves to the same dead one and the
             // download can never succeed until the entry expires hours later.
             APIClient.shared.invalidateStream(videoId: track.videoId)
-            errorMessage = "Couldn't download \"\(track.title)\"."
+            let http = downloadTask.response as? HTTPURLResponse
+            if http?.statusCode == 429 {
+                // The media host can rate-limit us too, and a bulk download is exactly when
+                // it does. Recorded on the shared gate so the *resolutions* still queued
+                // behind this one wait it out rather than adding to it.
+                let retryAfter = RateLimit.retryAfter(http?.value(forHTTPHeaderField: "Retry-After"))
+                RateLimitGate.shared.recordRateLimit(retryAfter: retryAfter)
+                errorMessage = Self.failureMessage(
+                    for: track,
+                    error: APIError.rateLimited(retryAfter: retryAfter ?? RateLimit.defaultCooldown)
+                )
+            } else {
+                errorMessage = "Couldn't download \"\(track.title)\"."
+            }
             return
         }
 

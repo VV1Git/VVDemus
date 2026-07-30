@@ -8,40 +8,33 @@ struct RootView: View {
     @StateObject private var coordinator = NavigationCoordinator()
     @ObservedObject private var controlServer = LocalControlServer.shared
     @State private var showNowPlaying = false
-    /// Height of the mini player, exported so each tab can inset its own content by it.
-    /// Without the inset the bar simply covers the last row of every list — it's an
-    /// overlay, so nothing underneath knows it's there.
-    static let miniPlayerHeight: CGFloat = 56
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
-
-    /// The system tab bar is shorter in compact height (landscape iPhone).
-    private var tabBarHeight: CGFloat { verticalSizeClass == .compact ? 32 : 49 }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            TabView(selection: $coordinator.selectedTab) {
+        TabView(selection: $coordinator.selectedTab) {
+            Tab("Home", systemImage: "house.fill", value: AppTab.home) {
                 HomeView(player: player, coordinator: coordinator)
-                    .tabItem { Label("Home", systemImage: "house.fill") }
-                    .tag(Tab.home)
-
-                SearchView(player: player, coordinator: coordinator)
-                    .tabItem { Label("Search", systemImage: "magnifyingglass") }
-                    .tag(Tab.search)
-
-                LibraryView(player: player)
-                    .tabItem { Label("Library", systemImage: "books.vertical.fill") }
-                    .tag(Tab.library)
             }
-            .tint(Theme.accent)
 
+            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
+                SearchView(player: player, coordinator: coordinator)
+            }
+
+            Tab("Library", systemImage: "books.vertical.fill", value: AppTab.library) {
+                LibraryView(player: player)
+            }
+        }
+        .tint(Theme.accent)
+        // The Phone-app behaviour: the bar shrinks to a pill as you scroll into content and
+        // comes back when you scroll up, so the glass never sits on top of what you're
+        // reading. This is the system doing it — there is nothing here to keep in sync.
+        .tabBarMinimizeBehavior(.onScrollDown)
+        // Where Music puts its mini player. The system owns the glass, the placement and the
+        // safe-area inset it costs every scrolling view, which is why `MiniPlayerInset` and
+        // the hand-measured `BottomBar` geometry are both gone.
+        .tabViewBottomAccessory {
             if player.currentTrack != nil {
                 MiniPlayerBar(player: player) { showNowPlaying = true }
-                    // Sits directly above the tab bar. The height is read from the safe
-                    // area rather than hardcoded to 49 — that constant is the portrait tab
-                    // bar, and in landscape the real one is shorter, leaving the bar
-                    // floating in mid-air.
-                    .padding(.bottom, tabBarHeight)
             }
         }
         .fullScreenCover(isPresented: $showNowPlaying) {

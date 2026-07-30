@@ -7,13 +7,31 @@ enum APIError: LocalizedError {
     /// one — a 403 on a stream URL means "expired, re-resolve", which is not something a
     /// generic error message can express.
     case http(status: Int)
+    /// YouTube asked us to slow down (HTTP 429), after the request layer had already retried
+    /// and waited as long as it usefully could. Distinct from `.http(status: 429)` because
+    /// this is the one failure where the honest thing to tell the user is *when* to try
+    /// again, and "check your connection" is actively misleading.
+    case rateLimited(retryAfter: TimeInterval?)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Invalid request URL"
         case .server(let message): return message
         case .http(let status): return "YouTube request failed (HTTP \(status))"
+        case .rateLimited(let retryAfter):
+            guard let retryAfter, retryAfter >= 1 else {
+                return "YouTube Music is limiting requests. Try again in a moment."
+            }
+            return "YouTube Music is limiting requests. Try again in \(Int(retryAfter.rounded(.up)))s."
         }
+    }
+
+    /// Whether this is the rate limit, without every call site having to write out the
+    /// pattern match. Used to pick the message Home and Search show.
+    var isRateLimit: Bool {
+        if case .rateLimited = self { return true }
+        if case .http(let status) = self, status == 429 { return true }
+        return false
     }
 }
 

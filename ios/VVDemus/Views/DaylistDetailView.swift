@@ -48,7 +48,6 @@ struct DaylistDetailView: View {
                     }
                 }
                 .listStyle(.plain)
-                .miniPlayerInset()
                 .scrollContentBackground(.hidden)
                 .background(Theme.background)
             }

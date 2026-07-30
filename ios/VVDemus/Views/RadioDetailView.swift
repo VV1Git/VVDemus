@@ -69,7 +69,6 @@ struct RadioDetailView: View {
                     }
                 }
                 .listStyle(.plain)
-                .miniPlayerInset()
                 .scrollContentBackground(.hidden)
                 .background(Theme.background)
             }

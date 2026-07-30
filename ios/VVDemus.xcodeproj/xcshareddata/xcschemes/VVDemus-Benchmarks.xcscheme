@@ -89,7 +89,13 @@
                   Identifier = "PersistenceAndParsingTests">
                </Test>
                <Test
+                  Identifier = "DurationReconciliationTests">
+               </Test>
+               <Test
                   Identifier = "QueueAndTransportTests">
+               </Test>
+               <Test
+                  Identifier = "RateLimitTests">
                </Test>
                <Test
                   Identifier = "RemoteCommandTests">

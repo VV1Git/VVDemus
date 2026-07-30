@@ -98,15 +98,33 @@ enum InnerTubeClient {
         // rethrows the first error and cancels the siblings, so a single flaky search
         // wiped out the whole Quick Picks row on exactly the poor connection where a
         // partial row is better than none.
-        let lists = await withTaskGroup(of: (Int, [Track]).self) { group -> [[Track]] in
+        //
+        // The error is now carried alongside the tracks rather than swallowed by a `try?`.
+        // It used to be discarded, so every empty Home said "Couldn't reach YouTube Music"
+        // — including a rate limit, where that message sends the user to go and check a
+        // connection that is working fine.
+        typealias Outcome = (index: Int, tracks: [Track], error: Error?)
+        let outcomes = await withTaskGroup(of: Outcome.self) { group -> [Outcome] in
             for (index, seed) in seeds.enumerated() {
-                group.addTask { (index, (try? await search(query: seed, limit: perSeed)) ?? []) }
+                group.addTask {
+                    do {
+                        return (index, try await search(query: seed, limit: perSeed), nil)
+                    } catch {
+                        return (index, [], error)
+                    }
+                }
             }
-            var results = Array(repeating: [Track](), count: seeds.count)
-            for await (index, tracks) in group { results[index] = tracks }
-            return results
+            var collected: [Outcome] = []
+            for await outcome in group { collected.append(outcome) }
+            // Reassembled in seed order so the shelf doesn't reshuffle itself between loads.
+            return collected.sorted { $0.index < $1.index }
         }
+
+        let lists = outcomes.map(\.tracks)
         guard lists.contains(where: { !$0.isEmpty }) else {
+            if let rateLimited = outcomes.compactMap({ $0.error as? APIError }).first(where: \.isRateLimit) {
+                throw rateLimited
+            }
             throw APIError.server("Couldn't reach YouTube Music.")
         }
 
@@ -541,17 +559,67 @@ enum InnerTubeClient {
         return try await send(request)
     }
 
+    /// One logical request, retried a bounded number of times for the failures that a retry
+    /// can actually fix.
+    ///
+    /// The status code was already being preserved rather than discarded — so a 403
+    /// (anti-bot), a 429 (rate limit) and a 500 were distinguishable — but nothing used the
+    /// distinction, and every one of them failed instantly and finally. A search that hit a
+    /// momentary 503 showed "No results", and the user's next keystroke sent another request.
+    ///
+    /// The waiting is deliberately bounded by `RateLimit.maximumWait`: a longer cool-down is
+    /// handed back as `APIError.rateLimited` so the UI can say when to try again, rather than
+    /// holding a spinner for a minute. Sleeps use `Task.sleep`, so a search superseded by the
+    /// next keystroke stops waiting the moment it's cancelled.
     private static func send(_ request: URLRequest) async throws -> JSON {
-        let (data, response) = try await NetworkSessions.api.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw APIError.server("YouTube request failed")
+        var lastError: Error = APIError.server("YouTube request failed")
+
+        for attempt in 1...RateLimit.maximumAttempts {
+            // A cool-down another request already discovered. Checked before sending, so
+            // concurrent callers (Home fans out into three searches) back off together
+            // instead of each earning their own 429.
+            if let remaining = RateLimitGate.shared.remainingCooldown() {
+                guard remaining <= RateLimit.maximumWait else {
+                    throw APIError.rateLimited(retryAfter: remaining)
+                }
+                try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            }
+
+            do {
+                let (data, response) = try await NetworkSessions.api.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw APIError.server("YouTube request failed")
+                }
+
+                if (200..<300).contains(http.statusCode) {
+                    // Something got through, so whatever limit was in force has lifted.
+                    RateLimitGate.shared.clear()
+                    return try JSON.parse(data)
+                }
+
+                if http.statusCode == 429 {
+                    let retryAfter = RateLimit.retryAfter(http.value(forHTTPHeaderField: "Retry-After"))
+                    RateLimitGate.shared.recordRateLimit(retryAfter: retryAfter)
+                    lastError = APIError.rateLimited(retryAfter: retryAfter ?? RateLimit.defaultCooldown)
+                    // No backoff sleep here: the gate now holds the wait, and the top of the
+                    // next iteration honours it. Sleeping in both places would double it.
+                    guard attempt < RateLimit.maximumAttempts else { throw lastError }
+                    continue
+                }
+
+                lastError = APIError.http(status: http.statusCode)
+                guard RateLimit.isRetryable(status: http.statusCode),
+                      attempt < RateLimit.maximumAttempts else { throw lastError }
+            } catch let urlError as URLError {
+                lastError = urlError
+                guard RateLimit.isRetryable(urlError: urlError),
+                      attempt < RateLimit.maximumAttempts else { throw urlError }
+            }
+
+            let delay = RateLimit.backoffDelay(attempt: attempt)
+            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
-        // The status code used to be discarded, so a 403 (anti-bot), a 429 (rate limit)
-        // and a 500 were indistinguishable — which matters because only some of those are
-        // worth retrying, and an expired stream URL is specifically a 403.
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.http(status: http.statusCode)
-        }
-        return try JSON.parse(data)
+
+        throw lastError
     }
 }

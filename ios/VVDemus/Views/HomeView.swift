@@ -44,8 +44,7 @@ struct HomeView: View {
                                 .foregroundStyle(Theme.textSecondary)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
-                                .background(Theme.cardLight)
-                                .clipShape(Capsule())
+                                .glassEffect()
                         }
                     }
                     .padding(.horizontal)
@@ -84,7 +83,6 @@ struct HomeView: View {
                         }
                     }
                 }
-                .miniPlayerInset()
             }
             .background(Theme.background)
             .navigationBarHidden(true)

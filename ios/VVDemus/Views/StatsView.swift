@@ -127,7 +127,6 @@ struct StatsView: View {
                 }
             }
             .padding(.vertical)
-            .miniPlayerInset()
         }
         .background(Theme.background)
         .navigationTitle("Your Stats")
@@ -161,8 +160,7 @@ struct StatsView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
-        .background(Theme.cardLight)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .glassEffect(in: .rect(cornerRadius: 16))
     }
 
     private func artistRow(rank: Int, artist: ArtistStat) -> some View {

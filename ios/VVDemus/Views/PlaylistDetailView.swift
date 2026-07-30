@@ -70,7 +70,6 @@ struct PlaylistDetailView: View {
                     }
                 }
                 .listStyle(.plain)
-                .miniPlayerInset()
                 .scrollContentBackground(.hidden)
                 .background(Theme.background)
                 .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find on this page")

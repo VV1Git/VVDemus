@@ -6,6 +6,7 @@ struct SearchView: View {
     @State private var query = ""
     @State private var results: [Track] = []
     @State private var isLoading = false
+    @State private var errorMessage: String?
     @State private var searchTask: Task<Void, Never>?
     @State private var path = NavigationPath()
 
@@ -15,6 +16,13 @@ struct SearchView: View {
                 if isLoading && results.isEmpty {
                     ProgressView()
                         .tint(.white)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let errorMessage, results.isEmpty, !isLoading {
+                    // A failed search used to render as "No results for …", which is a
+                    // factual claim about the catalogue that the app had no basis for — the
+                    // request never landed. It matters most for a rate limit, where the fix
+                    // is to wait and the misreading is to type a different query.
+                    ErrorRow(message: errorMessage) { retry() }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if results.isEmpty && !query.trimmingCharacters(in: .whitespaces).isEmpty && !isLoading {
                     Text("No results for \"\(query)\"")
@@ -44,7 +52,6 @@ struct SearchView: View {
                         }
                     }
                     .listStyle(.plain)
-                    .miniPlayerInset()
                     .scrollContentBackground(.hidden)
                 }
             }
@@ -125,7 +132,6 @@ struct SearchView: View {
             }
         }
         .listStyle(.plain)
-        .miniPlayerInset()
         .scrollContentBackground(.hidden)
     }
 
@@ -140,13 +146,23 @@ struct SearchView: View {
         recentSearchesJSON = String(decoding: data, as: UTF8.self)
     }
 
+    /// Runs the current query again — the Retry button on a failed search, which for a rate
+    /// limit is the one action that can actually succeed.
+    private func retry() {
+        searchTask?.cancel()
+        let text = query
+        searchTask = Task { await runSearch(text) }
+    }
+
     private func runSearch(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             results = []
+            errorMessage = nil
             return
         }
         isLoading = true
+        errorMessage = nil
         do {
             results = try await APIClient.shared.search(trimmed)
             // Only remembered once it actually returned something, so half-typed queries
@@ -158,6 +174,7 @@ struct SearchView: View {
             // a request was superseded more than 350ms in.
             guard !Task.isCancelled else { return }
             results = []
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "Couldn't search right now."
         }
         guard !Task.isCancelled else { return }
         isLoading = false

@@ -24,7 +24,6 @@ struct DaylistCard: View {
                 .foregroundStyle(Theme.textSecondary)
         }
         .padding(14)
-        .background(Theme.cardLight)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .glassEffect(in: .rect(cornerRadius: 16))
     }
 }

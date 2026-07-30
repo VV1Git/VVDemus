@@ -82,6 +82,9 @@
                <Test
                   Identifier = "ResourceLoaderUrlIntegrityTests">
                </Test>
+               <Test
+                  Identifier = "DownloadIntegrationTests">
+               </Test>
             </SkippedTests>
          </TestableReference>
       </Testables>

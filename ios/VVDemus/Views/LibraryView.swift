@@ -213,7 +213,6 @@ struct LibraryView: View {
                 }
             }
             .listStyle(.plain)
-            .miniPlayerInset()
             .scrollContentBackground(.hidden)
             .background(Theme.background)
             .navigationTitle("Your Library")
