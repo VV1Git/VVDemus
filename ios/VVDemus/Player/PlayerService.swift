@@ -639,7 +639,7 @@ final class PlayerService: ObservableObject {
     func toggleShuffle() {
         isShuffling.toggle()
         contextQueue = isShuffling ? orderedContextQueue.shuffled() : orderedContextQueue
-        prefetchUpNextForComputer()
+        prefetchUpNext()
     }
 
     // MARK: - Queue manipulation
@@ -655,7 +655,7 @@ final class PlayerService: ObservableObject {
         // Two identical entries played the track twice and made the row identity ambiguous.
         guard !manualQueue.contains(where: { $0.id == track.id }) else { return }
         manualQueue.append(track)
-        prefetchUpNextForComputer()
+        prefetchUpNext()
     }
 
     func playNext(_ track: Track) {
@@ -663,7 +663,7 @@ final class PlayerService: ObservableObject {
         contextQueue.removeAll { $0.id == track.id }
         orderedContextQueue.removeAll { $0.id == track.id }
         manualQueue.insert(track, at: 0)
-        prefetchUpNextForComputer()
+        prefetchUpNext()
     }
 
     /// Removes exactly one entry, verifying the position still holds the track the caller
@@ -677,7 +677,7 @@ final class PlayerService: ObservableObject {
     func removeFromManualQueue(at index: Int, expecting track: Track? = nil) {
         guard let resolved = Self.resolveIndex(index, expecting: track, in: manualQueue) else { return }
         manualQueue.remove(at: resolved)
-        prefetchUpNextForComputer()
+        prefetchUpNext()
     }
 
     private static func resolveIndex(_ index: Int, expecting track: Track?, in queue: [Track]) -> Int? {
@@ -693,7 +693,7 @@ final class PlayerService: ObservableObject {
         if let mirrored = orderedContextQueue.firstIndex(where: { $0.id == removed.id }) {
             orderedContextQueue.remove(at: mirrored)
         }
-        prefetchUpNextForComputer()
+        prefetchUpNext()
     }
 
     /// Removes one queue entry, addressed by track rather than by position — the web remote
@@ -713,7 +713,7 @@ final class PlayerService: ObservableObject {
 
     func moveInManualQueue(from source: IndexSet, to destination: Int) {
         manualQueue.move(fromOffsets: source, toOffset: destination)
-        prefetchUpNextForComputer()
+        prefetchUpNext()
     }
 
     func moveInContextQueue(from source: IndexSet, to destination: Int) {
@@ -721,7 +721,7 @@ final class PlayerService: ObservableObject {
         if !isShuffling {
             orderedContextQueue = contextQueue
         }
-        prefetchUpNextForComputer()
+        prefetchUpNext()
     }
 
     /// Jump straight to an item already in the queue, dropping whatever preceded it —
@@ -873,7 +873,7 @@ final class PlayerService: ObservableObject {
             // disabled entirely.
             isLoading = false
             isResumingAfterDeviceSwitch = false
-            prefetchUpNextForComputer()
+            prefetchUpNext()
             // The currently-playing track (if any) needs its stream URL resolved for the
             // browser too — only a *new* track load did this before, so switching devices
             // mid-playback left the browser with nothing to actually play.
@@ -894,9 +894,11 @@ final class PlayerService: ObservableObject {
             }
         case .iphone:
             externalStream = nil
-            upNextStream = nil
-            upNextTrack = nil
-            prefetchTask?.cancel()
+            // The prefetched URL is deliberately kept. It used to be dropped here because
+            // only the browser had any use for one; now the phone attaches from it too, and
+            // it is a URL for the same next track either way — throwing it away just put the
+            // silence back into the first transition after every handoff.
+            prefetchUpNext()
             guard let track = currentTrack else { return }
             isResumingAfterDeviceSwitch = true
             loadTask?.cancel()
@@ -1207,9 +1209,25 @@ final class PlayerService: ObservableObject {
         // elapsed seconds to a song that was never heard.
         engine.pause()
 
-        // Downloaded tracks play straight from disk — no network, no data usage.
+        // Downloaded tracks play straight from disk — no network, no data usage. Checked
+        // before the prefetch below, which is why that branch can never hand AVPlayer the
+        // browser-facing `/api/audio/local` path a downloaded track prefetches to.
         if let localURL = downloads.localFileURL(for: track) {
             attach(url: localURL, track: track)
+            // Still worth doing: this track needed no network, but the one after it may.
+            prefetchUpNext()
+            return
+        }
+
+        // The URL was resolved while the previous track was still playing, so there is
+        // nothing to wait for — attach now. This is what closes the silence between tracks;
+        // going back to the network here would spend a round trip re-fetching a string
+        // already in hand.
+        if let prefetched = upNextStream, prefetched.videoId == track.videoId,
+           let url = URL(string: prefetched.url) {
+            loadTask?.cancel()
+            attach(url: url, track: track, resumeAt: progress)
+            prefetchUpNext()
             return
         }
 
@@ -1226,6 +1244,10 @@ final class PlayerService: ObservableObject {
                 // track started. `beginLoad` zeroes `progress` before this task runs, so
                 // with no scrub this is still an ordinary start from the top.
                 self.attach(url: url, track: track, resumeAt: self.progress)
+                // Only once this track is attached and playing. Started any earlier, the
+                // speculative request for the *next* track competes for bandwidth with the
+                // one the user is waiting to hear.
+                self.prefetchUpNext()
             } catch {
                 guard !Task.isCancelled else { return }
                 self.isLoading = false
@@ -1251,7 +1273,7 @@ final class PlayerService: ObservableObject {
             isLoading = false
             isPlaying = true
             updateNowPlayingInfo()
-            prefetchUpNextForComputer()
+            prefetchUpNext()
             return
         }
         // Drop the outgoing track's URL immediately, so nothing observing this mid-resolve
@@ -1267,7 +1289,7 @@ final class PlayerService: ObservableObject {
                 self.isLoading = false
                 self.isPlaying = true
                 self.updateNowPlayingInfo()
-                self.prefetchUpNextForComputer()
+                self.prefetchUpNext()
             } catch {
                 guard !Task.isCancelled else { return }
                 self.isLoading = false
@@ -1283,19 +1305,25 @@ final class PlayerService: ObservableObject {
     /// Whatever plays after the current track, if it's already decided.
     private var nextQueuedTrack: Track? { manualQueue.first ?? contextQueue.first }
 
-    /// Resolves the next track's stream URL ahead of time so the casting browser holds a
-    /// usable URL before it needs one.
+    /// Resolves the next track's stream URL ahead of time, so whatever is about to play it
+    /// already holds a usable URL before it needs one.
     ///
-    /// Only while casting: on this phone AVPlayer does its own buffering and a brief
-    /// network gap between tracks is survivable, whereas the browser has no other way to
-    /// find out what comes next. Costs one extra player request per track, which is the
-    /// price of the music not stopping every time the phone's connection hiccups.
+    /// Runs on both devices. It used to be casting-only, on the reasoning that AVPlayer's
+    /// own buffering made a network gap between tracks survivable on the phone — but a
+    /// stream URL is not buffered audio. Resolving one is a full InnerTube `player` round
+    /// trip, and the phone only started it once the previous track had already ended, so
+    /// every transition was a second or more of silence with the next title already showing
+    /// in the UI. Warming it here means `beginLoad` finds it in `APIClient`'s stream cache
+    /// and attaches immediately.
+    ///
+    /// Costs one extra player request per track, which buys a gap the length of AVPlayer's
+    /// buffering rather than that plus a round trip.
     ///
     /// Autoplay's radio-derived next track deliberately isn't prefetched — that needs a
     /// whole radio fetch to even know what the track is, which is far too much work to do
     /// speculatively on every track change.
-    private func prefetchUpNextForComputer() {
-        guard activeDevice == .computer, let next = nextQueuedTrack else {
+    private func prefetchUpNext() {
+        guard let next = nextQueuedTrack else {
             prefetchTask?.cancel()
             upNextStream = nil
             upNextTrack = nil
@@ -1392,7 +1420,7 @@ final class PlayerService: ObservableObject {
                 self.externalStream = ExternalStream(videoId: track.videoId, url: urlString)
             }
         }
-        prefetchUpNextForComputer()
+        prefetchUpNext()
     }
 
     /// What the browser's `<audio>` element should load for `track` while it's the active
