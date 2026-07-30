@@ -252,8 +252,9 @@ function makeActivatable(el, label, activate) {
   el.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
     // Leave the key alone if focus is on a nested control (Like, Add to queue) that has
-    // its own activation behaviour.
-    if (e.target !== el) return;
+    // its own activation behaviour — pressing Enter on the queue button must queue the
+    // track, not play it.
+    if (e.target !== el || (e.target.closest && e.target.closest("button") !== null)) return;
     // Space would otherwise scroll the list out from under the user.
     e.preventDefault();
     activate(e);
@@ -410,6 +411,12 @@ function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   document.getElementById(`view-${name}`).classList.add("active");
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
+  // Home and Search now exist twice — in the sidebar and in the narrow-width tab bar — so
+  // the highlight is applied by destination rather than to the button that was clicked.
+  // Marking only the clicked one left the wrong bar highlighted after a resize past 620px.
+  document.querySelectorAll(`.nav-item[data-view="${name}"]`).forEach((b) => b.classList.add("active"));
+  // Choosing a destination should dismiss the drawer it was chosen from.
+  setLibraryDrawerOpen(false);
   document.querySelectorAll(".lib-shortcut, .library-row").forEach((b) => b.classList.remove("active"));
   // Guarded on still being in the document: the sidebar is rebuilt wholesale by
   // `loadLibraryList`, which would otherwise leave this holding a detached node.
@@ -1034,13 +1041,84 @@ document.querySelectorAll(".lib-shortcut").forEach((btn) => {
 
 // ---------- device switching (VVDemus Connect) ----------
 
+/// Opens/closes the device menu and keeps `aria-expanded` truthful.
+///
+/// The markup declares `role="menu"` with `menuitemradio` children, which promises roving
+/// arrow-key focus — so that is implemented here rather than left as a claim the keyboard
+/// doesn't honour. Below 860px the text label is hidden and this button is the only device
+/// cue, which is why its `aria-label` carries the current device.
+function setDeviceMenuOpen(open) {
+  const menu = document.getElementById("np-device-menu");
+  const btn = document.getElementById("np-device-btn");
+  menu.classList.toggle("open", open);
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    const checked = menu.querySelector('[aria-checked="true"]') || menu.querySelector("button");
+    if (checked) checked.focus();
+  }
+}
+
 document.getElementById("np-device-btn").onclick = (e) => {
   e.stopPropagation();
-  document.getElementById("np-device-menu").classList.toggle("open");
+  setDeviceMenuOpen(!document.getElementById("np-device-menu").classList.contains("open"));
 };
-document.addEventListener("click", () => {
-  document.getElementById("np-device-menu").classList.remove("open");
+document.addEventListener("click", () => setDeviceMenuOpen(false));
+
+document.getElementById("np-device-menu").addEventListener("keydown", (e) => {
+  const items = [...document.querySelectorAll("#np-device-menu button")];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const next = (i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+    items[next].focus();
+  } else if (e.key === "Escape" || e.key === "Tab") {
+    // Escape returns focus to the button; Tab closes and lets focus move on naturally.
+    if (e.key === "Escape") e.preventDefault();
+    setDeviceMenuOpen(false);
+    if (e.key === "Escape") document.getElementById("np-device-btn").focus();
+  }
 });
+
+// ---------- narrow-width library drawer ----------
+
+/// Below 620px the sidebar becomes a slide-over. It has to be closable by every route a
+/// user would try, and — because the scrim blocks clicks but not Tab — focus must not be
+/// able to wander behind it.
+function setLibraryDrawerOpen(open) {
+  document.body.classList.toggle("library-open", open);
+  const btn = document.getElementById("mobile-library-btn");
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+{
+  const drawerBtn = document.getElementById("mobile-library-btn");
+  const scrim = document.getElementById("library-scrim");
+  const drawer = document.getElementById("library-drawer");
+
+  if (drawerBtn) {
+    drawerBtn.onclick = (e) => {
+      e.stopPropagation();
+      setLibraryDrawerOpen(!document.body.classList.contains("library-open"));
+    };
+  }
+  if (scrim) scrim.onclick = () => setLibraryDrawerOpen(false);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !document.body.classList.contains("library-open")) return;
+    setLibraryDrawerOpen(false);
+    if (drawerBtn) drawerBtn.focus();
+  });
+
+  // Focus escaping the drawer is the one thing the scrim cannot prevent, so it is handled
+  // here: anything focused outside the drawer while it is open closes it.
+  if (drawer) {
+    document.addEventListener("focusin", (e) => {
+      if (!document.body.classList.contains("library-open")) return;
+      if (drawer.contains(e.target) || e.target === drawerBtn) return;
+      setLibraryDrawerOpen(false);
+    });
+  }
+}
 // A single silent-frame WAV, used only to "unlock" the audio element synchronously
 // inside the click handler below. Browsers only allow an <audio> element to
 // autoplay/programmatically play if that permission was earned by a play() call made as
@@ -1255,6 +1333,12 @@ function renderDeviceLabel() {
     label.textContent = "Click anywhere to resume";
   } else {
     label.textContent = "Playing on This Computer";
+  }
+  // Below 860px the label itself is hidden, so the button's accessible name is the only
+  // device cue there is — it has to carry the state, not just the action.
+  const btn = document.getElementById("np-device-btn");
+  if (btn) {
+    btn.setAttribute("aria-label", `Choose playback device — ${label.textContent.toLowerCase()}`);
   }
 }
 
@@ -1711,11 +1795,28 @@ function renderNowPlaying(s) {
   document.getElementById("np-artist").textContent = s.currentTrack ? s.currentTrack.artist : "";
   document.getElementById("np-play-icon").style.display = playing ? "none" : "block";
   document.getElementById("np-pause-icon").style.display = playing ? "block" : "none";
-  document.getElementById("np-shuffle").classList.toggle("active", !!s.isShuffling);
+  // The icon swap is invisible to a screen reader, so the label has to carry the state
+  // too — otherwise the control announces "Play/Pause" regardless of what it will do.
+  const toggleBtn = document.getElementById("np-toggle");
+  toggleBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+  toggleBtn.title = playing ? "Pause (Space)" : "Play (Space)";
+
+  const shuffleBtn = document.getElementById("np-shuffle");
+  shuffleBtn.classList.toggle("active", !!s.isShuffling);
+  shuffleBtn.setAttribute("aria-pressed", s.isShuffling ? "true" : "false");
 
   const likeBtn = document.getElementById("np-like");
   const liked = s.currentTrack && (s.likedVideoIds || []).includes(s.currentTrack.videoId);
   likeBtn.innerHTML = liked ? ICONS.heartFilled : ICONS.heartOutline;
+  likeBtn.setAttribute("aria-pressed", liked ? "true" : "false");
+  likeBtn.setAttribute("aria-label", liked ? "Unlike" : "Like");
+  likeBtn.title = liked ? "Unlike (L)" : "Like (L)";
+
+  // Which device is active, reflected on the menu items.
+  document.querySelectorAll("#np-device-menu button[data-device]").forEach((b) => {
+    const isActive = b.dataset.device === (s.activeDevice === "computer" ? "computer" : "iphone");
+    b.setAttribute("aria-checked", isActive ? "true" : "false");
+  });
   likeBtn.classList.toggle("liked", !!liked);
 
   const seek = document.getElementById("np-seek");
@@ -1803,6 +1904,19 @@ function mergeOmittedQueues(s) {
 
 async function refreshState() {
   const s = await api("/api/state");
+  renderNowPlaying(s);
+}
+
+/// The same fetch, but tagged with this tab's id.
+///
+/// Used only by the periodic poll. A casting tab that is *paused* produces no other
+/// attributable traffic — `timeupdate` doesn't fire on a paused element — so this is what
+/// lets the phone distinguish "paused here" from "this browser is gone" without waiting
+/// out a long timeout and pulling playback back to itself mid-session.
+async function refreshStateIdentified() {
+  const s = await api(`/api/state?clientId=${encodeURIComponent(CLIENT_ID)}`, {
+    headers: { "X-VVDemus-Client-Id": CLIENT_ID },
+  });
   renderNowPlaying(s);
 }
 
@@ -2286,7 +2400,13 @@ connectWebSocket();
 // phone is unreachable this rejects every five seconds, and an unhandled rejection in a
 // timer stops nothing but fills the console and hides real errors.
 setInterval(() => {
-  refreshState()
+  // Identified, so the phone can tell a *casting* tab that is merely paused from one that
+  // has gone away. A paused element fires no `timeupdate`, so this poll is the only
+  // attributable signal such a tab produces; without it the phone had to fall back to a
+  // long timeout and would hand playback back to itself while the user was just paused.
+  // Sent as both a query parameter and a header so the server can read whichever it
+  // prefers. Every tab sends it, so the server attributes by id rather than assuming.
+  refreshStateIdentified()
     .then(() => {
       markPhoneUnreachable(false);
       // HTTP just worked, so the phone is back regardless of what the backoff thinks.

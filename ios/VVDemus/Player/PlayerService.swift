@@ -1403,6 +1403,38 @@ final class PlayerService: ObservableObject {
         return try await streams.streamURL(videoId: track.videoId)
     }
 
+    /// Throws away the stream URL the casting browser was given and resolves a fresh one.
+    ///
+    /// For the case where the browser reports it cannot play what it was handed. These
+    /// URLs are time-limited and are bound to the phone's network path, so a long pause or
+    /// a phone on cellular while the computer is on Wi-Fi produces a 403 that only the
+    /// phone can fix. Without this there was no route to a new URL at all: the phone's own
+    /// recovery is gated to `activeDevice == .iphone`, `setActiveDevice` returns early when
+    /// the device is unchanged, and `APIClient` would hand back the same cached string —
+    /// so the browser retried a dead URL every five seconds indefinitely while its
+    /// heartbeat convinced the phone everything was fine.
+    ///
+    /// Returns whether `externalStream` now holds a fresh URL for `videoId`.
+    @discardableResult
+    func refreshExternalStream(videoId: String) async -> Bool {
+        guard activeDevice == .computer,
+              let track = currentTrack,
+              track.videoId == videoId else { return false }
+
+        // Downloaded tracks are served from this phone over the LAN and cannot go stale,
+        // so a reported failure there is not something re-resolving will fix.
+        guard !downloads.isDownloaded(track) else { return false }
+
+        streams.invalidate(videoId: videoId)
+        guard let urlString = try? await resolveComputerStreamUrl(for: track) else { return false }
+        // Re-checked after the await: the user can have skipped or switched device while
+        // the network round trip was in flight, and publishing then would point the
+        // browser at a track it is no longer playing.
+        guard activeDevice == .computer, currentTrack?.videoId == videoId else { return false }
+        externalStream = ExternalStream(videoId: videoId, url: urlString)
+        return true
+    }
+
     /// While the computer is the one making sound, this phone's session is set to mix
     /// rather than take the output route for itself. It is still playing audio in the
     /// background — the near-silent keep-alive clip that holds the server up — and a phone

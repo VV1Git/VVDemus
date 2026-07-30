@@ -37,7 +37,11 @@ struct QueueView: View {
                 if !player.manualQueue.isEmpty {
                     Section("Next in Queue") {
                         ForEach(Array(player.manualQueue.enumerated()), id: \.offset) { index, track in
-                            queueRow(track, remove: { player.removeFromManualQueue(at: index, expecting: track) })
+                            queueRow(
+                                track,
+                                skip: { player.skipToManualQueueEntry(at: index, expecting: track) },
+                                remove: { player.removeFromManualQueue(at: index, expecting: track) }
+                            )
                         }
                         .onMove { player.moveInManualQueue(from: $0, to: $1) }
                     }
@@ -46,7 +50,11 @@ struct QueueView: View {
                 if !player.contextQueue.isEmpty {
                     Section(player.queueContextTitle.map { "Next from: \($0)" } ?? "Next Up") {
                         ForEach(Array(player.contextQueue.enumerated()), id: \.offset) { index, track in
-                            queueRow(track, remove: { player.removeFromContextQueue(at: index, expecting: track) })
+                            queueRow(
+                                track,
+                                skip: { player.skipToContextQueueEntry(at: index, expecting: track) },
+                                remove: { player.removeFromContextQueue(at: index, expecting: track) }
+                            )
                         }
                         .onMove { player.moveInContextQueue(from: $0, to: $1) }
                     }
@@ -93,12 +101,15 @@ struct QueueView: View {
         .background(Theme.background)
     }
 
-    private func queueRow(_ track: Track, remove: @escaping () -> Void) -> some View {
+    private func queueRow(_ track: Track, skip: @escaping () -> Void, remove: @escaping () -> Void) -> some View {
         TrackRow(track: track)
             .listRowBackground(Theme.background)
             .listRowSeparatorTint(Theme.card)
             .contentShape(Rectangle())
-            .onTapGesture { player.skipTo(track) }
+            // By position, like `remove` below. `skipTo(track)` matches the first entry
+            // with that id, so tapping the second of two identical rows played the first
+            // and discarded everything in between.
+            .onTapGesture(perform: skip)
             .trackActions(track: track, player: player)
             // Swipe left (trailing edge) to remove — matches Spotify's convention.
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
