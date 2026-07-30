@@ -7,6 +7,12 @@
   --sidebar-width: 260px;
   --now-playing-height: 90px;
   --topbar-height: 64px;
+  /* Two strips that only exist some of the time: the bottom tab bar below 620px, and the
+     phone-unreachable banner whenever the phone stops answering. Kept as variables that
+     default to zero so the one height calculation in `.app-shell` can subtract whatever
+     happens to be on screen, instead of each of them needing its own override. */
+  --mobile-nav-height: 0px;
+  --banner-height: 0px;
 }
 
 * { box-sizing: border-box; }
@@ -17,6 +23,10 @@ html, body {
 
 body {
   margin: 0;
+  /* Reserves the strip the unreachable banner paints into. Without it the banner is a
+     fixed overlay sitting on top of a 64px topbar, covering the top half of the search
+     field for as long as the outage lasts. */
+  padding-top: var(--banner-height);
   background: var(--bg);
   color: #fff;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -33,7 +43,7 @@ svg { display: block; }
 
 .app-shell {
   display: flex;
-  height: calc(100vh - var(--now-playing-height));
+  height: calc(100vh - var(--now-playing-height) - var(--mobile-nav-height) - var(--banner-height));
 }
 
 .sidebar {
@@ -375,13 +385,7 @@ svg { display: block; }
   flex-shrink: 0;
 }
 
-/* ---------- card grid (home) ---------- */
-
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 18px;
-}
+/* ---------- cards ---------- */
 
 .grid-card {
   position: relative;
@@ -475,6 +479,15 @@ svg { display: block; }
 
 .detail-art img { width: 100%; height: 100%; object-fit: cover; }
 
+/* The text column beside the artwork. `min-width: 0` is the load-bearing part: a flex
+   item won't shrink below its content's intrinsic width by default, so without it a long
+   playlist name pushed the whole header wider than the viewport instead of wrapping,
+   which is what `.detail-title`'s `word-break` was there to do. */
+.detail-meta {
+  flex: 1;
+  min-width: 0;
+}
+
 .detail-badge {
   font-size: 12px;
   font-weight: 700;
@@ -535,7 +548,8 @@ svg { display: block; }
 .icon-btn:hover { color: #fff; }
 .icon-btn.active { color: var(--accent); }
 
-.detail-refresh[disabled] { opacity: 0.5; cursor: default; }
+/* Disabled styling for this and every other control now lives with the rest of the
+   in-flight treatment, under "controls with a request in the air" below. */
 
 /* ---------- track rows ---------- */
 
@@ -778,19 +792,145 @@ svg { display: block; }
 
 .np-device-menu button:hover { background: rgba(255, 255, 255, 0.1); }
 
+/* ---------- narrow-width navigation ---------- */
+
+/* Both of these are inert until the 620px breakpoint switches them on. The sidebar is the
+   only route to Home, Search and everything in the library, so when it stops fitting the
+   destinations have to move somewhere rather than simply disappear. */
+.mobile-nav { display: none; }
+
+.library-scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgba(0, 0, 0, 0.6);
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 860px) {
   :root { --sidebar-width: 200px; }
-  .np-right { display: none; }
-  .now-playing { grid-template-columns: 1.2fr 1fr; }
+
+  /* This used to be `.np-right { display: none }`, which took the whole device switcher —
+     the one control this remote exists for — off the page below 860px, a width you hit
+     just by putting a browser on half a screen. Only the label is dropped now; the button
+     stays, and its aria-label still names the current device. The three-column grid is
+     left exactly as it is on the desktop — an `auto` right column narrow enough to fit
+     just the icon would drag the transport off centre. */
+  #np-device-label { display: none; }
+  .np-device { padding: 8px; }
 }
 
 @media (max-width: 620px) {
-  .sidebar { display: none; }
-  .now-playing { grid-template-columns: 1fr; }
-  .np-left { display: none; }
-  .card-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  :root {
+    --mobile-nav-height: 56px;
+    /* The transport needs two rows down here (see below), so the bar it lives in is
+       taller and everything measuring against it has to know. */
+    --now-playing-height: 116px;
+  }
+
+  /* The sidebar becomes a slide-over drawer instead of vanishing. `visibility: hidden`
+     rather than the transform alone: a panel parked off-screen but still "visible" keeps
+     every button inside it in the tab order, which is how you end up tabbing to controls
+     nobody can see. */
+  .sidebar {
+    position: fixed;
+    top: var(--banner-height);
+    bottom: calc(var(--now-playing-height) + var(--mobile-nav-height));
+    left: 0;
+    z-index: 60;
+    width: min(320px, 88vw);
+    background: #000;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.8);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform 0.22s ease, visibility 0.22s;
+  }
+
+  body.library-open .sidebar { transform: none; visibility: visible; }
+  body.library-open .library-scrim { display: block; }
+  body.library-open #mobile-library-btn { color: #fff; }
+
+  /* Home and Search sit in the tab bar an inch below the drawer; offering them twice over
+     is just two ways to press the same thing. */
+  .nav-primary { display: none; }
+
+  /* The scrim stops short of the tab bar and the transport so both stay lit and usable
+     with the drawer open — only the content behind the drawer is dimmed. */
+  .library-scrim { bottom: calc(var(--now-playing-height) + var(--mobile-nav-height)); }
+
+  .mobile-nav {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: var(--now-playing-height);
+    height: var(--mobile-nav-height);
+    z-index: 40;
+    background: #0a0a0a;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  /* Overrides `.nav-item`'s sidebar layout for the two buttons that carry both classes:
+     icon over label, evenly divided, the way a tab bar reads. */
+  .mobile-nav-item {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 6px 4px;
+    background: none;
+    border: none;
+    border-radius: 0;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-align: center;
+    cursor: pointer;
+  }
+
+  .mobile-nav-item svg { width: 21px; height: 21px; flex-shrink: 0; }
+  .mobile-nav-item.active { color: #fff; }
+
+  /* Two rows: identity and device on top, transport underneath. The old rule collapsed
+     this to one column and hid `.np-left`, so a narrow window lost the track title as
+     well as the device switcher. */
+  .now-playing {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "left   right"
+      "center center";
+    align-content: center;
+    gap: 4px 10px;
+    padding: 0 12px;
+  }
+
+  .np-left { grid-area: left; }
+  .np-center { grid-area: center; }
+  .np-right { grid-area: right; align-items: center; }
+
+  .np-art { width: 44px; height: 44px; }
+
+  /* Room exists again on the top row, so the device name comes back — but capped and
+     ellipsised, because "Playing on This Computer" is wider than a 380px phone can spare. */
+  #np-device-label {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .np-device { min-width: 0; max-width: 44vw; padding: 6px; }
+  /* `.np-spacer` stays: it is what balances the shuffle button on the other side of the
+     row, and without it the play button sits visibly right of centre. */
+  .np-controls { gap: 14px; }
+
   .detail-art { width: 120px; height: 120px; }
   .detail-title { font-size: 26px; }
 }
@@ -865,23 +1005,92 @@ svg { display: block; }
 .np-device:active,
 .np-device-menu button:active { transform: scale(0.96); }
 
-/* A disabled control shouldn't pretend to respond. */
-button[disabled]:hover,
-button[disabled]:active { transform: none; }
+/* ---------- controls with a request in the air ---------- */
 
-/* Keyboard users get the same affordance as the mouse — the shortcuts added to
-   this remote make tabbing around it a realistic way to drive it. (Track rows and
-   grid cards are divs, not buttons, so they never take focus and are left out.) */
+/* `withBusy()` sets `disabled` and adds `.busy` for as long as a call to the phone is
+   outstanding. The dimming says "not right now"; the pulse says "still working". Without
+   the second half a slow phone is indistinguishable from a button that ate the click,
+   which is the whole reason these states exist. */
+button[disabled],
+.busy {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.busy { animation: busy-pulse 0.85s ease-in-out infinite alternate; }
+
+@keyframes busy-pulse {
+  from { opacity: 0.3; }
+  to   { opacity: 0.75; }
+}
+
+/* Refresh is the one icon that already means "again", so it turns instead of pulsing. */
+.detail-refresh.busy svg { animation: busy-spin 0.9s linear infinite; }
+
+@keyframes busy-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* A card's queue button is invisible until the card is hovered, so a busy one on a card
+   the pointer has left would be a spinner nobody can see. */
+.grid-card .g-queue-btn.busy { opacity: 0.6; transform: translateY(0); }
+
+/* A disabled control shouldn't pretend to respond: no lift, no press, no hover recolour.
+   Kept per-family rather than as one blanket `background: none`, which would strip the
+   white fill off a disabled round play button. */
+button[disabled]:hover,
+button[disabled]:active,
+.busy:hover,
+.busy:active { transform: none; }
+
+.icon-btn[disabled]:hover,
+.icon-btn.busy:hover { color: var(--text-secondary); }
+
+.row-actions button[disabled]:hover,
+.row-actions button.busy:hover,
+.context-menu button[disabled]:hover,
+.context-menu button.busy:hover { color: var(--text-secondary); background: none; }
+
+/* ---------- focus ---------- */
+
+/* Keyboard users get the same affordance as the mouse — the shortcuts added to this
+   remote make tabbing around it a realistic way to drive it. Rows, cards and chips are
+   divs rather than buttons, but the JS gives them a tabindex and a role, so they need the
+   ring exactly as much as the real buttons do. */
 .icon-btn:focus-visible,
 .row-actions button:focus-visible,
 .np-play-btn:focus-visible,
 .play-btn:focus-visible,
 .queue-btn:focus-visible,
 .nav-item:focus-visible,
+.mobile-nav-item:focus-visible,
 .np-device:focus-visible,
 .np-device-menu button:focus-visible,
+.g-queue-btn:focus-visible,
+.new-playlist-row button:focus-visible,
+#np-seek:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Full-bleed surfaces take the ring on the inside. An outset ring on a library row is
+   clipped by the list's own scroll box, and on the first card of a shelf by the shelf's
+   horizontal overflow; inset it can't be cropped anywhere. The background lift is what
+   makes it read at a glance either way. */
+.track-row:focus-visible,
+.grid-card:focus-visible,
+.radio-chip:focus-visible,
 .library-row:focus-visible,
 .lib-shortcut:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--card-light);
+}
+
+/* The search field kills its own outline so the pill reads as one control; the ring goes
+   on the pill instead, otherwise tabbing into search shows nothing but a caret. */
+.search-bar:focus-within,
+.new-playlist-row input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -914,10 +1123,17 @@ button[disabled]:active { transform: none; }
   .track-row:active, .grid-card:active, .radio-chip:active,
   .library-row:active, .lib-shortcut:active,
   .nav-item:active, .np-device:active, .np-device-menu button:active,
-  .np-art.loading {
+  .np-art.loading,
+  /* The busy pulse and the refresh spin drop out too; the dimming from `.busy` is left to
+     carry the meaning on its own. */
+  .busy,
+  .detail-refresh.busy svg {
     transform: none;
     animation: none;
   }
+
+  /* The drawer appears and goes without sliding. */
+  .sidebar { transition: none; }
 }
 
 /* ---------- right-click track menu ---------- */
@@ -1059,7 +1275,12 @@ body.playback-paused .playing-bars i { animation-play-state: paused; }
 }
 
 /* Shown when the phone stops answering — a frozen page that still says "Playing on
-   iPhone" while every click silently fails is indistinguishable from a hung app. */
+   iPhone" while every click silently fails is indistinguishable from a hung app.
+   Setting the variable rather than a bare height is what makes `body`'s padding and the
+   `.app-shell` height calculation reserve the strip, so the banner sits above the topbar
+   instead of over it. */
+body.phone-unreachable { --banner-height: 32px; }
+
 body.phone-unreachable::before {
   content: "Can't reach your iPhone — reconnecting…";
   /* Purely informational: without this the strip is hit-testable and swallows clicks on
@@ -1069,11 +1290,65 @@ body.phone-unreachable::before {
   top: 0;
   left: 0;
   right: 0;
+  /* Flex-centred at an exact height rather than padded to an implicit one: the reserved
+     space is a fixed 32px, so the banner has to be too. Wrapping onto a second line at a
+     narrow width would put it back over the topbar, hence nowrap. */
+  height: var(--banner-height);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   z-index: 999;
-  padding: 8px 16px;
-  text-align: center;
   font-size: 13px;
   font-weight: 600;
   color: #101010;
   background: #f0c040;
+}
+
+/* ---------- transient message toast ---------- */
+
+/* Built by the JS and never present in the markup, so there is nothing to style until a
+   message appears. This is how every failed action in the remote reports itself, so it
+   has to be legible without looking like an alarm — a raised dark card, not a red bar.
+   Sits above the context menu but below the unreachable banner, and clears the transport
+   so it can never cover the controls the user is about to reach for.
+
+   Deliberately *not* `visibility: hidden` when idle: the element is an aria-live region,
+   and a hidden one is out of the accessibility tree, so the text change that precedes
+   `.show` would go unannounced. Opacity alone keeps it announceable, and pointer-events
+   keeps it from intercepting anything while it's invisible. */
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--now-playing-height) + var(--mobile-nav-height) + 16px);
+  z-index: 950;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 11px 16px;
+  border-radius: 8px;
+  background: #2e2e2e;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 13.5px;
+  line-height: 1.4;
+  text-align: center;
+  /* A long track name or a bare URL still has to break somewhere rather than run off. */
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-50%) translateY(6px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+#toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #toast,
+  #toast.show { transform: translateX(-50%); transition: opacity 0.18s ease; }
 }

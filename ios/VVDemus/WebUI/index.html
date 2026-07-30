@@ -17,19 +17,19 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
+    <aside class="sidebar" id="library-drawer" aria-label="Your library">
       <div class="brand">
-<svg viewBox="0 0 24 24" class="brand-mark" aria-label="Spotify"><circle cx="12" cy="12" r="12" fill="#1ED760"/><g stroke="#191414" fill="none" stroke-linecap="round"><path d="M3.6 8.4Q12 3.96 20.64 9.36" stroke-width="2.28"/><path d="M4.68 12.72Q12 9 19.44 13.62" stroke-width="1.92"/><path d="M5.82 16.8Q12 13.74 18 17.64" stroke-width="1.56"/></g></svg>
+<svg viewBox="0 0 24 24" class="brand-mark" aria-hidden="true"><circle cx="12" cy="12" r="12" fill="#1ED760"/><g stroke="#191414" fill="none" stroke-linecap="round"><path d="M3.6 8.4Q12 3.96 20.64 9.36" stroke-width="2.28"/><path d="M4.68 12.72Q12 9 19.44 13.62" stroke-width="1.92"/><path d="M5.82 16.8Q12 13.74 18 17.64" stroke-width="1.56"/></g></svg>
         <span>Spotify</span>
       </div>
 
-      <nav class="nav-primary">
+      <nav class="nav-primary" aria-label="Primary">
         <button class="nav-item active" data-view="home">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5 1.5 11h3V21h6v-6h3v6h6V11h3z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5 1.5 11h3V21h6v-6h3v6h6V11h3z"/></svg>
           <span>Home</span>
         </button>
         <button class="nav-item" data-view="search">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l5 5-1.4 1.4-5-5A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l5 5-1.4 1.4-5-5A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"/></svg>
           <span>Search</span>
         </button>
       </nav>
@@ -41,15 +41,15 @@
 
         <div class="library-shortcuts">
           <button class="lib-shortcut" data-detail="daylist">
-            <span class="lib-icon lib-icon-square"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 4a1 1 0 0 1 1 1v1.06a6.98 6.98 0 0 1 4.5 2.6l.9-.53a1 1 0 0 1 1 1.74l-.9.53a7 7 0 0 1 0 4.2l.9.53a1 1 0 0 1-1 1.74l-.9-.53A6.98 6.98 0 0 1 13 17.94V19a1 1 0 1 1-2 0v-1.06a6.98 6.98 0 0 1-4.5-2.6l-.9.53a1 1 0 1 1-1-1.74l.9-.53a7 7 0 0 1 0-4.2l-.9-.53a1 1 0 1 1 1-1.74l.9.53A6.98 6.98 0 0 1 11 6.06V5a1 1 0 0 1 1-1zm0 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></span>
+            <span class="lib-icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 4a1 1 0 0 1 1 1v1.06a6.98 6.98 0 0 1 4.5 2.6l.9-.53a1 1 0 0 1 1 1.74l-.9.53a7 7 0 0 1 0 4.2l.9.53a1 1 0 0 1-1 1.74l-.9-.53A6.98 6.98 0 0 1 13 17.94V19a1 1 0 1 1-2 0v-1.06a6.98 6.98 0 0 1-4.5-2.6l-.9.53a1 1 0 1 1-1-1.74l.9-.53a7 7 0 0 1 0-4.2l-.9-.53a1 1 0 1 1 1-1.74l.9.53A6.98 6.98 0 0 1 11 6.06V5a1 1 0 0 1 1-1zm0 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg></span>
             <span>Daylist</span>
           </button>
           <button class="lib-shortcut" data-detail="liked">
-            <span class="lib-icon lib-icon-square lib-icon-liked"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.6-10-9.2C.4 8.6 2 5 5.6 5 8 5 9.6 6.3 12 8.8 14.4 6.3 16 5 18.4 5 22 5 23.6 8.6 22 11.8 19.5 16.4 12 21 12 21z"/></svg></span>
+            <span class="lib-icon lib-icon-liked"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21s-7.5-4.6-10-9.2C.4 8.6 2 5 5.6 5 8 5 9.6 6.3 12 8.8 14.4 6.3 16 5 18.4 5 22 5 23.6 8.6 22 11.8 19.5 16.4 12 21 12 21z"/></svg></span>
             <span>Liked Songs</span>
           </button>
           <button class="lib-shortcut" data-detail="downloads">
-            <span class="lib-icon lib-icon-square"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a1 1 0 0 1 1 1v9.6l3-3a1 1 0 1 1 1.4 1.4l-4.7 4.7a1 1 0 0 1-1.4 0L6.6 12a1 1 0 1 1 1.4-1.4l3 3V4a1 1 0 0 1 1-1zM5 19a1 1 0 1 1 0 2h14a1 1 0 1 1 0-2H5z"/></svg></span>
+            <span class="lib-icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3a1 1 0 0 1 1 1v9.6l3-3a1 1 0 1 1 1.4 1.4l-4.7 4.7a1 1 0 0 1-1.4 0L6.6 12a1 1 0 1 1 1.4-1.4l3 3V4a1 1 0 0 1 1-1zM5 19a1 1 0 1 1 0 2h14a1 1 0 1 1 0-2H5z"/></svg></span>
             <span>Downloads</span>
           </button>
         </div>
@@ -66,11 +66,11 @@
     <div class="main-col">
       <header class="topbar">
         <div class="search-bar">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l5 5-1.4 1.4-5-5A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"/></svg>
-          <input id="global-search" type="text" placeholder="What do you want to play?  (press /)" autocomplete="off">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l5 5-1.4 1.4-5-5A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"/></svg>
+          <input id="global-search" type="text" placeholder="What do you want to play?  (press /)" autocomplete="off" aria-label="Search">
         </div>
         <button class="queue-btn" id="open-queue" title="Queue">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6h13v2H4V6zm0 5h13v2H4v-2zm0 5h9v2H4v-2zm15-9v12l5-6z" transform="translate(-1)"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 6h13v2H4V6zm0 5h13v2H4v-2zm0 5h9v2H4v-2zm15-9v12l5-6z" transform="translate(-1)"/></svg>
           <span>Queue</span>
         </button>
       </header>
@@ -97,13 +97,13 @@
             </div>
           </div>
           <div class="detail-actions">
-            <button id="detail-play" class="play-btn" title="Play">
+            <button id="detail-play" class="play-btn" title="Play" aria-label="Play">
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
             </button>
-            <button id="detail-shuffle" class="icon-btn detail-shuffle" title="Shuffle play">
+            <button id="detail-shuffle" class="icon-btn" title="Shuffle play" aria-label="Shuffle play">
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14.8 4.6h4.6v4.6h-1.8V7.7l-3.4 3.4-1.3-1.3 3.4-3.4h-1.5V4.6zM4.6 6h4.9l7.9 7.9v1.5h-1.8l-7.4-7.4H4.6V6zm14.8 12v-1.8l-3.4-3.4 1.3-1.3 3.4 3.4v-1.5h1.8v4.6h-4.6v-1.8h1.5zM4.6 18v-2h4.9l2.6-2.6 1.3 1.3-3.1 3.1H4.6z"/></svg>
             </button>
-            <button id="detail-refresh" class="icon-btn detail-refresh" title="Refresh">
+            <button id="detail-refresh" class="icon-btn detail-refresh" title="Refresh" aria-label="Refresh">
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.7 6.3A8 8 0 1 0 20 12h-2a6 6 0 1 1-1.8-4.3L14 10h6V4z"/></svg>
             </button>
           </div>
@@ -121,59 +121,87 @@
     </div>
   </div>
 
-  <footer class="now-playing" id="now-playing">
+  <!-- Dims the page behind the library drawer. Only hit-testable while the drawer is
+       open (see .library-scrim), so it costs nothing at desktop widths. -->
+  <div id="library-scrim" class="library-scrim"></div>
+
+  <!-- Narrow-width primary navigation. The sidebar is the only route to Home, Search and
+       the library, and it has nowhere to go below 620px, so the same destinations get a
+       bottom tab bar instead. Home/Search carry `nav-item` + `data-view` and are picked
+       up by the existing `querySelectorAll(".nav-item")` wiring with no extra JS. -->
+  <nav class="mobile-nav" aria-label="Primary">
+    <button class="nav-item mobile-nav-item active" data-view="home">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5 1.5 11h3V21h6v-6h3v6h6V11h3z"/></svg>
+      <span>Home</span>
+    </button>
+    <button class="nav-item mobile-nav-item" data-view="search">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l5 5-1.4 1.4-5-5A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"/></svg>
+      <span>Search</span>
+    </button>
+    <button id="mobile-library-btn" class="mobile-nav-item" aria-expanded="false" aria-controls="library-drawer">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 3h2v18H4zm4 0h2v18H8zm5.4.6 1.9-.5 4.7 17.4-1.9.5z"/></svg>
+      <span>Library</span>
+    </button>
+  </nav>
+
+  <footer class="now-playing">
     <div class="np-left">
       <img id="np-art" class="np-art" alt="">
       <div class="np-info">
         <div id="np-title" class="np-title">Nothing playing</div>
         <div id="np-artist" class="np-artist"></div>
       </div>
-      <button id="np-like" class="icon-btn np-like" title="Like (L)">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.6-10-9.2C.4 8.6 2 5 5.6 5 8 5 9.6 6.3 12 8.8 14.4 6.3 16 5 18.4 5 22 5 23.6 8.6 22 11.8 19.5 16.4 12 21 12 21z"/></svg>
+      <button id="np-like" class="icon-btn np-like" title="Like (L)" aria-label="Like" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21s-7.5-4.6-10-9.2C.4 8.6 2 5 5.6 5 8 5 9.6 6.3 12 8.8 14.4 6.3 16 5 18.4 5 22 5 23.6 8.6 22 11.8 19.5 16.4 12 21 12 21z"/></svg>
       </button>
     </div>
 
     <div class="np-center">
       <div class="np-controls">
-        <button id="np-shuffle" class="icon-btn" title="Shuffle (S)">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14.8 4.6h4.6v4.6h-1.8V7.7l-3.4 3.4-1.3-1.3 3.4-3.4h-1.5V4.6zM4.6 6h4.9l7.9 7.9v1.5h-1.8l-7.4-7.4H4.6V6zm14.8 12v-1.8l-3.4-3.4 1.3-1.3 3.4 3.4v-1.5h1.8v4.6h-4.6v-1.8h1.5zM4.6 18v-2h4.9l2.6-2.6 1.3 1.3-3.1 3.1H4.6z"/></svg>
+        <button id="np-shuffle" class="icon-btn" title="Shuffle (S)" aria-label="Shuffle" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14.8 4.6h4.6v4.6h-1.8V7.7l-3.4 3.4-1.3-1.3 3.4-3.4h-1.5V4.6zM4.6 6h4.9l7.9 7.9v1.5h-1.8l-7.4-7.4H4.6V6zm14.8 12v-1.8l-3.4-3.4 1.3-1.3 3.4 3.4v-1.5h1.8v4.6h-4.6v-1.8h1.5zM4.6 18v-2h4.9l2.6-2.6 1.3 1.3-3.1 3.1H4.6z"/></svg>
         </button>
-        <button id="np-prev" class="icon-btn" title="Previous (P)">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 9-6v12z"/></svg>
+        <button id="np-prev" class="icon-btn" title="Previous (P)" aria-label="Previous track">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6 9-6v12z"/></svg>
         </button>
-        <button id="np-toggle" class="np-play-btn" title="Play/Pause (Space)">
-          <svg id="np-play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-          <svg id="np-pause-icon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+        <button id="np-toggle" class="np-play-btn" title="Play (Space)" aria-label="Play">
+          <svg id="np-play-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          <svg id="np-pause-icon" viewBox="0 0 24 24" fill="currentColor" style="display:none" aria-hidden="true"><path d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
         </button>
-        <button id="np-next" class="icon-btn" title="Next (N)">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6.5 6l9 6-9 6z"/></svg>
+        <button id="np-next" class="icon-btn" title="Next (N)" aria-label="Next track">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 6h2v12h-2zM6.5 6l9 6-9 6z"/></svg>
         </button>
         <span class="np-spacer"></span>
       </div>
       <div class="np-seek-row">
         <span id="np-elapsed" class="np-time">0:00</span>
-        <input id="np-seek" type="range" min="0" max="100" value="0" step="1" title="Seek (← / → for 10s)">
+        <input id="np-seek" type="range" min="0" max="100" value="0" step="1" title="Seek (← / → for 10s)" aria-label="Seek">
         <span id="np-duration" class="np-time">0:00</span>
       </div>
     </div>
 
     <div class="np-right">
       <div class="np-device-switcher">
-        <button id="np-device-btn" class="np-device" title="Choose playback device">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm0 2v14h10V5H7zm5 11a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4z"/></svg>
+        <button id="np-device-btn" class="np-device" title="Choose playback device"
+                aria-label="Choose playback device — playing on iPhone"
+                aria-haspopup="menu" aria-expanded="false" aria-controls="np-device-menu">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm0 2v14h10V5H7zm5 11a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4z"/></svg>
           <span id="np-device-label">Playing on iPhone</span>
         </button>
-        <div id="np-device-menu" class="np-device-menu">
-          <button data-device="iphone">iPhone</button>
-          <button data-device="computer">This Computer</button>
+        <div id="np-device-menu" class="np-device-menu" role="menu" aria-labelledby="np-device-btn">
+          <button data-device="iphone" role="menuitemradio" aria-checked="true">iPhone</button>
+          <button data-device="computer" role="menuitemradio" aria-checked="false">This Computer</button>
         </div>
       </div>
     </div>
   </footer>
 
   <!-- Right-click menu for tracks: the web counterpart of the app's long-press menu.
-       One element, repopulated per track, rather than markup per row. -->
-  <div id="context-menu" class="context-menu" role="menu" aria-hidden="true"></div>
+       One element, repopulated per track, rather than markup per row.
+       No static aria-hidden: the closed menu is `display: none`, which already takes it
+       out of the accessibility tree, and a hardcoded aria-hidden="true" would have kept
+       it hidden from screen readers for the whole time it was open. -->
+  <div id="context-menu" class="context-menu" role="menu"></div>
 
   <audio id="np-audio" preload="none"></audio>
 
