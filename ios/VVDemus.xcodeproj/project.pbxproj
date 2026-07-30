@@ -39,6 +39,7 @@
 		547F8E0C49C42A6FA49EA4D1 /* ConnectRequestGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D51AE0530B20B7E4C72DBA12 /* ConnectRequestGuardTests.swift */; };
 		5AECAB7DC0B793C3FAE846AF /* MiniPlayerBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8435F1A3A9C3B73536259A1 /* MiniPlayerBar.swift */; };
 		5CFDB35D296F50CEAD27AA8C /* JumpBackInCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C73BE8983E44C1581A2E34 /* JumpBackInCard.swift */; };
+		5DEADB996E32527572BDF9E8 /* SwifterHardeningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E72AC6D69ABA613F9A1A3851 /* SwifterHardeningTests.swift */; };
 		62BAB33EABE72D940B4B2788 /* LikedSongsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9DF3D4F42D29E3AFB672771 /* LikedSongsStore.swift */; };
 		6D4B5E5F613415B442F862CA /* MemoryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AD488F540DD189AD8298E4E /* MemoryDiagnostics.swift */; };
 		6F185896916F2F45C6B844A8 /* NowPlayingInfoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E3546F39058246B7B89E75F /* NowPlayingInfoTests.swift */; };
@@ -74,6 +75,7 @@
 		A9F7615CABBB4BB5E47956B1 /* StatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9ACC9D92E90466786942C6B /* StatsView.swift */; };
 		B3B818FC353E3F4018990D9C /* NavigationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D3A453163BFAC3310F05268 /* NavigationCoordinator.swift */; };
 		B4E1B0DE2BA745CA668931CD /* VVDemusApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50964CDD65DBD8591D6D540 /* VVDemusApp.swift */; };
+		BA996A0B22DCCBCDB2DDBAE9 /* Swifter in Frameworks */ = {isa = PBXBuildFile; productRef = AA3E23E8482543956F4F8BBB /* Swifter */; };
 		BC838200AE11DE74441B2167 /* LocalControlServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2ADCA13CEBD6AB94C16E404 /* LocalControlServerTests.swift */; };
 		BE5CED11CC492E0D61C5E085 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10E8B217981BE6896AA6091E /* HomeView.swift */; };
 		C19EDE426858C0FB96048297 /* AppVersionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF702811EC67336BA91B3AE4 /* AppVersionTests.swift */; };
@@ -179,6 +181,7 @@
 		B3B80BE79C4EDFDBC603648B /* PlaybackSmokeTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackSmokeTest.swift; sourceTree = "<group>"; };
 		B427E2A099A341CCA4F4154B /* VVDemusTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VVDemusTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B4EE183565BC8CDAC04DDA81 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		B9AA64C9482B3E627D8544B0 /* Swifter */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Swifter; path = VVDemus/Vendor/Swifter; sourceTree = SOURCE_ROOT; };
 		BB61877DAE4C0C91B5D92392 /* PlayEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayEvent.swift; sourceTree = "<group>"; };
 		BE6DDBD858FB430D6BE2B6F3 /* StreamFormatDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamFormatDiagnostics.swift; sourceTree = "<group>"; };
 		C24FF78515FCA677E4CA387A /* DiskImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskImageCache.swift; sourceTree = "<group>"; };
@@ -195,6 +198,7 @@
 		DF660773C7BC7989E7E05D5B /* RemoteImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImage.swift; sourceTree = "<group>"; };
 		E0868CA58D811B244A9259F9 /* QueueCorruptionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueCorruptionTests.swift; sourceTree = "<group>"; };
 		E17E32E089B5719C65506BB2 /* MixDetailHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixDetailHeader.swift; sourceTree = "<group>"; };
+		E72AC6D69ABA613F9A1A3851 /* SwifterHardeningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwifterHardeningTests.swift; sourceTree = "<group>"; };
 		EF7E811952198D1673A0A90C /* index.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = index.html; sourceTree = "<group>"; };
 		F3DE5ADA58B7310FCED42EAD /* AirPodsRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirPodsRouteTests.swift; sourceTree = "<group>"; };
 		F3F4B2C370B76B0EF49CCAB1 /* NetworkByteCounter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkByteCounter.swift; sourceTree = "<group>"; };
@@ -206,6 +210,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		5672761E89F8C49B6F310CCE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BA996A0B22DCCBCDB2DDBAE9 /* Swifter in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B7642B7CF31010C8D1182DCA /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -252,6 +264,7 @@
 				F8ACD7E42A984AD60F2D8EC6 /* RemoteCommandTests.swift */,
 				BE6DDBD858FB430D6BE2B6F3 /* StreamFormatDiagnostics.swift */,
 				CC90415B7D75641B807404FD /* StreamUrlRangeTests.swift */,
+				E72AC6D69ABA613F9A1A3851 /* SwifterHardeningTests.swift */,
 				38BE5AEDC91A647B9D93A53A /* SystemMediaWiringTests.swift */,
 				0B146B3928B7B5C1598FCE9B /* VisitorDataTests.swift */,
 				6A4F737BC84ED1E47DA96A0B /* Support */,
@@ -319,6 +332,7 @@
 		7EC2EAF9124EF98FA9FD0056 = {
 			isa = PBXGroup;
 			children = (
+				BDFD872EF8DAC4E5D5D4B63E /* Packages */,
 				B263AB807D9FD8C44DE7DDEB /* VVDemus */,
 				13A09D3F200706F4F920A8C8 /* VVDemusTests */,
 				B92FB7CF4B78F401E7CA7B63 /* Products */,
@@ -358,6 +372,14 @@
 				B427E2A099A341CCA4F4154B /* VVDemusTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		BDFD872EF8DAC4E5D5D4B63E /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				B9AA64C9482B3E627D8544B0 /* Swifter */,
+			);
+			name = Packages;
 			sourceTree = "<group>";
 		};
 		DAB38D7A745ACC8802AF8248 /* Views */ = {
@@ -443,6 +465,7 @@
 			buildConfigurationList = EFE0D9F4F9D792E5F9EA1BF4 /* Build configuration list for PBXNativeTarget "VVDemusTests" */;
 			buildPhases = (
 				BD7E1AC5F45C525C517E4A22 /* Sources */,
+				5672761E89F8C49B6F310CCE /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -451,6 +474,7 @@
 			);
 			name = VVDemusTests;
 			packageProductDependencies = (
+				AA3E23E8482543956F4F8BBB /* Swifter */,
 			);
 			productName = VVDemusTests;
 			productReference = B427E2A099A341CCA4F4154B /* VVDemusTests.xctest */;
@@ -505,7 +529,7 @@
 			mainGroup = 7EC2EAF9124EF98FA9FD0056;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				1E0D4B89E9FAAA9417DD7180 /* XCRemoteSwiftPackageReference "swifter" */,
+				4402DD65AD930ED7DE2AF10C /* XCLocalSwiftPackageReference "VVDemus/Vendor/Swifter" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = B92FB7CF4B78F401E7CA7B63 /* Products */;
@@ -560,6 +584,7 @@
 				D0B8E421A1E1116C18B0873F /* RemoteCommandTests.swift in Sources */,
 				DB320EFEC45C4562E67DD1AA /* StreamFormatDiagnostics.swift in Sources */,
 				9CDB186C49C14E8B6164DB1D /* StreamUrlRangeTests.swift in Sources */,
+				5DEADB996E32527572BDF9E8 /* SwifterHardeningTests.swift in Sources */,
 				93606D622242CF64B9049EAF /* SystemMediaWiringTests.swift in Sources */,
 				7107F2807793F772ABDF09AC /* VisitorDataTests.swift in Sources */,
 			);
@@ -887,21 +912,20 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		1E0D4B89E9FAAA9417DD7180 /* XCRemoteSwiftPackageReference "swifter" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/httpswift/swifter.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.5.0;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		4402DD65AD930ED7DE2AF10C /* XCLocalSwiftPackageReference "VVDemus/Vendor/Swifter" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = VVDemus/Vendor/Swifter;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		AA3E23E8482543956F4F8BBB /* Swifter */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Swifter;
+		};
 		D35547D177DF48119FB3C75D /* Swifter */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 1E0D4B89E9FAAA9417DD7180 /* XCRemoteSwiftPackageReference "swifter" */;
 			productName = Swifter;
 		};
 /* End XCSwiftPackageProductDependency section */
