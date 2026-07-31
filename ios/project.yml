@@ -36,7 +36,7 @@ targets:
         # version shown in the app never changes no matter what the settings say.
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        CFBundleDisplayName: Spotify
+        CFBundleDisplayName: Spotify β
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
