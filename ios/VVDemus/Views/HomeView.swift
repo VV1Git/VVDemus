@@ -32,24 +32,9 @@ struct HomeView: View {
     var body: some View {
         NavigationStack(path: $coordinator.homePath) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
-                    HStack {
-                        Text(greeting)
-                            .font(.largeTitle.bold())
-                            .foregroundStyle(.white)
-                        Spacer()
-                        if !network.isConnected {
-                            Label("Offline", systemImage: "wifi.slash")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(Theme.textSecondary)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .glassEffect()
-                        }
-                    }
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-
+                // Spacing 0: every block owns the gap above itself (shelves supply their
+                // own Theme.Space.xl), so nothing gets spaced twice.
+                VStack(alignment: .leading, spacing: 0) {
                     NavigationLink(value: LibraryDestination.daylist) {
                         DaylistCard(
                             title: daylist.title.isEmpty ? "Your Daylist" : daylist.title,
@@ -57,50 +42,80 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(.pressableCard)
-                    .padding(.horizontal)
+                    .padding(.horizontal, Theme.Metrics.gutter)
+                    .padding(.top, Theme.Space.sm)
 
                     if !shortcuts.isEmpty {
                         shortcutGrid
+                            .padding(.top, Theme.Space.lg)
                     }
 
                     if !radioHistory.stations.isEmpty {
-                        mixShelf(title: "Your Radio", badge: "Radio", stations: radioHistory.stations)
+                        HomeShelf(title: "Your Radio") {
+                            ForEach(radioHistory.stations) { station in
+                                NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
+                                    JumpBackInCard(
+                                        title: station.title,
+                                        subtitle: "Radio",
+                                        imageURL: station.seedTrack.thumbnailUrl
+                                    )
+                                }
+                                .buttonStyle(.pressableCard)
+                                .contextMenu { removeRadioButton(station) }
+                            }
+                        }
                     }
 
                     if !playlists.playlists.isEmpty {
-                        mixShelf(title: "Your Playlists", playlists: playlists.playlists)
+                        HomeShelf(title: "Your Playlists") {
+                            ForEach(playlists.playlists) { playlist in
+                                NavigationLink(value: LibraryDestination.playlist(playlist.id)) {
+                                    JumpBackInCard(
+                                        title: playlist.name,
+                                        subtitle: "Playlist",
+                                        imageURL: playlist.tracks.first?.thumbnailUrl
+                                    )
+                                }
+                                .buttonStyle(.pressableCard)
+                            }
+                        }
                     }
 
                     if isLoading && sections.isEmpty {
                         ProgressView()
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 40)
+                            .frame(maxWidth: .infinity, minHeight: 200)
                     } else if let errorMessage, sections.isEmpty {
                         ErrorRow(message: errorMessage) { Task { await load() } }
+                    } else if hasNothingToShow {
+                        ContentUnavailableView(
+                            "Nothing Here Yet",
+                            systemImage: "music.note.list",
+                            description: Text("Play a song or search for an artist, and your mixes will show up here.")
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 240)
                     } else {
                         ForEach(sections) { section in
-                            HomeShelf(title: section.title, tracks: section.tracks, player: player)
+                            TrackShelf(title: section.title, tracks: section.tracks, player: player)
                         }
                     }
                 }
+                // Clears the tab bar / mini player glass, so the last shelf can scroll free of it.
+                .padding(.bottom, Theme.Space.xl)
             }
             .background(Theme.background)
-            .navigationBarHidden(true)
-            .navigationDestination(for: LibraryDestination.self) { destination in
-                switch destination {
-                case .liked:
-                    LikedSongsView(player: player)
-                case .playlist(let id):
-                    PlaylistDetailView(playlistId: id, player: player)
-                case .radio(let seed):
-                    RadioDetailView(seedTrack: seed, player: player)
-                case .daylist:
-                    DaylistDetailView(player: player)
-                case .downloads:
-                    DownloadsView(player: player)
-                case .stats:
-                    StatsView(player: player)
+            .navigationTitle(greeting)
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                if !network.isConnected {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Label("Offline", systemImage: "wifi.slash")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Theme.warning)
+                    }
                 }
+            }
+            .navigationDestination(for: LibraryDestination.self) { destination in
+                destination.destination(player: player)
             }
             .environment(\.openRadio) { track in coordinator.homePath.append(LibraryDestination.radio(track)) }
         }
@@ -116,16 +131,23 @@ struct HomeView: View {
         if !liked.tracks.isEmpty { items.append(.likedSongs) }
         items.append(contentsOf: radioHistory.stations.prefix(6).map(ShortcutItem.radio))
         items.append(contentsOf: playlists.playlists.prefix(6).map(ShortcutItem.playlist))
-        return Array(items.prefix(8))
+        // An odd count leaves a half-width hole at the end of the 2-column grid, so trim to
+        // an even one — except for a lone shortcut, which would otherwise vanish from Home.
+        let capped = Array(items.prefix(8))
+        guard capped.count > 1 else { return capped }
+        return Array(capped.prefix(capped.count - capped.count % 2))
     }
 
     private var shortcutGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
+        LazyVGrid(
+            columns: [GridItem(.flexible(), spacing: Theme.Space.md), GridItem(.flexible())],
+            spacing: Theme.Space.md
+        ) {
             ForEach(shortcuts) { item in
                 shortcutTile(item)
             }
         }
-        .padding(.horizontal)
+        .padding(.horizontal, Theme.Metrics.gutter)
     }
 
     @ViewBuilder
@@ -141,6 +163,7 @@ struct HomeView: View {
                 ShortcutRow(title: station.title, imageURL: station.seedTrack.thumbnailUrl, systemImageFallback: "dot.radiowaves.left.and.right")
             }
             .buttonStyle(.pressableCard)
+            .contextMenu { removeRadioButton(station) }
         case .playlist(let playlist):
             NavigationLink(value: LibraryDestination.playlist(playlist.id)) {
                 ShortcutRow(title: playlist.name, imageURL: playlist.tracks.first?.thumbnailUrl, systemImageFallback: "music.note.list")
@@ -149,33 +172,21 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - Your Radio / Your Playlists shelves
-
-    private func mixShelf(title: String, badge: String? = nil, stations: [RadioStation] = [], playlists: [Playlist] = []) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.title3.bold())
-                .foregroundStyle(.white)
-                .padding(.horizontal)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 14) {
-                    ForEach(stations) { station in
-                        NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
-                            JumpBackInCard(title: station.title, subtitle: "Radio", badge: "Radio", imageURL: station.seedTrack.thumbnailUrl)
-                        }
-                        .buttonStyle(.pressableCard)
-                    }
-                    ForEach(playlists) { playlist in
-                        NavigationLink(value: LibraryDestination.playlist(playlist.id)) {
-                            JumpBackInCard(title: playlist.name, subtitle: "Playlist", badge: nil, imageURL: playlist.tracks.first?.thumbnailUrl)
-                        }
-                        .buttonStyle(.pressableCard)
-                    }
-                }
-                .padding(.horizontal)
-            }
+    /// Home has no list to swipe, so removing a saved radio is a long press — on the grid tile
+    /// and on the shelf card alike, since the same station appears in both.
+    private func removeRadioButton(_ station: RadioStation) -> some View {
+        Button(role: .destructive) {
+            withAnimation { radioHistory.delete(station) }
+        } label: {
+            Label("Remove Radio", systemImage: "trash")
         }
+    }
+
+    /// Nothing cached and nothing saved — otherwise Home is a daylist card over a void on
+    /// a fresh install.
+    private var hasNothingToShow: Bool {
+        sections.isEmpty && shortcuts.isEmpty
+            && radioHistory.stations.isEmpty && playlists.playlists.isEmpty
     }
 
     /// Uses the same time-of-day buckets as the daylist, so the header and the mix card

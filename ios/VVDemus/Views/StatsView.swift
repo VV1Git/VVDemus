@@ -6,10 +6,10 @@ struct StatsView: View {
     @State private var range: StatsRange = .week
 
     enum StatsRange: String, CaseIterable, Identifiable {
-        case week = "1 Week"
-        case month = "1 Month"
-        case threeMonths = "3 Months"
-        case year = "1 Year"
+        case week = "Week"
+        case month = "Month"
+        case threeMonths = "3 Mo"
+        case year = "Year"
 
         var id: String { rawValue }
 
@@ -34,6 +34,13 @@ struct StatsView: View {
         let count: Int
         var id: String { track.id }
     }
+
+    /// The rank column, and the two divider insets derived from it: a hairline must start at
+    /// the leading edge of the *text*, never under the rank or the artwork.
+    private static let rankWidth = Theme.Space.xl                                    // 24
+    private static let artistTextLeading = rankWidth + Theme.Space.md                // 36
+    private static let songTextLeading =
+        rankWidth + Theme.Space.md + Theme.ArtSize.row + Theme.Space.md              // 96
 
     private var since: Date {
         Calendar.current.date(byAdding: .day, value: -range.days, to: Date()) ?? .distantPast
@@ -71,137 +78,169 @@ struct StatsView: View {
         eventsInRange.reduce(0) { $0 + $1.secondsPlayed }
     }
 
+    /// Every distinct artist in range — *not* `topArtists.count`, which is capped at 10 and so
+    /// reported a permanent, wrong "10" next to two correct numbers.
+    private var distinctArtistCount: Int {
+        Set(eventsInRange.map(\.track.artist)).count
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                Picker("Range", selection: $range) {
-                    ForEach(StatsRange.allCases) { r in
-                        Text(r.rawValue).tag(r)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-
+            VStack(alignment: .leading, spacing: Theme.Space.xl) {
                 if eventsInRange.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "chart.bar")
-                            .font(.largeTitle)
-                            .foregroundStyle(Theme.textSecondary)
-                        Text("No listening history in this range yet")
-                            .foregroundStyle(Theme.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 60)
+                    ContentUnavailableView(
+                        "No Listening History",
+                        systemImage: "chart.bar",
+                        description: Text("Play something and this range will fill up.")
+                    )
+                    .padding(.top, Theme.Space.xxl)
                 } else {
                     summaryRow
 
                     if !topArtists.isEmpty {
-                        sectionHeader("Top Artists")
-                        VStack(spacing: 0) {
+                        section("Top Artists") {
                             ForEach(Array(topArtists.enumerated()), id: \.element.id) { index, artist in
                                 artistRow(rank: index + 1, artist: artist)
                                 if artist.id != topArtists.last?.id {
-                                    Divider().background(Theme.card)
+                                    hairline(leading: Self.artistTextLeading)
                                 }
                             }
                         }
-                        .padding(.horizontal)
                     }
 
                     if !topSongs.isEmpty {
-                        sectionHeader("Top Songs")
-                        VStack(spacing: 0) {
+                        section("Top Songs") {
                             ForEach(Array(topSongs.enumerated()), id: \.element.id) { index, song in
                                 songRow(rank: index + 1, song: song)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        player.play(track: song.track, context: topSongs.map(\.track), contextTitle: "Top Songs")
-                                    }
                                 if song.id != topSongs.last?.id {
-                                    Divider().background(Theme.card)
+                                    hairline(leading: Self.songTextLeading)
                                 }
                             }
                         }
-                        .padding(.horizontal)
                     }
                 }
             }
-            .padding(.vertical)
+            // R1: the screen's one gutter, declared once on the outermost content container.
+            .padding(.horizontal, Theme.Metrics.gutter)
+            .padding(.vertical, Theme.Space.lg)
         }
         .background(Theme.background)
+        .safeAreaInset(edge: .top) { rangePicker }
         .navigationTitle("Your Stats")
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func sectionHeader(_ text: String) -> some View {
-        Text(text)
-            .font(.title3.bold())
-            .foregroundStyle(.white)
-            .padding(.horizontal)
+    /// Pinned rather than scrolled: it is the only control on the screen, and it used to
+    /// disappear above the numbers it changes.
+    private var rangePicker: some View {
+        Picker("Range", selection: $range) {
+            ForEach(StatsRange.allCases) { r in
+                Text(r.rawValue).tag(r)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, Theme.Metrics.gutter)
+        .padding(.vertical, Theme.Space.sm)
+        .background(.bar)
+    }
+
+    private func section<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Space.sm) {
+            Text(title)
+                .font(.shelfHeader)
+                .foregroundStyle(.primary)
+            VStack(spacing: 0) { content() }
+        }
     }
 
     private var summaryRow: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Theme.Space.md) {
             statCard(value: "\(eventsInRange.count)", label: "Plays")
             statCard(value: formattedDuration(totalListeningSeconds), label: "Listened")
-            statCard(value: "\(topArtists.count)", label: "Artists")
+            statCard(value: "\(distinctArtistCount)", label: "Artists")
         }
-        .padding(.horizontal)
     }
 
     private func statCard(value: String, label: String) -> some View {
-        VStack(spacing: 4) {
+        VStack(spacing: Theme.Space.xs) {
             Text(value)
-                .font(.title2.bold())
-                .foregroundStyle(.white)
+                .font(.statValue)
+                .foregroundStyle(.primary)
+                // "127h 45m" used to wrap and inflate all three equal-height cards.
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
             Text(label)
-                .font(.caption)
-                .foregroundStyle(Theme.textSecondary)
+                .font(.meta)
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 14)
-        .glassEffect(in: .rect(cornerRadius: 16))
+        .padding(.vertical, Theme.Space.lg)
+        // R5: this sits directly on the background inside a scroll, where glass renders as a
+        // flat gray box and costs a render pass.
+        .background(Theme.card, in: Theme.Radius.rect(Theme.Radius.card))
     }
 
     private func artistRow(rank: Int, artist: ArtistStat) -> some View {
-        HStack(spacing: 12) {
-            Text("\(rank)")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Theme.textSecondary)
-                .frame(width: 24, alignment: .leading)
+        HStack(spacing: Theme.Space.md) {
+            rankLabel(rank)
             Text(artist.name)
-                .foregroundStyle(.white)
+                .font(.rowTitle)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
-            Spacer()
-            Text("\(artist.count) play\(artist.count == 1 ? "" : "s")")
-                .font(.caption)
-                .foregroundStyle(Theme.textSecondary)
+            Spacer(minLength: Theme.Space.md)
+            playCount(artist.count)
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, Theme.Metrics.rowVertical)
     }
 
     private func songRow(rank: Int, song: SongStat) -> some View {
-        HStack(spacing: 12) {
-            Text("\(rank)")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Theme.textSecondary)
-                .frame(width: 24, alignment: .leading)
-            RemoteImage(url: song.track.thumbnailUrl, size: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(song.track.title)
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(song.track.artist)
-                    .font(.caption)
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(1)
-            }
-            Spacer()
-            Text("\(song.count)×")
-                .font(.caption)
-                .foregroundStyle(Theme.textSecondary)
+        HStack(spacing: Theme.Space.md) {
+            rankLabel(rank)
+            // TrackRow owns the artwork, the type, the now-playing state and its own trailing
+            // controls, so this row matches every other song row in the app. The play count is
+            // the only thing this screen adds, and it sits outside TrackRow.
+            TrackRow(
+                track: song.track,
+                isActive: player.currentTrack?.id == song.track.id,
+                onTap: {
+                    player.play(track: song.track, context: topSongs.map(\.track), contextTitle: "Top Songs")
+                }
+            )
+            playCount(song.count)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, Theme.Metrics.rowVertical)
+        .trackActions(track: song.track, player: player)
+    }
+
+    private func rankLabel(_ rank: Int) -> some View {
+        Text("\(rank)")
+            .font(.meta)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .frame(width: Self.rankWidth, alignment: .leading)
+    }
+
+    /// One wording for both tables — artists said "3 plays" while songs three lines below said
+    /// "3×". The long form stays for VoiceOver.
+    private func playCount(_ count: Int) -> some View {
+        Text("\(count)×")
+            .font(.meta)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .accessibilityLabel(Text("^[\(count) play](inflect: true)"))
+    }
+
+    /// `Divider().background(_:)` does not tint a divider, so the intended color never
+    /// rendered here. A hairline rectangle does — and it starts at the text leading edge so it
+    /// never runs under the rank or the artwork.
+    private func hairline(leading: CGFloat) -> some View {
+        Rectangle()
+            .fill(Theme.separator)
+            .frame(height: 0.5)
+            .padding(.leading, leading)
     }
 
     private func formattedDuration(_ seconds: Int) -> String {

@@ -8,237 +8,113 @@ struct LibraryView: View {
     @State private var showNewPlaylist = false
     @State private var newPlaylistName = ""
     @State private var path = NavigationPath()
-    @AppStorage(InnerTubeClient.dataSaverDefaultsKey) private var dataSaverEnabled = false
-    @AppStorage(LocalControlServer.defaultsKey) private var connectEnabled = true
-    @ObservedObject private var controlServer = LocalControlServer.shared
-    @ObservedObject private var byteCounter = NetworkByteCounter.shared
-    @State private var imageCacheBytes: Int64 = 0
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
                 Section {
                     NavigationLink(value: LibraryDestination.daylist) {
-                        ShortcutRow(
-                            title: daylist.title.isEmpty ? "Your Daylist" : daylist.title,
-                            imageURL: daylist.tracks.first?.thumbnailUrl,
-                            systemImageFallback: "sun.max.fill"
-                        )
+                        LibraryRow(title: daylist.title.isEmpty ? "Your Daylist" : daylist.title) {
+                            if let art = daylist.tracks.first?.thumbnailUrl {
+                                RemoteImage(url: art, size: Theme.ArtSize.row)
+                            } else {
+                                LibraryRowIcon(systemImage: "sun.max.fill")
+                            }
+                        }
                     }
-                    .listRowBackground(Theme.background)
-                    .listRowSeparator(.hidden)
+                    .trackRowMetrics()
 
                     NavigationLink(value: LibraryDestination.liked) {
-                        ShortcutRow(title: "Liked Songs", imageURL: nil, systemImageFallback: "heart.fill")
+                        LibraryRow(title: "Liked Songs") {
+                            LibraryRowIcon(systemImage: "heart.fill")
+                        }
                     }
-                    .listRowBackground(Theme.background)
-                    .listRowSeparator(.hidden)
+                    .trackRowMetrics()
 
                     NavigationLink(value: LibraryDestination.downloads) {
-                        ShortcutRow(title: "Downloads", imageURL: nil, systemImageFallback: "arrow.down.circle.fill")
+                        LibraryRow(title: "Downloads") {
+                            LibraryRowIcon(systemImage: "arrow.down.circle.fill")
+                        }
                     }
-                    .listRowBackground(Theme.background)
-                    .listRowSeparator(.hidden)
+                    .trackRowMetrics()
 
                     NavigationLink(value: LibraryDestination.stats) {
-                        ShortcutRow(title: "Your Stats", imageURL: nil, systemImageFallback: "chart.bar.fill")
+                        LibraryRow(title: "Your Stats") {
+                            LibraryRowIcon(systemImage: "chart.bar.fill")
+                        }
                     }
-                    .listRowBackground(Theme.background)
-                    .listRowSeparator(.hidden)
+                    .trackRowMetrics()
                 }
 
                 if !radioHistory.stations.isEmpty {
-                    Section("Radio") {
+                    Section("Your Radio") {
                         ForEach(radioHistory.stations) { station in
                             NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
-                                HStack(spacing: 12) {
-                                    RemoteImage(url: station.seedTrack.thumbnailUrl, size: 48)
-                                    Text(station.title)
-                                        .foregroundStyle(.white)
-                                        .lineLimit(1)
+                                // Second line so a radio row is the same height as a
+                                // playlist row directly under it.
+                                LibraryRow(title: station.title,
+                                           subtitle: "Radio · \(station.seedTrack.artist)") {
+                                    RemoteImage(url: station.seedTrack.thumbnailUrl, size: Theme.ArtSize.row)
                                 }
                             }
-                            .listRowBackground(Theme.background)
-                            .listRowSeparatorTint(Theme.card)
+                            .trackRowMetrics()
                         }
+                        // Swipe-to-delete and Edit-mode delete, the same two gestures the
+                        // playlist section below already answers to.
+                        .onDelete { radioHistory.delete(at: $0) }
                     }
                 }
 
-                Section("Playlists") {
+                Section("Your Playlists") {
                     if playlists.playlists.isEmpty {
-                        Text("Tap + to create your first playlist.")
-                            .font(.footnote)
-                            .foregroundStyle(Theme.textSecondary)
-                            .listRowBackground(Theme.background)
+                        ContentUnavailableView {
+                            Label("No Playlists", systemImage: "music.note.list")
+                        } description: {
+                            Text("Tap + to create your first playlist.")
+                        }
+                        .listRowSeparator(.hidden)
                     } else {
                         ForEach(playlists.playlists) { playlist in
                             NavigationLink(value: LibraryDestination.playlist(playlist.id)) {
-                                HStack(spacing: 12) {
+                                LibraryRow(title: playlist.name,
+                                           subtitle: "^[\(playlist.tracks.count) song](inflect: true)") {
                                     if let art = playlist.tracks.first?.thumbnailUrl {
-                                        RemoteImage(url: art, size: 48)
+                                        RemoteImage(url: art, size: Theme.ArtSize.row)
                                     } else {
-                                        RoundedRectangle(cornerRadius: 4)
-                                            .fill(Theme.card)
-                                            .frame(width: 48, height: 48)
-                                            .overlay(
-                                                Image(systemName: "music.note.list")
-                                                    .foregroundStyle(Theme.textSecondary)
-                                            )
-                                    }
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(playlist.name)
-                                            .foregroundStyle(.white)
-                                            .lineLimit(1)
-                                        Text("\(playlist.tracks.count) songs")
-                                            .font(.caption)
-                                            .foregroundStyle(Theme.textSecondary)
+                                        LibraryRowIcon(systemImage: "music.note.list",
+                                                       fill: Theme.card,
+                                                       glyph: .secondary)
                                     }
                                 }
                             }
-                            .listRowBackground(Theme.background)
-                            .listRowSeparatorTint(Theme.card)
+                            .trackRowMetrics()
                         }
                         .onDelete { offsets in
                             offsets.map { playlists.playlists[$0] }.forEach(playlists.delete)
                         }
                     }
                 }
-
-                Section {
-                    HStack {
-                        Text("Version")
-                            .foregroundStyle(Theme.textSecondary)
-                        Spacer()
-                        Text(AppVersion.summary)
-                            .font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(.white)
-                            .textSelection(.enabled)
-                    }
-                    .listRowBackground(Theme.background)
-                }
-
-                Section {
-                    Toggle("Data Saver", isOn: $dataSaverEnabled)
-                        .tint(Theme.accent)
-                        .listRowBackground(Theme.background)
-                } footer: {
-                    // Deliberately modest, because the measurements say so
-                    // (VVDemusTests/DataUsageBenchmarks):
-                    //  · Bitrate: no effect today. The low-bitrate audio-only formats are
-                    //    only reachable through a client YouTube currently refuses, so
-                    //    every track comes from the one muxed format there is.
-                    //  · Batch limits: no effect. They're applied to an already-downloaded
-                    //    response; there is no count parameter to ask for less.
-                    //  · Artwork and read-ahead: real, and measured.
-                    Text("Requests smaller artwork and reads less far ahead, so skipping a track wastes less of what was already downloaded. Audio quality is unchanged — YouTube currently only offers this app one audio format, so the bitrate can't be lowered.")
-                }
-
-                Section {
-                    ForEach(NetworkByteCounter.Category.allCases) { category in
-                        HStack {
-                            Text(category.rawValue)
-                                .foregroundStyle(Theme.textSecondary)
-                            Spacer()
-                            Text(Self.formattedBytes(byteCounter.bytes[category] ?? 0))
-                                .foregroundStyle(.white)
-                                .font(.system(.footnote, design: .monospaced))
-                        }
-                        .listRowBackground(Theme.background)
-                    }
-                    // Worth showing next to the counters: the artwork cache is what stops
-                    // those numbers climbing on every relaunch, so its size is the visible
-                    // evidence that caching is working.
-                    HStack {
-                        Text("Artwork cache")
-                            .foregroundStyle(Theme.textSecondary)
-                        Spacer()
-                        Text(Self.formattedBytes(imageCacheBytes))
-                            .foregroundStyle(.white)
-                            .font(.system(.footnote, design: .monospaced))
-                    }
-                    .listRowBackground(Theme.background)
-                    .task { imageCacheBytes = await DiskImageCache.shared.totalBytes() }
-
-                    Button("Reset Counters") { byteCounter.reset() }
-                        .listRowBackground(Theme.background)
-                    Button("Clear Image Cache") {
-                        Task {
-                            await DiskImageCache.shared.clear()
-                            imageCacheBytes = 0
-                        }
-                    }
-                    .listRowBackground(Theme.background)
-                } header: {
-                    Text("Network Usage (this session)")
-                } footer: {
-                    Text("Doesn't include live-streaming playback bytes — AVPlayer manages that networking internally, so compare cellular usage in iOS Settings for a full before/after picture.")
-                }
-
-                Section {
-                    Toggle(
-                        "VVDemus Connect",
-                        isOn: $connectEnabled
-                    )
-                    // `.onChange` rather than a side effect inside a Binding setter, which
-                    // mutates an ObservableObject this view observes while it is rendering.
-                    .onChange(of: connectEnabled) { _, enabled in
-                        enabled ? controlServer.start() : controlServer.stop()
-                    }
-                    .tint(Theme.accent)
-                    .listRowBackground(Theme.background)
-
-                    if controlServer.isRunning {
-                        HStack {
-                            Text("Open on your computer")
-                                .foregroundStyle(Theme.textSecondary)
-                            Spacer()
-                            Text(verbatim: controlServer.localAddress.map { "http://\($0):\(controlServer.port)" } ?? "Finding address…")
-                                .font(.system(.footnote, design: .monospaced))
-                                .foregroundStyle(.white)
-                                .textSelection(.enabled)
-                        }
-                        .listRowBackground(Theme.background)
-                    }
-
-                    // A toggle left switched on next to a blank address is
-                    // indistinguishable from "still starting up"; say what went wrong.
-                    if let startupError = controlServer.startupError {
-                        Text(startupError)
-                            .font(.footnote)
-                            .foregroundStyle(Theme.accent)
-                            .listRowBackground(Theme.background)
-                    }
-                } footer: {
-                    Text("Lets a browser on the same WiFi network see what's playing and control it — or play it through the computer's own speakers instead. No account or pairing needed, so only turn this on when you're on a network you trust.")
-                }
             }
             .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(Theme.background)
             .navigationTitle("Your Library")
             .navigationDestination(for: LibraryDestination.self) { destination in
-                switch destination {
-                case .liked:
-                    LikedSongsView(player: player)
-                case .playlist(let id):
-                    PlaylistDetailView(playlistId: id, player: player)
-                case .radio(let seed):
-                    RadioDetailView(seedTrack: seed, player: player)
-                case .daylist:
-                    DaylistDetailView(player: player)
-                case .downloads:
-                    DownloadsView(player: player)
-                case .stats:
-                    StatsView(player: player)
-                }
+                destination.destination(player: player)
             }
             .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        path.append(LibraryDestination.settings)
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                            .labelStyle(.iconOnly)
+                    }
+
                     Button {
                         showNewPlaylist = true
                     } label: {
-                        Image(systemName: "plus")
+                        Label("New Playlist", systemImage: "plus")
+                            .labelStyle(.iconOnly)
                     }
                 }
             }
@@ -253,8 +129,66 @@ struct LibraryView: View {
             }
         }
     }
+}
 
-    private static func formattedBytes(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+// MARK: - Row primitives
+
+/// One row shape for everything in the Library list — shortcuts, radios and playlists —
+/// built to the same geometry as `TrackRow` (48pt artwork · 12pt gap · title/subtitle) so
+/// every leading edge and every separator on this screen lines up with the track rows on
+/// the screens it pushes to.
+private struct LibraryRow<Leading: View>: View {
+    let title: String
+    /// A key, not a `String`, so the inflection markup in "^[n song](inflect: true)" is
+    /// actually resolved instead of printed.
+    var subtitle: LocalizedStringKey?
+    let leading: Leading
+
+    init(title: String, subtitle: LocalizedStringKey? = nil, @ViewBuilder leading: () -> Leading) {
+        self.title = title
+        self.subtitle = subtitle
+        self.leading = leading()
+    }
+
+    var body: some View {
+        HStack(spacing: Theme.Space.md) {
+            leading
+                .frame(width: Theme.ArtSize.row, height: Theme.ArtSize.row)
+            VStack(alignment: .leading, spacing: Theme.Metrics.labelSpacing) {
+                Text(title)
+                    .font(.rowTitle)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.rowSubtitle)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: Theme.Space.md)
+        }
+        .frame(minHeight: Theme.ArtSize.row)
+    }
+}
+
+/// Stands in for artwork on rows that have none. Same size and same corner radius as
+/// `RemoteImage` at row size, so an icon row and an artwork row can sit next to each other.
+private struct LibraryRowIcon: View {
+    let systemImage: String
+    var fill: Color = Theme.accent
+    var glyph: Color = .white
+
+    var body: some View {
+        Theme.Radius.rect(Theme.Radius.art(for: Theme.ArtSize.row))
+            .fill(fill)
+            .overlay {
+                Image(systemName: systemImage)
+                    .font(.title3)
+                    // Drawn on top of a filled tile rather than the screen background, so
+                    // the semantic colours don't apply.
+                    .foregroundStyle(glyph)
+            }
+            .accessibilityHidden(true)
     }
 }

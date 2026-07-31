@@ -15,7 +15,12 @@ final class ArtworkColorLoader: ObservableObject {
     /// twice a second while playing, so one bad URL meant two full-size image downloads a
     /// second for as long as the mini player was on screen.
     private var failed: Set<String> = []
-    private let context = CIContext(options: [.workingColorSpace: NSNull()])
+    /// Insertion order, so the cache can evict its oldest entry instead of emptying itself.
+    private var insertionOrder: [String] = []
+    /// Default working space, i.e. linear. Averaging gamma-encoded bytes (what
+    /// `workingColorSpace: NSNull()` did) biases every result dark and desaturated, which
+    /// is exactly what made the gradient muddy; the render below converts back to sRGB.
+    private let context = CIContext()
     /// A 1×1 average doesn't need pixels. 64px is plenty and costs a fraction of the
     /// original, which was being downloaded in full and thrown away after one pass.
     private static let sampleSize = 64
@@ -27,8 +32,11 @@ final class ArtworkColorLoader: ObservableObject {
     /// Returns the cached colour, and — deliberately — does *not* start a fetch. Kicking
     /// off network work from inside a view body is a side effect during view evaluation;
     /// call `prepare(for:)` from a `.task` instead.
+    ///
+    /// A miss falls back to the page background, so a cold track fades in from black rather
+    /// than flashing a grey slab first.
     func color(for track: Track?) -> Color {
-        guard let key = track?.thumbnailUrl, let cached = colors[key] else { return Theme.cardLight }
+        guard let key = track?.thumbnailUrl, let cached = colors[key] else { return Theme.background }
         return cached
     }
 
@@ -57,8 +65,31 @@ final class ArtworkColorLoader: ObservableObject {
             failed.insert(key)
             return
         }
-        if colors.count >= Self.limit { colors.removeAll() }
+        // Oldest-first, not `removeAll()`: emptying the cache flushed the *currently
+        // playing* track's colour along with everything else, and the gradient reverted
+        // mid-song for no visible reason.
+        while colors.count >= Self.limit, let oldest = insertionOrder.first {
+            insertionOrder.removeFirst()
+            colors.removeValue(forKey: oldest)
+        }
         colors[key] = averaged
+        insertionOrder.append(key)
+    }
+
+    /// The average, forced into a range that a full-bleed gradient and a glass tint under
+    /// white text can both survive. Clamping here rather than at the call sites is
+    /// deliberate: a pale or washed-out cover makes Now Playing unreadable, and there is no
+    /// call site that wants the raw value.
+    private func readable(_ color: UIColor) -> Color? {
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        guard color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha) else {
+            return nil
+        }
+        return Color(
+            hue: Double(hue),
+            saturation: Double(min(max(saturation, 0.35), 0.80)),
+            brightness: Double(min(brightness, 0.42))
+        )
     }
 
     private func averageColor(of image: CIImage) -> Color? {
@@ -74,13 +105,16 @@ final class ArtworkColorLoader: ObservableObject {
             toBitmap: &bitmap,
             rowBytes: 4,
             bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            // Explicit, so the linear average lands back in sRGB rather than being handed
+            // out as linear values interpreted as if they were gamma-encoded.
             format: .RGBA8,
-            colorSpace: nil
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)
         )
-        return Color(
-            red: Double(bitmap[0]) / 255,
-            green: Double(bitmap[1]) / 255,
-            blue: Double(bitmap[2]) / 255
-        )
+        return readable(UIColor(
+            red: CGFloat(bitmap[0]) / 255,
+            green: CGFloat(bitmap[1]) / 255,
+            blue: CGFloat(bitmap[2]) / 255,
+            alpha: 1
+        ))
     }
 }

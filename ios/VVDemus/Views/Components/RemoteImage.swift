@@ -23,25 +23,55 @@ private final class ImageCache {
 struct RemoteImage: View {
     let url: String?
     var size: CGFloat = 48
-    var cornerRadius: CGFloat = 4
+    /// `nil` means "the radius that matches this artwork size" (`Theme.Radius.art(for:)`).
+    /// Only pass a value when the container supplies its own clip — e.g. artwork bled into
+    /// a tile's leading edge, which needs `0` so the tile's corners win.
+    var cornerRadius: CGFloat? = nil
     @Environment(\.displayScale) private var displayScale
-    @State private var uiImage: UIImage?
+    /// Set once the bitmap has been loaded, together with the key it was loaded for. The key
+    /// is what makes a recycled cell correct: state survives reuse, so a stale image must not
+    /// be shown for a new URL.
+    @State private var loadedImage: UIImage?
+    @State private var loadedKey: String?
+
+    private var radius: CGFloat { cornerRadius ?? Theme.Radius.art(for: size) }
+
+    /// The exact URL string this view will request at this size — also the cache key.
+    private var cacheKey: String? {
+        guard let url else { return nil }
+        let targetPixels = RemoteImage.targetPixelSize(for: size, displayScale: displayScale)
+        return RemoteImage.resizedThumbnailUrl(url, targetPixels: targetPixels)
+    }
+
+    /// Resolved during `body`, not in `.task`: the task only runs after the first frame, so
+    /// consulting the memory cache there made every recycled cell flash the gray placeholder
+    /// even though its bitmap was already in memory. A hit here draws on frame one.
+    @MainActor private var image: UIImage? {
+        guard let cacheKey else { return nil }
+        if let loadedImage, loadedKey == cacheKey { return loadedImage }
+        return ImageCache.shared.image(for: cacheKey)
+    }
 
     var body: some View {
         Group {
-            if let uiImage {
-                Image(uiImage: uiImage).resizable().scaledToFill()
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .transition(.opacity)
             } else {
-                Rectangle()
-                    .fill(Theme.card)
-                    .overlay(
-                        Image(systemName: "music.note")
-                            .foregroundStyle(Theme.textSecondary)
-                    )
+                Image(systemName: "music.note")
+                    // Scales with the frame: a fixed glyph is body-sized in a 48pt thumb and
+                    // a speck in the 280pt hero.
+                    .font(.system(size: max(12, size * 0.32)))
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        // Behind the image too, so 16:9 letterboxing blends instead of reading as broken art.
+        .background(Theme.card)
+        .clipShape(Theme.Radius.rect(radius))
+        .animation(.easeIn(duration: 0.15), value: image != nil)
         .task(id: url) {
             await load()
         }
@@ -49,29 +79,36 @@ struct RemoteImage: View {
     }
 
     private func load() async {
-        uiImage = nil
-        guard let url else { return }
-        let targetPixels = RemoteImage.targetPixelSize(for: size, displayScale: displayScale)
-        let requestURLString = RemoteImage.resizedThumbnailUrl(url, targetPixels: targetPixels)
-        let cacheKey = "\(requestURLString)"
+        guard let cacheKey else { return }
+        // Already resolved for this exact key (including via the synchronous body lookup).
+        if loadedKey == cacheKey, loadedImage != nil { return }
 
         if let cached = ImageCache.shared.image(for: cacheKey) {
-            uiImage = cached
+            set(cached, for: cacheKey)
             return
         }
+        // Genuinely uncached: only now is it right to drop whatever a recycled cell was showing.
+        loadedImage = nil
+        loadedKey = cacheKey
+
         if let diskData = await DiskImageCache.shared.data(for: cacheKey), let image = UIImage(data: diskData) {
             guard !Task.isCancelled else { return }
             ImageCache.shared.store(image, for: cacheKey)
-            uiImage = image
+            set(image, for: cacheKey)
             return
         }
-        guard let requestURL = URL(string: requestURLString),
+        guard let requestURL = URL(string: cacheKey),
               let (data, _) = try? await NetworkSessions.image.data(from: requestURL),
               let image = UIImage(data: data) else { return }
         guard !Task.isCancelled else { return }
         ImageCache.shared.store(image, for: cacheKey)
         await DiskImageCache.shared.store(data, for: cacheKey)
-        uiImage = image
+        set(image, for: cacheKey)
+    }
+
+    private func set(_ image: UIImage, for key: String) {
+        loadedImage = image
+        loadedKey = key
     }
 
     /// The pixel size to actually request — the on-screen point size scaled for the

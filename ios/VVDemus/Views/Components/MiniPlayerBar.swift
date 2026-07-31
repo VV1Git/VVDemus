@@ -18,20 +18,37 @@ struct MiniPlayerBar: View {
         if let track = player.currentTrack {
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
-                    RemoteImage(url: track.thumbnailUrl, size: 40)
+                    // A real Button, not just the bar's tap gesture: VoiceOver and Switch
+                    // Control had no way at all to open Now Playing. It wraps only the
+                    // artwork and labels — nesting the transport buttons inside a Button's
+                    // label would make them un-hittable.
+                    Button {
+                        onExpand()
+                    } label: {
+                        HStack(spacing: 12) {
+                            RemoteImage(url: track.thumbnailUrl, size: 40)
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(track.title)
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                        Text(track.artist)
-                            .font(.caption2)
-                            .foregroundStyle(Theme.textSecondary)
-                            .lineLimit(1)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(track.title)
+                                    .font(.miniTitle)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                // The inline pill has room for exactly one line.
+                                if !isInline {
+                                    Text(track.artist)
+                                        .font(.miniSubtitle)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            // Takes the slack itself instead of a trailing Spacer, so the
+                            // title gets the width rather than leaving it blank.
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .contentShape(Rectangle())
                     }
-
-                    Spacer(minLength: 4)
+                    .buttonStyle(.pressableRow)
+                    .accessibilityHint("Opens Now Playing")
 
                     // The button keeps its slot while loading rather than being swapped
                     // for a bare spinner: the spinner's intrinsic width differs from the
@@ -75,11 +92,14 @@ struct MiniPlayerBar: View {
                         .accessibilityLabel("Next track")
                     }
                 }
-                .padding(.horizontal, 12)
+                // 16, not 12: the accessory's glass is a capsule, so its edge curves inward
+                // most sharply exactly where the artwork's corners are. At 12 the curve
+                // clipped into the album art's leading corners; this clears it without
+                // changing the bar's height or the artwork's size.
+                .padding(.horizontal, Theme.Metrics.gutter)
                 .padding(.vertical, isInline ? 0 : 6)
 
-                // The hairline needs the full width of its own row, which only the expanded
-                // placement has.
+                // The hairline needs a row of its own, which only the expanded placement has.
                 if !isInline {
                     progressLine
                 }
@@ -108,18 +128,23 @@ struct MiniPlayerBar: View {
 
     /// A hairline of progress along the bottom of the bar — enough to tell at a glance how
     /// far into a track you are without opening Now Playing.
+    ///
+    /// Inset to the gutter and clipped to a capsule: as a full-width sibling of the padded
+    /// row it ran edge-to-edge under inset content, and the system's own capsule clip on the
+    /// accessory sliced its square ends off. Accent, to match the Now Playing scrubber.
     private var progressLine: some View {
         GeometryReader { geometry in
             let fraction = player.duration > 0 ? min(max(player.progress / player.duration, 0), 1) : 0
             ZStack(alignment: .leading) {
-                Rectangle()
+                Capsule()
                     .fill(Color.white.opacity(0.18))
-                Rectangle()
-                    .fill(Color.white.opacity(0.85))
+                Capsule()
+                    .fill(Theme.accent)
                     .frame(width: geometry.size.width * fraction)
             }
         }
         .frame(height: 2)
+        .padding(.horizontal, Theme.Metrics.gutter)
         .accessibilityHidden(true)
     }
 }

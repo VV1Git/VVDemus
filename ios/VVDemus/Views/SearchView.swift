@@ -15,7 +15,6 @@ struct SearchView: View {
             Group {
                 if isLoading && results.isEmpty {
                     ProgressView()
-                        .tint(.white)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let errorMessage, results.isEmpty, !isLoading {
                     // A failed search used to render as "No results for …", which is a
@@ -23,62 +22,48 @@ struct SearchView: View {
                     // request never landed. It matters most for a rate limit, where the fix
                     // is to wait and the misreading is to type a different query.
                     ErrorRow(message: errorMessage) { retry() }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if results.isEmpty && !query.trimmingCharacters(in: .whitespaces).isEmpty && !isLoading {
-                    Text("No results for \"\(query)\"")
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ContentUnavailableView.search(text: query)
                 } else if query.trimmingCharacters(in: .whitespaces).isEmpty {
                     if recentSearches.isEmpty {
-                        VStack(spacing: 8) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.largeTitle)
-                                .foregroundStyle(Theme.textSecondary)
-                            Text("Search songs and artists")
-                                .foregroundStyle(Theme.textSecondary)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        ContentUnavailableView(
+                            "Search Songs and Artists",
+                            systemImage: "magnifyingglass",
+                            description: Text("Find something to play.")
+                        )
                     } else {
                         recentSearchList
                     }
                 } else {
                     List {
                         ForEach(results) { track in
-                            TrackRow(track: track, isActive: player.currentTrack?.id == track.id)
-                                .listRowBackground(Theme.background)
-                                .listRowSeparatorTint(Theme.card)
-                                .onTapGesture { player.play(track: track, context: results, contextTitle: "Search") }
-                                .trackActions(track: track, player: player)
+                            TrackRow(
+                                track: track,
+                                isActive: player.currentTrack?.id == track.id,
+                                onTap: { player.play(track: track, context: results, contextTitle: "Search") }
+                            )
+                            .trackRowMetrics()
+                            .trackActions(track: track, player: player)
                         }
                     }
                     .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
+                    .scrollDismissesKeyboard(.immediately)
                 }
             }
             .background(Theme.background)
             .navigationTitle("Search")
+            // On the content, not on the `NavigationStack`: attached to the stack, the
+            // "Songs, artists" field leaked into every pushed destination — including
+            // `PlaylistDetailView`, which declares a search field of its own.
+            .searchable(text: $query, prompt: "Songs, artists")
             .navigationDestination(for: LibraryDestination.self) { destination in
-                switch destination {
-                case .liked:
-                    LikedSongsView(player: player)
-                case .playlist(let id):
-                    PlaylistDetailView(playlistId: id, player: player)
-                case .radio(let seed):
-                    RadioDetailView(seedTrack: seed, player: player)
-                case .daylist:
-                    DaylistDetailView(player: player)
-                case .downloads:
-                    DownloadsView(player: player)
-                case .stats:
-                    StatsView(player: player)
-                }
+                destination.destination(player: player)
             }
             .environment(\.openRadio) { track in
                 coordinator.homePath.append(LibraryDestination.radio(track))
                 coordinator.selectedTab = .home
             }
         }
-        .searchable(text: $query, prompt: "Songs, artists")
         .onChange(of: query) { _, newValue in
             searchTask?.cancel()
             searchTask = Task {
@@ -109,17 +94,22 @@ struct SearchView: View {
                     Button {
                         query = term
                     } label: {
-                        HStack(spacing: 12) {
+                        HStack(spacing: Theme.Space.md) {
                             Image(systemName: "clock.arrow.circlepath")
-                                .foregroundStyle(Theme.textSecondary)
+                                .foregroundStyle(.secondary)
+                                // As wide as a result row's artwork, so a recent search and a
+                                // search result start their text on the same leading edge —
+                                // the icon column plus the stack spacing is exactly
+                                // `Theme.Metrics.separatorLeading`.
+                                .frame(width: Theme.ArtSize.row, alignment: .leading)
                             Text(term)
-                                .foregroundStyle(.white)
-                            Spacer()
+                                .font(.rowTitle)
+                                .foregroundStyle(.primary)
+                            Spacer(minLength: Theme.Space.md)
                         }
                         .contentShape(Rectangle())
                     }
-                    .listRowBackground(Theme.background)
-                    .listRowSeparatorTint(Theme.card)
+                    .trackRowMetrics()
                 }
                 .onDelete { offsets in
                     var terms = recentSearches
@@ -127,12 +117,16 @@ struct SearchView: View {
                     saveRecentSearches(terms)
                 }
             } header: {
-                Text("Recent searches")
-                    .foregroundStyle(Theme.textSecondary)
+                HStack {
+                    Text("Recent Searches")
+                    Spacer()
+                    Button("Clear") { saveRecentSearches([]) }
+                        .font(.controlLabel)
+                }
             }
         }
         .listStyle(.plain)
-        .scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.immediately)
     }
 
     private func rememberSearch(_ term: String) {

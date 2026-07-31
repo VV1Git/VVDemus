@@ -17,6 +17,17 @@ final class RadioHistoryStore: ObservableObject {
         save()
     }
 
+    func delete(_ station: RadioStation) {
+        stations.removeAll { $0.id == station.id }
+        save()
+    }
+
+    /// For `List.onDelete`, which hands back positions in the array it rendered.
+    func delete(at offsets: IndexSet) {
+        stations.remove(atOffsets: offsets)
+        save()
+    }
+
     private func load() {
         guard let decoded = DefaultsSnapshot.load([RadioStation].self, forKey: key) else { return }
         stations = decoded

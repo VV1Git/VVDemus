@@ -36,74 +36,71 @@ struct RadioDetailView: View {
             if isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Theme.background)
             } else if let errorMessage {
                 ErrorRow(message: errorMessage) { Task { await load() } }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Theme.background)
+            } else if tracks.isEmpty {
+                ContentUnavailableView(
+                    "No Songs",
+                    systemImage: "music.note.list",
+                    description: Text("This radio came back empty. Refresh to build it again.")
+                )
             } else {
-                List {
-                    MixDetailHeader(
-                        title: title,
-                        subtitle: subtitle,
-                        badge: "Radio",
-                        imageURL: seedTrack.thumbnailUrl,
-                        trackCount: tracks.count,
-                        totalDuration: totalDuration(of: tracks),
-                        tracks: tracks,
-                        onPlay: { playAll(shuffled: false) },
-                        onShuffle: { playAll(shuffled: true) }
-                    )
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Theme.background)
-
-                    ForEach(visibleTracks) { track in
-                        TrackRow(track: track, isActive: player.currentTrack?.id == track.id)
-                            .listRowBackground(Theme.background)
-                            .listRowSeparatorTint(Theme.card)
-                            .onTapGesture {
-                                player.play(track: track, context: tracks, contextTitle: title, contextSeed: seedTrack)
-                            }
-                            .trackActions(track: track, player: player)
-                    }
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .background(Theme.background)
+                trackList
             }
         }
+        .background(Theme.background)
+        .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find on this page")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task { await refresh() }
-                } label: {
-                    // The glyph always defines the item's bounds and the spinner is drawn
-                    // inside them, so the size is identical in both states. Swapping the
-                    // two outright resized the toolbar item — measured at 23.00×27.33 for
-                    // the glyph against 20.00×20.00 for the spinner — which shifted the
-                    // sort button beside it and changed the navigation bar's content
-                    // height mid-animation. `MiniPlayerBar` already guards the same defect.
-                    Image(systemName: "arrow.clockwise")
-                        .opacity(isRefreshing ? 0 : 1)
-                        .overlay { if isRefreshing { ProgressView() } }
-                }
-                .disabled(isRefreshing)
-                .accessibilityLabel(isRefreshing ? "Refreshing" : "Refresh")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    ForEach(MixSortOption.allCases, id: \.self) { option in
-                        Button(option.label(orderLabel: "Recommended order")) { sortOption = option }
+                    MixSortPicker(selection: $sortOption)
+                    Section {
+                        Button {
+                            Task { await refresh() }
+                        } label: {
+                            Label(isRefreshing ? "Refreshing…" : "Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(isRefreshing)
                     }
                 } label: {
-                    Label("Sort", systemImage: "arrow.up.arrow.down")
+                    Label("More", systemImage: "ellipsis.circle")
                 }
             }
         }
         .task { await load() }
+    }
+
+    private var trackList: some View {
+        List {
+            MixDetailHeader(
+                title: title,
+                subtitle: subtitle,
+                imageURL: seedTrack.thumbnailUrl,
+                trackCount: tracks.count,
+                totalDuration: totalDuration(of: tracks),
+                tracks: tracks,
+                onPlay: { playAll(shuffled: false) },
+                onShuffle: { playAll(shuffled: true) }
+            )
+            .mixHeaderRowMetrics()
+
+            if visibleTracks.isEmpty {
+                ContentUnavailableView.search(text: searchText)
+                    .listRowSeparator(.hidden)
+            } else {
+                ForEach(visibleTracks) { track in
+                    TrackRow(track: track, isActive: player.currentTrack?.id == track.id) {
+                        player.play(track: track, context: tracks, contextTitle: title, contextSeed: seedTrack)
+                    }
+                    .trackRowMetrics()
+                    .trackActions(track: track, player: player)
+                }
+            }
+        }
+        .listStyle(.plain)
+        .searchable(text: $searchText, prompt: "Find on this page")
     }
 
     private func playAll(shuffled: Bool) {

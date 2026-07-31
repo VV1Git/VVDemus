@@ -7,23 +7,26 @@ struct DaylistCard: View {
     let imageURL: String?
 
     var body: some View {
-        HStack(spacing: 14) {
-            RemoteImage(url: imageURL, size: 64, cornerRadius: 8)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("DAYLIST")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(Theme.accent)
-                Text(title)
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-            }
-            Spacer()
+        HStack(spacing: Theme.Space.md) {
+            // Inset inside the card's corner curve rather than bled into it. The card is
+            // taller than the artwork, so a flush image left the curve cutting across its
+            // top-left and bottom-left corners.
+            RemoteImage(url: imageURL, size: Theme.ArtSize.daylist, cornerRadius: Theme.Radius.artSmall)
+
+            Text(title)
+                .font(.cardTitle)
+                .foregroundStyle(.primary)
+                // Reserves the second line: the title arrives asynchronously, and a card
+                // that gains a line on load shoved the whole page down under the user.
+                .lineLimit(2, reservesSpace: true)
+
+            Spacer(minLength: Theme.Space.md)
+
             Image(systemName: "chevron.right")
-                .font(.footnote)
-                .foregroundStyle(Theme.textSecondary)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.tertiary)
         }
-        .padding(14)
-        .glassEffect(in: .rect(cornerRadius: 16))
+        .padding(Theme.Space.md)
+        .background(Theme.card, in: Theme.Radius.rect(Theme.Radius.card))
     }
 }

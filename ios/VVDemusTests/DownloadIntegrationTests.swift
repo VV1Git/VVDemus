@@ -70,6 +70,18 @@ final class DownloadIntegrationTests: XCTestCase {
         let size = try XCTUnwrap((attributes[.size] as? NSNumber)?.int64Value)
         XCTAssertGreaterThan(size, 16 * 1024, "Too small to be audio — an error document?")
 
+        // The aggregate byte readout has to keep counting a track once it lands. It summed only
+        // *live* transfers, so a completion subtracted its own several megabytes in the same
+        // publish that incremented "N of M", and the one absolute number under a collection's
+        // bar counted backwards once per finished track for the length of an album. Only
+        // reachable here: the success path needs a real response, so no in-process test can see
+        // it. Asserted through the public aggregate rather than the private tally behind it.
+        XCTAssertEqual(
+            manager.collectionProgress(for: [track]).bytesReceived,
+            size,
+            "A finished download must keep contributing its bytes to the collection total"
+        )
+
         // What a size check cannot tell you: that the bytes are decodable audio rather than a
         // few hundred kilobytes of XML or a half-written file. This is the assertion that
         // makes the test worth having, and the failure it guards against is the nasty one —

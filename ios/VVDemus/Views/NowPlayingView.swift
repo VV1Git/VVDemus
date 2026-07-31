@@ -37,15 +37,33 @@ struct NowPlayingView: View {
             }
     }
 
+    /// Swipe down anywhere to close. The artwork keeps its own gesture (it also changes
+    /// track, and a child gesture wins inside its own bounds), so this only adds the rest of
+    /// the screen — dismissing used to require finding the 300pt of artwork or the chevron.
+    private var dismissGesture: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onEnded { value in
+                guard value.translation.height > 80,
+                      value.translation.height > abs(value.translation.width) else { return }
+                Haptics.impact()
+                dismiss()
+            }
+    }
+
+    private var artworkColor: Color { colorLoader.color(for: player.currentTrack) }
+
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [colorLoader.color(for: player.currentTrack), Theme.background],
+                colors: [artworkColor, Theme.background],
                 startPoint: .top,
                 endPoint: .bottom
             )
             .ignoresSafeArea()
-            .animation(.easeInOut(duration: 0.4), value: player.currentTrack?.thumbnailUrl)
+            // Keyed on the resolved colour rather than on the track: the colour arrives one
+            // frame *after* the track does, so keying on the URL animated the gradient to
+            // the fallback and then hard-popped to the real colour.
+            .animation(.easeInOut(duration: 0.4), value: artworkColor)
             // Loading is driven from here rather than from inside the gradient's argument:
             // reading a colour is pure, fetching one is not, and this body re-evaluates
             // twice a second while playing.
@@ -53,45 +71,61 @@ struct NowPlayingView: View {
                 await colorLoader.prepare(for: player.currentTrack)
             }
 
-            VStack(spacing: 24) {
-                header
+            // One flexible gap, above the artwork. With the old pair of Spacers the artwork
+            // *and* the whole control panel shifted whenever the title wrapped to two lines
+            // or an error appeared; now the panel is pinned to the bottom and only the slack
+            // above the artwork changes.
+            GeometryReader { proxy in
+                VStack(spacing: 0) {
+                    header
 
-                Spacer()
+                    Spacer(minLength: Theme.Space.lg)
 
-                RemoteImage(url: player.currentTrack?.thumbnailUrl, size: 300, cornerRadius: 12)
-                    .shadow(color: .black.opacity(0.4), radius: 20, y: 10)
-                    .offset(x: artworkDrag)
-                    .rotationEffect(.degrees(artworkDrag / 40))
-                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: artworkDrag)
-                    .gesture(artworkGesture)
+                    artwork(fitting: proxy)
 
-                titleRow
+                    Spacer(minLength: Theme.Space.lg)
 
-                if let errorMessage = player.errorMessage {
-                    Text(errorMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                        // Dismissable. Only a track load cleared this, and the two
-                        // device-switch failures ("Couldn't hand off…", "Couldn't resume…")
-                        // don't load anything — so their message sat under the artwork
-                        // indefinitely with no way to get rid of it.
-                        .contentShape(Rectangle())
-                        .onTapGesture { player.errorMessage = nil }
-                        .accessibilityHint("Tap to dismiss")
+                    // The title block and the panel are two things, not one. At spacing 0 the
+                    // artist line sat directly on the glass edge and read as part of the
+                    // scrubber.
+                    VStack(alignment: .leading, spacing: Theme.Space.lg) {
+                        titleRow
+                        errorSlot
+                        controlPanel
+                    }
                 }
-
-                controlPanel
-
-                Spacer()
+                // The one gutter for the screen. Nothing inside may add its own horizontal
+                // inset — the control panel's is inside its glass, not against the edge.
+                .padding(.horizontal, Theme.Metrics.gutter)
+                .padding(.vertical, Theme.Space.sm)
+                .frame(width: proxy.size.width, height: proxy.size.height)
             }
-            .padding(.top, 8)
         }
         .foregroundStyle(.white)
+        .gesture(dismissGesture)
         .sheet(isPresented: $showQueue) {
             QueueView(player: player)
         }
+    }
+
+    /// Square, and sized to whichever of width or height runs out first — a hardcoded 300pt
+    /// nearly touched the edges on an SE and left the controls hanging off the bottom.
+    private func artwork(fitting proxy: GeometryProxy) -> some View {
+        let side = min(
+            proxy.size.width - 2 * Theme.Metrics.gutter,
+            proxy.size.height * 0.42,
+            Theme.ArtSize.heroMax
+        )
+        return RemoteImage(
+            url: player.currentTrack?.thumbnailUrl,
+            size: max(side, 0),
+            cornerRadius: Theme.Radius.artHero
+        )
+        .shadow(color: .black.opacity(0.4), radius: 20, y: 10)
+        .offset(x: artworkDrag)
+        .rotationEffect(.degrees(artworkDrag / 40))
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: artworkDrag)
+        .gesture(artworkGesture)
     }
 
     /// Scrubber and transport on one slab of glass, tinted by the artwork behind it.
@@ -100,16 +134,19 @@ struct NowPlayingView: View {
     /// one region of the screen and the glass is what says so, and a tinted pane over the
     /// artwork gradient is where the material actually has something to refract.
     private var controlPanel: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: Theme.Space.lg) {
             progressSection
             transportControls
         }
-        .padding(.vertical, 18)
-        .glassEffect(
-            .regular.tint(colorLoader.color(for: player.currentTrack)),
-            in: .rect(cornerRadius: 28)
-        )
-        .padding(.horizontal, 12)
+        // The panel supplies its own inner inset. The screen gutter is applied once, on the
+        // outer stack, and stops at the glass edge.
+        .padding(Theme.Space.lg)
+        // Untinted. Glass already lightens whatever it sits on, and tinting it with the
+        // artwork's average colour on top of that made the panel the brightest thing on the
+        // screen — a muddy slab in whatever colour the album happened to average to. The
+        // gradient behind it is where the artwork's colour belongs; the controls just need
+        // to read as a group.
+        .glassEffect(.regular, in: .rect(cornerRadius: Theme.Radius.panel))
     }
 
     private var header: some View {
@@ -117,54 +154,88 @@ struct NowPlayingView: View {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
+                    .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
             .accessibilityLabel("Close")
+
             Spacer()
-            VStack(spacing: 2) {
+
+            VStack(spacing: Theme.Metrics.labelSpacing) {
                 Text("NOW PLAYING")
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(Theme.textSecondary)
+                    .foregroundStyle(.secondary)
                 if let contextTitle = player.queueContextTitle {
                     Text(contextTitle.uppercased())
                         .font(.caption2)
-                        .foregroundStyle(Theme.textSecondary)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
+
             Spacer()
-            // Balances the leading chevron so the title stack stays centered — the queue
-            // button now lives on the transport row, mirroring shuffle. Sized to the glass
-            // circle rather than to a bare glyph, which no longer matches its width.
-            Color.clear
-                .frame(width: 40, height: 40)
+
+            // Balances the leading chevron so the title stack stays centered, and carries the
+            // actions every list row offers — Now Playing used to offer none of them. The
+            // empty slot is only for the moment before a track exists.
+            if let track = player.currentTrack {
+                NowPlayingActionsMenu(track: track, player: player)
+            } else {
+                Color.clear
+                    .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
+            }
         }
-        .padding(.horizontal)
     }
 
     private var titleRow: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .top, spacing: Theme.Space.md) {
+            VStack(alignment: .leading, spacing: Theme.Metrics.labelSpacing) {
                 Text(player.currentTrack?.title ?? "")
-                    .font(.title2.bold())
+                    .font(.nowPlayingTitle)
                     .lineLimit(2)
                 Text(player.currentTrack?.artist ?? "")
-                    .foregroundStyle(Theme.textSecondary)
+                    .font(.rowSubtitle)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: Theme.Space.md)
             if let track = player.currentTrack {
                 Button { liked.toggle(track) } label: {
                     Image(systemName: liked.isLiked(track) ? "heart.fill" : "heart")
                         .font(.title3)
-                        .foregroundStyle(liked.isLiked(track) ? Theme.accent : .white)
+                        .foregroundStyle(liked.isLiked(track) ? Theme.accent : .primary)
+                        .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.pressable)
-                .padding(.top, 4)
+                .accessibilityLabel(liked.isLiked(track) ? "Unlike" : "Like")
             }
         }
-        .padding(.horizontal)
+    }
+
+    /// A fixed slot whether or not there is a message, so one appearing can't shove the
+    /// artwork and the controls around mid-playback.
+    private var errorSlot: some View {
+        Group {
+            if let errorMessage = player.errorMessage {
+                // Warning, not red: none of these are destructive, they're "this needs you".
+                Text(errorMessage)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.warning)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    // Dismissable. Only a track load cleared this, and the two
+                    // device-switch failures ("Couldn't hand off…", "Couldn't resume…")
+                    // don't load anything — so their message sat under the artwork
+                    // indefinitely with no way to get rid of it.
+                    .contentShape(Rectangle())
+                    .onTapGesture { player.errorMessage = nil }
+                    .accessibilityHint("Tap to dismiss")
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: Theme.Space.xxl)
     }
 
     /// Scrubbing is held locally until the drag ends.
@@ -173,7 +244,7 @@ struct NowPlayingView: View {
     /// a second — while the player's own periodic observer wrote `progress` back from the
     /// pre-seek position in between, so the thumb fought the finger and jumped around.
     private var progressSection: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: Theme.Space.xs) {
             Slider(
                 value: Binding(
                     get: { scrubPosition ?? player.progress },
@@ -186,7 +257,7 @@ struct NowPlayingView: View {
                     scrubPosition = nil
                 }
             )
-            .tint(.white)
+            .tint(Theme.accent)
             .accessibilityLabel("Playback position")
             .accessibilityValue(format(scrubPosition ?? player.progress))
 
@@ -195,72 +266,130 @@ struct NowPlayingView: View {
                 Spacer()
                 Text(format(player.duration))
             }
-            .font(.caption2)
-            .foregroundStyle(Theme.textSecondary)
+            // Monospaced digits, or the elapsed time jitters sideways every second.
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
         }
-        .padding(.horizontal)
     }
 
     private var transportControls: some View {
-        HStack {
+        HStack(spacing: 0) {
             Button { player.toggleShuffle() } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "shuffle")
-                        .font(.title3)
-                    Circle()
-                        .fill(player.isShuffling ? Theme.accent : .clear)
-                        .frame(width: 4, height: 4)
-                }
-                .foregroundStyle(player.isShuffling ? Theme.accent : .white)
+                Image(systemName: "shuffle")
+                    .font(.title3)
+                    // The tint alone says "on". The old 4pt dot underneath lifted the glyph
+                    // off the optical line of the queue glyph opposite it.
+                    .foregroundStyle(player.isShuffling ? Theme.accent : .primary)
+                    .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
+                    .contentShape(Rectangle())
             }
-            .frame(width: 44)
+            .buttonStyle(.pressable)
             .accessibilityLabel(player.isShuffling ? "Shuffle on" : "Shuffle off")
 
-            Spacer()
+            Spacer(minLength: Theme.Space.sm)
 
-            HStack(spacing: 44) {
-                Button { player.previous() } label: {
-                    Image(systemName: "backward.fill").font(.title2)
-                }
-                .accessibilityLabel("Previous track")
+            Button { player.previous() } label: {
+                Image(systemName: "backward.fill")
+                    .font(.title2)
+                    .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.pressable)
+            .accessibilityLabel("Previous track")
 
-                Button { player.togglePlayPause() } label: {
-                    ZStack {
-                        Circle().fill(Color.white).frame(width: 64, height: 64)
-                        if player.isLoading {
-                            ProgressView().tint(.black)
-                        } else {
-                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 26))
-                                .foregroundStyle(.black)
-                        }
+            Spacer(minLength: Theme.Space.sm)
+
+            Button { player.togglePlayPause() } label: {
+                ZStack {
+                    Circle().fill(Color.white).frame(width: 64, height: 64)
+                    if player.isLoading {
+                        ProgressView().tint(.black)
+                    } else {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 26))
+                            .foregroundStyle(.black)
                     }
                 }
-                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
-
-                Button { player.advance() } label: {
-                    Image(systemName: "forward.fill").font(.title2)
-                }
-                .accessibilityLabel("Next track")
             }
+            // The default 0.92 shrink is too much movement on a target this size.
+            .buttonStyle(.pressableCard)
+            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 
-            Spacer()
+            Spacer(minLength: Theme.Space.sm)
+
+            Button { player.advance() } label: {
+                Image(systemName: "forward.fill")
+                    .font(.title2)
+                    .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.pressable)
+            .accessibilityLabel("Next track")
+
+            Spacer(minLength: Theme.Space.sm)
 
             Button { showQueue = true } label: {
                 Image(systemName: "list.bullet")
                     .font(.title3)
+                    .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
+                    .contentShape(Rectangle())
             }
-            .frame(width: 44)
+            .buttonStyle(.pressable)
             .accessibilityLabel("Queue")
         }
-        .foregroundStyle(.white)
-        .buttonStyle(.pressable)
-        .padding(.horizontal, 24)
     }
 
     private func format(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let total = Int(seconds)
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// The long-press menu every track row offers, reachable from the screen where you are
+/// most likely to want it.
+///
+/// Its own view rather than inline: it observes three stores, and NowPlayingView's body
+/// re-evaluates twice a second while playing.
+private struct NowPlayingActionsMenu: View {
+    let track: Track
+    @ObservedObject var player: PlayerService
+    @ObservedObject private var playlists = PlaylistStore.shared
+    @State private var showNewPlaylistAlert = false
+    @State private var newPlaylistName = ""
+
+    var body: some View {
+        Menu {
+            // `onRadio: nil` — this screen is a full-screen cover presented above every
+            // NavigationStack, so there is nowhere to push a radio to.
+            TrackMenuItems(
+                track: track,
+                player: player,
+                onRadio: nil,
+                showNewPlaylistAlert: $showNewPlaylistAlert
+            )
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
+        }
+        // `.buttonStyle` is only forwarded to a Menu's label once the menu itself is a
+        // button, so both are needed to match the close chevron opposite.
+        .menuStyle(.button)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel("More")
+        .alert("New Playlist", isPresented: $showNewPlaylistAlert) {
+            TextField("Playlist name", text: $newPlaylistName)
+            Button("Cancel", role: .cancel) { newPlaylistName = "" }
+            Button("Create") {
+                let name = newPlaylistName.trimmingCharacters(in: .whitespaces)
+                if !name.isEmpty {
+                    let playlist = playlists.create(name: name)
+                    playlists.addTrack(track, to: playlist)
+                }
+                newPlaylistName = ""
+            }
+        }
     }
 }
