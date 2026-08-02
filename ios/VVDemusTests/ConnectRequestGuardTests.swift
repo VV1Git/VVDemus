@@ -75,6 +75,47 @@ final class ConnectRequestGuardTests: XCTestCase {
         }
     }
 
+    // MARK: - Identifying the tab that sent a request
+
+    /// app.js sends its tab id both ways so the server can read whichever it prefers. It
+    /// used to read neither, which cost a paused cast its only HTTP liveness signal.
+    func testTheTabIdIsReadFromEitherTheQueryOrTheHeader() {
+        XCTAssertEqual(LocalControlServer.clientId(queryValue: "tab-a", header: nil), "tab-a")
+        XCTAssertEqual(LocalControlServer.clientId(queryValue: nil, header: "tab-b"), "tab-b")
+        XCTAssertEqual(LocalControlServer.clientId(queryValue: "", header: "tab-b"), "tab-b")
+    }
+
+    /// Swifter hands back an empty string for a parameter that isn't there, and an empty id
+    /// must never match `castClientId` — which is itself nil when nothing is casting.
+    func testAnAbsentOrBlankTabIdIsNil() {
+        XCTAssertNil(LocalControlServer.clientId(queryValue: nil, header: nil))
+        XCTAssertNil(LocalControlServer.clientId(queryValue: "", header: ""))
+        XCTAssertNil(LocalControlServer.clientId(queryValue: "   ", header: nil))
+    }
+
+    // MARK: - Pre-resolving upcoming streams
+
+    /// Each one is a YouTube round trip, so `/api/stream` serves a window at the front of
+    /// the queue rather than anything the caller names.
+    func testOnlyTracksNearTheFrontOfTheQueueMayBePreResolved() {
+        let upcoming = ["b", "c", "d", "e", "f", "g"]
+        let depth = LocalControlServer.maximumPrefetchDepth
+
+        XCTAssertTrue(LocalControlServer.isPrefetchable("b", upcoming: upcoming, depth: depth))
+        XCTAssertTrue(LocalControlServer.isPrefetchable("e", upcoming: upcoming, depth: depth))
+        XCTAssertFalse(LocalControlServer.isPrefetchable("f", upcoming: upcoming, depth: depth))
+        XCTAssertFalse(LocalControlServer.isPrefetchable("nowhere", upcoming: upcoming, depth: depth))
+        XCTAssertFalse(LocalControlServer.isPrefetchable("b", upcoming: [], depth: depth))
+    }
+
+    /// Deep enough to be worth having — a phone that sleeps is away for minutes, and one
+    /// track of cover was the problem — and shallow enough that skipping past the window
+    /// wastes only a handful of calls.
+    func testThePrefetchWindowIsAFewTracksNotTheWholeQueue() {
+        XCTAssertGreaterThanOrEqual(LocalControlServer.maximumPrefetchDepth, 2)
+        XCTAssertLessThanOrEqual(LocalControlServer.maximumPrefetchDepth, 8)
+    }
+
     // MARK: - Body size
 
     /// Swifter allocates `Content-Length` bytes up front, before reading any of the body, so

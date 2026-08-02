@@ -134,6 +134,28 @@ final class LocalControlServer: ObservableObject {
         APIClient.shared.invalidateStream(videoId: videoId)
         return try await APIClient.shared.stream(videoId: videoId).url
     }
+    /// Resolves a URL for a track the casting browser is banking ahead of time.
+    ///
+    /// Deliberately not `freshStreamUrl`: that one drops the cached URL first, which is
+    /// right when the browser has just told us the URL is dead and wrong here, where the
+    /// whole point is to hand back whatever the phone has already resolved.
+    nonisolated let upcomingStreamUrl = UpstreamCall<String, String> { videoId in
+        try await APIClient.shared.stream(videoId: videoId).url
+    }
+    /// How far down the queue `/api/stream` will pre-resolve.
+    ///
+    /// Each one is an InnerTube `player` round trip the phone would otherwise make later,
+    /// so this is bounded rather than "the whole queue": four tracks is roughly a quarter of
+    /// an hour of playback to coast on, and skipping past a pre-resolved track wastes at
+    /// most four calls. `APIClient` caches by video id, so the phone reaching one of these
+    /// tracks later costs nothing.
+    static let maximumPrefetchDepth = 4
+
+    /// Whether a track is close enough to the front of the queue to be worth pre-resolving.
+    /// Pure, so the bound can be tested without a player or a network.
+    nonisolated static func isPrefetchable(_ videoId: String, upcoming: [String], depth: Int) -> Bool {
+        upcoming.prefix(depth).contains(videoId)
+    }
     /// A radio's mix, for the two routes that serve one.
     nonisolated let radioMix = UpstreamCall<String, [Track]> { videoId in
         try await APIClient.shared.radio(videoId: videoId, limit: 50)
@@ -416,6 +438,22 @@ final class LocalControlServer: ObservableObject {
                     }
                 }
             },
+            pong: { [weak self] session, _ in
+                // The reply to `pingIdleSockets`, and the only liveness signal that does not
+                // depend on the browser running any JavaScript.
+                //
+                // The client's own `hello:` heartbeat is a `setInterval`, and browsers
+                // throttle timers in a hidden tab to roughly once a minute — well past both
+                // `socketStaleTimeout` and the accepted socket's 60s read deadline. So a
+                // remote left in a background tab had its connection torn down for no reason
+                // but being in the background, and reconnected on a backoff running on those
+                // same throttled timers. A pong is answered by the browser's networking
+                // stack, so it arrives on time whatever the tab is doing.
+                Task { @MainActor in
+                    guard let self, self.sockets.contains(session) else { return }
+                    self.sockets.touch(session, at: Date())
+                }
+            },
             connected: { [weak self] session in
                 Task { @MainActor in
                     self?.sockets.insert(session, at: Date())
@@ -429,9 +467,17 @@ final class LocalControlServer: ObservableObject {
             }
         )
 
-        server.GET["/api/state"] = { [weak self] _ in
+        server.GET["/api/state"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            return self.jsonResponse(self.onMain { self.stateSnapshot() })
+            // Swifter lowercases header names as it parses them.
+            let clientId = Self.clientId(
+                queryValue: Self.queryValue(request, "clientId"),
+                header: request.headers["x-vvdemus-client-id"]
+            )
+            return self.jsonResponse(self.onMain {
+                self.noteClientPolled(clientId)
+                return self.stateSnapshot()
+            })
         }
 
         server.POST["/api/play"] = { [weak self] request in
@@ -607,6 +653,74 @@ final class LocalControlServer: ObservableObject {
                 return self.jsonResponse(StreamFailedResponse(videoId: body.videoId, streamUrl: url))
             case .failure:
                 return .internalServerError
+            }
+        }
+        // Lets the casting browser bank stream URLs for tracks that are coming up, so it can
+        // keep playing through an outage rather than for exactly one more track.
+        //
+        // The snapshot's `nextStreamUrl` covers a single transition. That is the right
+        // design for a blip, but a phone that sleeps, loses Wi-Fi or gets suspended by iOS
+        // is away for minutes, and the browser would go quiet at the end of the following
+        // track with a full queue on screen and no way to reach any of it. Everything it
+        // needs is a URL it could have been given while the phone was still there.
+        server.GET["/api/stream"] = { [weak self] request in
+            guard let self else { return .internalServerError }
+            let videoId = Self.queryValue(request, "videoId")
+            guard !videoId.isEmpty else { return .badRequest(.text("missing videoId")) }
+            let clientId = Self.clientId(
+                queryValue: Self.queryValue(request, "clientId"),
+                header: request.headers["x-vvdemus-client-id"]
+            )
+
+            // Decided in one main-actor hop so the queue can't move underneath the check.
+            enum Resolution {
+                case refused
+                /// Already on the phone's disk; no round trip needed, and the browser can't
+                /// reach a file:// URL anyway.
+                case local(String)
+                case upstream
+            }
+            let resolution = self.onMain { () -> Resolution in
+                // Gated exactly like `/api/playback/stream-failed`: this costs a YouTube
+                // round trip, so it is for the tab that owns casting and for tracks that are
+                // actually about to play — not a general-purpose resolver for anything on
+                // the network to point at any video id.
+                guard PlayerService.shared.activeDevice == .computer,
+                      clientId == nil || clientId == self.castClientId else { return .refused }
+                let upcoming = (PlayerService.shared.manualQueue + PlayerService.shared.contextQueue)
+                    .map(\.videoId)
+                guard Self.isPrefetchable(videoId, upcoming: upcoming, depth: Self.maximumPrefetchDepth) else {
+                    return .refused
+                }
+                self.noteClientPolled(clientId)
+                if DownloadManager.shared.localFileURL(forVideoId: videoId) != nil {
+                    return .local("/api/audio/local/\(videoId)")
+                }
+                return .upstream
+            }
+
+            switch resolution {
+            case .refused:
+                // 409 rather than 404 for the same reason `/api/playback/stream-failed` uses
+                // it: the route is fine, this just isn't a track the browser has any
+                // business pre-resolving right now. It should re-read the snapshot.
+                return .raw(409, "Conflict", ["Content-Type": "text/plain"],
+                            { try $0.write(Data("not an upcoming cast track".utf8)) })
+            case .local(let url):
+                return self.jsonResponse(ResolvedStreamResponse(videoId: videoId, streamUrl: url))
+            case .upstream:
+                // Through the same seam `freshStreamUrl` uses, and deliberately *without*
+                // invalidating the cache first: the point is to reuse a URL the phone has
+                // already resolved, and the phone will want the same one when the track
+                // reaches the front of the queue.
+                switch self.awaitAsync({ [upcomingStreamUrl = self.upcomingStreamUrl] in
+                    try await upcomingStreamUrl(videoId)
+                }) {
+                case .success(let url):
+                    return self.jsonResponse(ResolvedStreamResponse(videoId: videoId, streamUrl: url))
+                case .failure:
+                    return .internalServerError
+                }
             }
         }
         // Serves a downloaded track's audio to the browser when it's the active playback
@@ -939,8 +1053,28 @@ final class LocalControlServer: ObservableObject {
         broadcast(message)
     }
 
+    /// How long a socket may be silent before it is probed with a ping.
+    ///
+    /// Comfortably inside `socketStaleTimeout` so a live-but-quiet tab is always asked
+    /// before it is judged, and inside the accepted socket's own read deadline
+    /// (`Socket.receiveTimeout`) so the connection thread never times out on a peer that is
+    /// perfectly well.
+    static let socketPingIdleInterval: TimeInterval = 10
+
+    /// Probes sockets we haven't heard from lately. See the `pong` handler for why this
+    /// exists rather than relying on the client's heartbeat.
+    private func pingIdleSockets() {
+        for (session, queue) in sockets.sessionsNeedingPing(now: Date(), idle: Self.socketPingIdleInterval) {
+            // On the socket's own queue, like every other write: `writeFrame` ends in a
+            // blocking `write(2)`, and a peer that has stopped reading would otherwise
+            // block the main thread here.
+            queue.async { session.writeFrame(ArraySlice<UInt8>(), .ping) }
+        }
+    }
+
     private func broadcastState() {
         forgiveSuspensionGap()
+        pingIdleSockets()
         pruneStaleSockets()
         guard !sockets.isEmpty else { return }
         let snapshot = stateSnapshot()
@@ -1115,6 +1249,51 @@ final class LocalControlServer: ObservableObject {
         return Date().timeIntervalSince(autoFallbackAt) < reclaimWindow
     }
 
+    /// The tab id carried by an ordinary HTTP request, from either place app.js puts it.
+    ///
+    /// It sends both — a query parameter and a header — so the server can read whichever it
+    /// prefers. It used to read neither, which quietly cost the paused cast its only HTTP
+    /// liveness signal: see `noteClientPolled`.
+    ///
+    /// Takes the two strings rather than the request so it stays a pure function of them,
+    /// testable without standing a server up — the same reason `isAllowedOrigin` does.
+    nonisolated static func clientId(queryValue: String?, header: String?) -> String? {
+        for candidate in [queryValue, header] {
+            guard let candidate else { continue }
+            let trimmed = candidate.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
+    /// Records that the casting tab asked for state, which is proof it is still there.
+    ///
+    /// The browser only POSTs `/api/playback/report` from the audio element's `timeupdate`,
+    /// which does not fire while paused — so a paused cast's HTTP signal went dead a few
+    /// seconds after the pause and stayed dead, leaving `castLiveness` to decide on the
+    /// socket alone. app.js has always tagged its 5s poll with the tab id precisely so this
+    /// could not happen; nothing here read the tag.
+    ///
+    /// Only the tab that owns casting counts. Refreshing the clock for any caller is how a
+    /// stale tab (or anything else on the network) could pin playback on a computer that
+    /// wasn't producing sound — the same reason `/api/playback/report` checks the id.
+    private func noteClientPolled(_ clientId: String?) {
+        guard let clientId, clientId == castClientId else { return }
+        lastComputerReportAt = Date()
+    }
+
+    /// When the casting tab was last heard from over HTTP. Exposed so a test can assert
+    /// that a poll carrying the tab id counts as evidence — the whole point of
+    /// `noteClientPolled`, and unobservable otherwise without sleeping through the
+    /// ninety-second paused window.
+    var lastComputerReportAtForTesting: Date? { lastComputerReportAt }
+
+    /// Puts the server back to "nothing has been heard from the browser", which is what a
+    /// paused cast looks like a few seconds after the pause.
+    func forgetComputerReportsForTesting() {
+        lastComputerReportAt = nil
+    }
+
     /// Frames are `hello:<clientId>` (sent on connect and with every heartbeat).
     private static func clientId(fromFrame text: String) -> String? {
         let prefix = "hello:"
@@ -1275,6 +1454,9 @@ final class WebSocketRegistry {
         var lastSeen: Date
         var clientId: String?
         let writeQueue: DispatchQueue
+        /// When this socket was last sent a ping, so an idle one is probed at a steady
+        /// interval rather than once per broadcast tick.
+        var lastPingAt: Date?
     }
 
     private var entries: [ObjectIdentifier: Entry] = [:]
@@ -1293,7 +1475,8 @@ final class WebSocketRegistry {
             session: session,
             lastSeen: now,
             clientId: nil,
-            writeQueue: DispatchQueue(label: "com.vvdemus.control.write.\(key.hashValue)")
+            writeQueue: DispatchQueue(label: "com.vvdemus.control.write.\(key.hashValue)"),
+            lastPingAt: nil
         )
     }
 
@@ -1357,6 +1540,27 @@ final class WebSocketRegistry {
 
     func broadcastTargets() -> [(session: WebSocketSession, queue: DispatchQueue)] {
         entries.values.map { ($0.session, $0.writeQueue) }
+    }
+
+    /// Sockets that have said nothing for `idle` seconds and haven't been probed in that
+    /// long either, stamping each as pinged so the caller doesn't have to.
+    ///
+    /// The stamp is separate from `lastSeen` on purpose: pinging a socket is not evidence
+    /// that anything is on the other end of it, so a peer that has gone away must keep
+    /// ageing towards the pruner rather than being kept alive by our own probes.
+    func sessionsNeedingPing(now: Date, idle: TimeInterval) -> [(session: WebSocketSession, queue: DispatchQueue)] {
+        // Chosen first, stamped second. Mutating `entries` inside a `for … in entries` loop
+        // is safe but leaves the dictionary non-uniquely referenced for the whole loop, so
+        // every write copies the whole storage.
+        let due = entries.filter { _, entry in
+            guard now.timeIntervalSince(entry.lastSeen) >= idle else { return false }
+            guard let lastPingAt = entry.lastPingAt else { return true }
+            return now.timeIntervalSince(lastPingAt) >= idle
+        }
+        for key in due.keys {
+            entries[key]?.lastPingAt = now
+        }
+        return due.values.map { ($0.session, $0.writeQueue) }
     }
 }
 

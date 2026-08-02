@@ -343,6 +343,132 @@ final class ConnectServerRoutesTests: XCTestCase {
         let streamUrl: String
     }
 
+    // MARK: - Banking stream URLs for an outage
+
+    /// The whole point of `/api/stream`: a casting browser can hold a usable URL for a track
+    /// that hasn't started, so the phone going away mid-song doesn't end the music at the
+    /// end of that song.
+    ///
+    /// The snapshot's `nextStreamUrl` covers exactly one transition, which survives a blip
+    /// and not a phone that sleeps, drops off Wi-Fi, or gets suspended by iOS.
+    func testTheCastingTabCanPreResolveAnUpcomingTrack() async throws {
+        let current = uniqueId("current")
+        let upcoming = uniqueId("upcoming")
+        let banked = "https://banked.test/\(upcoming).m4a"
+        var asked: [String] = []
+        server.upcomingStreamUrl.replace { id in asked.append(id); return banked }
+        try await beginCasting(clientId: "tab-cast", videoId: current)
+        _ = try await post("/api/queue/add", ["track": trackJSON(upcoming)])
+
+        let response = try await request("GET", "/api/stream?videoId=\(upcoming)&clientId=tab-cast")
+
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(try response.json(StreamFailedReply.self).streamUrl, banked)
+        XCTAssertEqual(asked, [upcoming])
+    }
+
+    /// Resolving costs an InnerTube round trip, so this is not a resolver anything on the
+    /// network can point at any video id — the same reasoning that gates
+    /// `/api/playback/stream-failed`.
+    func testPreResolvingIsRefusedForATrackThatIsNotComingUp() async throws {
+        var resolves = 0
+        server.upcomingStreamUrl.replace { _ in resolves += 1; return "https://banked.test/x.m4a" }
+        try await beginCasting(clientId: "tab-cast", videoId: uniqueId("current"))
+
+        let response = try await request("GET", "/api/stream?videoId=not-in-the-queue&clientId=tab-cast")
+
+        XCTAssertEqual(response.status, 409)
+        XCTAssertEqual(resolves, 0)
+    }
+
+    func testPreResolvingIsRefusedForATabThatIsNotCasting() async throws {
+        var resolves = 0
+        server.upcomingStreamUrl.replace { _ in resolves += 1; return "https://banked.test/x.m4a" }
+        let upcoming = uniqueId("upcoming")
+        try await beginCasting(clientId: "tab-cast", videoId: uniqueId("current"))
+        _ = try await post("/api/queue/add", ["track": trackJSON(upcoming)])
+
+        let response = try await request("GET", "/api/stream?videoId=\(upcoming)&clientId=some-other-tab")
+
+        XCTAssertEqual(response.status, 409)
+        XCTAssertEqual(resolves, 0)
+    }
+
+    /// Nothing is casting, so there is no browser with any use for a banked URL.
+    func testPreResolvingIsRefusedWhileThePhoneIsTheActiveDevice() async throws {
+        var resolves = 0
+        server.upcomingStreamUrl.replace { _ in resolves += 1; return "https://banked.test/x.m4a" }
+        let upcoming = uniqueId("upcoming")
+        _ = try await post("/api/queue/add", ["track": trackJSON(upcoming)])
+        _ = try await post("/api/device", ["device": "iphone"])
+
+        let response = try await request("GET", "/api/stream?videoId=\(upcoming)")
+
+        XCTAssertEqual(response.status, 409)
+        XCTAssertEqual(resolves, 0)
+    }
+
+    func testPreResolvingWithoutAVideoIdIsRejected() async throws {
+        let response = try await request("GET", "/api/stream")
+        XCTAssertEqual(response.status, 400)
+    }
+
+    // MARK: - Liveness of a paused cast
+
+    /// app.js tags its 5s poll with the tab id — as a query parameter *and* a header —
+    /// precisely so a paused cast can prove it is still there. The route read neither.
+    ///
+    /// It matters because the browser only reports progress from the audio element's
+    /// `timeupdate`, which does not fire while paused: within seconds of a pause the HTTP
+    /// signal was dead and stayed dead, leaving `castLiveness` to decide on the socket
+    /// alone. A background tab whose heartbeat timer the browser had throttled then lost the
+    /// cast, and the next play came out of the phone.
+    func testAPollFromTheCastingTabCountsAsProofItIsStillThere() async throws {
+        let videoId = uniqueId("current")
+        try await beginCasting(clientId: "tab-cast", videoId: videoId)
+        // Pretend the tab has been quiet for longer than a playing cast is given.
+        server.forgetComputerReportsForTesting()
+        XCTAssertNil(server.lastComputerReportAtForTesting, "Precondition: nothing has been heard")
+
+        _ = try await request("GET", "/api/state?clientId=tab-cast")
+
+        XCTAssertNotNil(
+            server.lastComputerReportAtForTesting,
+            "A poll from the casting tab is the only liveness signal a paused cast produces"
+        )
+    }
+
+    /// Sent as a header instead, which app.js also does. Reading only one of the two would
+    /// have been a silent half-fix.
+    func testTheTabIdIsAlsoAcceptedAsAHeader() async throws {
+        let videoId = uniqueId("current")
+        try await beginCasting(clientId: "tab-cast", videoId: videoId)
+        server.forgetComputerReportsForTesting()
+
+        guard let url = URL(string: baseURL.absoluteString + "/api/state") else {
+            throw XCTSkip("could not build URL")
+        }
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.setValue("tab-cast", forHTTPHeaderField: "X-VVDemus-Client-Id")
+        _ = try await URLSession.shared.data(for: request)
+
+        XCTAssertNotNil(server.lastComputerReportAtForTesting)
+    }
+
+    /// The same reason `/api/playback/report` checks the id: otherwise a stale tab, or
+    /// anything else on the network, could pin playback on a computer producing no sound and
+    /// the fallback to the phone could never fire.
+    func testAPollFromSomeOtherTabIsNotProofTheCastingTabIsThere() async throws {
+        let videoId = uniqueId("current")
+        try await beginCasting(clientId: "tab-cast", videoId: videoId)
+        server.forgetComputerReportsForTesting()
+
+        _ = try await request("GET", "/api/state?clientId=a-different-tab")
+        _ = try await request("GET", "/api/state")
+
+        XCTAssertNil(server.lastComputerReportAtForTesting)
+    }
+
     /// Hands the named track to the phone as "the browser is playing this", which is the
     /// only route to a non-nil `currentTrack` that doesn't restart playback.
     ///

@@ -134,6 +134,20 @@ const state = {
   // Whether the phone is currently answering at all, so the page can say so instead of
   // freezing on a stale snapshot while every click quietly fails.
   phoneUnreachable: false,
+  // When the phone last answered anything — a socket frame, a poll, a command. See
+  // refreshReachability: the banner is a question about elapsed silence, not about any one
+  // request having failed.
+  lastContactAt: Date.now(),
+  // Stream URLs banked for tracks that haven't started yet, keyed by videoId, so this tab
+  // can keep playing when the phone isn't there to hand it the next one. See
+  // prefetchUpcomingStreams.
+  streamBank: new Map(),
+  // videoIds currently being resolved, so a request isn't made twice.
+  streamBankInFlight: new Set(),
+  // Tracks this tab played on its own while the phone was away. The phone still has them
+  // at the front of its queue, so without this a second local advance would pick the same
+  // track again. Cleared once the phone has caught up with where we got to.
+  playedLocally: new Set(),
 };
 
 const audioEl = document.getElementById("np-audio");
@@ -181,6 +195,11 @@ async function api(path, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(path, { ...options, signal: controller.signal });
+    // Before the status check, deliberately: a 409 or a 400 is the phone disagreeing with
+    // the request, which is just as much proof that it is awake and answering as a 200.
+    // Every request funnels through here, so this is the one place reachability has to be
+    // recorded — the poll is no longer the only thing that can clear the banner.
+    noteContactWithPhone();
     if (!res.ok) throw new Error(`${path} -> ${res.status}`);
     const contentType = res.headers.get("content-type") || "";
     // `await`, not a bare `return` of the promise. Returning it from inside `try/finally`
@@ -523,11 +542,15 @@ function menuButton(label, icon, onClick, { liked } = {}) {
   button.innerHTML = `${icon}<span></span>`;
   button.querySelector("span").textContent = label;
   if (liked) button.classList.add("liked");
-  button.onclick = async (e) => {
+  // Wrapped here rather than at each of the dozen call sites. The menu is already closed by
+  // the time the request is made, so a rejection had nowhere at all to show itself: "Play
+  // Next", "Add to Queue", "Download" and the rest simply did nothing against a phone that
+  // was a moment too slow.
+  button.onclick = reporting(label, async (e) => {
     e.stopPropagation();
     closeContextMenu();
     await onClick();
-  };
+  });
   return button;
 }
 
@@ -585,10 +608,10 @@ async function openTrackMenu(event, track, { onRemove, removeLabel } = {}) {
   // Rendered immediately with a placeholder rather than awaited, so the menu appears
   // under the cursor at once instead of after a round trip.
   const playlistButton = menuButton("Add to Playlist", MENU_ICONS.playlist, () => {});
-  playlistButton.onclick = (e) => {
+  playlistButton.onclick = reporting("Add to Playlist", async (e) => {
     e.stopPropagation();
-    showPlaylistPicker(track);
-  };
+    await showPlaylistPicker(track);
+  });
   contextMenuEl.appendChild(playlistButton);
 
   const downloadSlot = document.createElement("div");
@@ -635,13 +658,13 @@ async function showPlaylistPicker(track) {
   contextMenuEl.appendChild(header);
 
   const back = menuButton("Back", MENU_ICONS.back, () => {});
-  back.onclick = (e) => {
+  back.onclick = reporting("Back", async (e) => {
     e.stopPropagation();
-    openTrackMenu(
+    await openTrackMenu(
       { preventDefault() {}, stopPropagation() {}, clientX: lastMenuPosition.x, clientY: lastMenuPosition.y },
       track
     );
-  };
+  });
   contextMenuEl.appendChild(back);
   contextMenuEl.appendChild(menuSeparator());
 
@@ -814,30 +837,35 @@ function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
   likeBtn.innerHTML = state.likedIds.has(track.videoId) ? ICONS.heartFilled : ICONS.heartOutline;
   likeBtn.title = "Like";
   if (state.likedIds.has(track.videoId)) likeBtn.classList.add("liked");
-  likeBtn.onclick = async (e) => {
+  // Reported rather than swallowed, like every other action. These were bare `await post`
+  // calls in an async handler: a rejection went nowhere, so a like or a queue-add against a
+  // briefly busy phone was indistinguishable from a click that never registered — and the
+  // heart didn't move either, since the re-render waits on a state refresh that never came.
+  likeBtn.onclick = reporting("Like", async (e) => {
     e.stopPropagation();
     await post("/api/library/liked/toggle", { track });
-    refreshState();
-  };
+    await refreshState();
+  });
   actions.appendChild(likeBtn);
 
   const queueBtn = document.createElement("button");
   queueBtn.innerHTML = ICONS.add;
   queueBtn.title = "Add to queue";
-  queueBtn.onclick = async (e) => {
+  queueBtn.onclick = reporting("Adding to queue", async (e) => {
     e.stopPropagation();
     await post("/api/queue/add", { track });
-  };
+    await refreshState();
+  });
   actions.appendChild(queueBtn);
 
   if (showRemove) {
     const removeBtn = document.createElement("button");
     removeBtn.innerHTML = ICONS.remove;
     removeBtn.title = "Remove";
-    removeBtn.onclick = async (e) => {
+    removeBtn.onclick = reporting("Removing", async (e) => {
       e.stopPropagation();
       await onRemove(track);
-    };
+    });
     actions.appendChild(removeBtn);
   }
 
@@ -914,33 +942,37 @@ function openDetail(tracks, { title, subtitle, badge, imageURL, kind, seedTrack,
   detail.rerender = () =>
     renderList(document.getElementById("detail-list"), tracks, {
       scope: `${kind || "detail"}:${title}`,
-      onPlay: (t) =>
-        post("/api/play", { track: t, context: tracks, contextTitle: title, contextSeed: detail.seedTrack }).then(refreshState),
+      onPlay: reporting("Play", async (t) => {
+        await post("/api/play", { track: t, context: tracks, contextTitle: title, contextSeed: detail.seedTrack });
+        await refreshState();
+      }),
     });
   detail.rerender();
   showView("detail");
 }
 
-document.getElementById("detail-play").onclick = () => {
+document.getElementById("detail-play").onclick = reporting("Play", async () => {
   if (!detail.tracks.length) return;
-  post("/api/play", {
+  await post("/api/play", {
     track: detail.tracks[0],
     context: detail.tracks,
     contextTitle: detail.title,
     contextSeed: detail.seedTrack,
-  }).then(refreshState);
-};
+  });
+  await refreshState();
+});
 
-document.getElementById("detail-shuffle").onclick = () => {
+document.getElementById("detail-shuffle").onclick = reporting("Shuffle play", async () => {
   if (!detail.tracks.length) return;
   const shuffled = shuffle(detail.tracks);
-  post("/api/play", {
+  await post("/api/play", {
     track: shuffled[0],
     context: shuffled,
     contextTitle: detail.title,
     contextSeed: detail.seedTrack,
-  }).then(refreshState);
-};
+  });
+  await refreshState();
+});
 
 // Busy-marked and error-reported. A refresh genuinely takes seconds (the phone goes out to
 // YouTube), and with no busy state and no error surface the button looked broken: people
@@ -1163,23 +1195,109 @@ async function handleRealTrackEnded() {
   }
 }
 
+/// What this tab should play next with no help from the phone.
+///
+/// `state.upNext` is the phone's answer, prefetched with its URL, and it is authoritative
+/// when it's there. But it only ever describes *one* track, and it isn't refilled while the
+/// phone is away — so autonomy used to run out after exactly one song: the browser played
+/// the prefetched track, `upNext` became null, and at the end of it there was nothing left
+/// to reach for. The page went silent with a full queue on screen.
+///
+/// `state.streamBank` is the fallback: URLs for the next few queued tracks, banked while
+/// the phone was still answering (see prefetchUpcomingStreams). Walking the same queue the
+/// phone would walk — hand-queued tracks first, then the context queue — keeps a local
+/// advance in the same order the phone would have chosen, so reconciling afterwards is a
+/// no-op rather than a correction.
+function nextTrackToPlayLocally() {
+  const upNext = state.upNext;
+  if (upNext && upNext.track && upNext.streamUrl) {
+    return { track: upNext.track, streamUrl: upNext.streamUrl, fromUpNext: true };
+  }
+  const snapshot = state.last;
+  if (!snapshot) return null;
+  const queue = [...(snapshot.manualQueue || []), ...(snapshot.contextQueue || [])];
+  for (const track of queue) {
+    // Anything this tab has already played on its own is still sitting at the front of the
+    // phone's queue — it doesn't know we consumed it yet. Skipping what we've played is
+    // what keeps a long outage moving forward instead of looping the same track.
+    if (state.playedLocally.has(track.videoId)) continue;
+    const streamUrl = state.streamBank.get(track.videoId);
+    if (streamUrl) return { track, streamUrl, fromUpNext: false };
+    // Deliberately no `continue`: the queue is in play order, and skipping over a track
+    // we have no URL for to reach one we do would play the album out of order. Better to
+    // stop and let the phone sort it out when it's back.
+    return null;
+  }
+  return null;
+}
+
 function playUpNextLocally() {
-  const next = state.upNext;
-  if (!next || !next.track || !next.streamUrl) {
-    // Nothing prefetched — the queue ran out, or the phone dropped before it could tell
-    // us. Genuinely nothing to play; the phone will resync when it returns.
+  const next = nextTrackToPlayLocally();
+  if (!next) {
+    // Genuinely nothing to play: the queue ran out, or the phone dropped before it could
+    // tell us what was coming and there was nothing banked. The phone resyncs when it
+    // returns; say so rather than just falling silent.
+    if (state.playedWhileDisconnected) showError("Out of tracks until your phone is back");
     return;
   }
   audioEl.src = next.streamUrl;
   audioEl.load();
   state.loadedVideoId = next.track.videoId;
   state.loadedTrackEpoch = null; // no longer tracking the phone's load generation
-  state.upNext = null;
+  if (next.fromUpNext) state.upNext = null;
+  state.streamBank.delete(next.track.videoId);
+  state.playedLocally.add(next.track.videoId);
   // Remembered so the phone can be told what really happened once it answers again.
   state.playedWhileDisconnected = next.track.videoId;
   audioEl.addEventListener("ended", handleRealTrackEnded);
   playCastAudio();
   renderDeviceLabel();
+}
+
+/// How many tracks ahead this tab keeps a usable stream URL for.
+///
+/// Must not exceed the phone's own `maximumPrefetchDepth`, which refuses anything further
+/// down the queue than it is willing to resolve.
+const STREAM_BANK_DEPTH = 4;
+
+/// Fills `state.streamBank` with URLs for the tracks coming up, so an outage that starts
+/// mid-song doesn't end the music at the end of that song.
+///
+/// Only this tab's own upcoming queue, only while it is the one casting, and only once per
+/// videoId — each miss is an InnerTube round trip on the phone. The phone would make the
+/// same call when the track reached the front of the queue, and it caches by video id, so
+/// what this really costs is making those calls earlier rather than more often.
+///
+/// Fire-and-forget by design: this is insurance, and a page that can't reach the phone to
+/// buy it has nothing useful to do about that.
+function prefetchUpcomingStreams(snapshot) {
+  if (!state.isCastTab) return;
+  const queue = [...(snapshot.manualQueue || []), ...(snapshot.contextQueue || [])];
+  const wanted = queue.slice(0, STREAM_BANK_DEPTH).map((t) => t.videoId);
+
+  // Anything no longer near the front has been played or skipped past. Dropping it keeps
+  // the bank from growing for the life of the tab, and keeps a stale URL for a track the
+  // user has moved past from being reachable at all.
+  for (const videoId of [...state.streamBank.keys()]) {
+    if (!wanted.includes(videoId)) state.streamBank.delete(videoId);
+  }
+
+  for (const videoId of wanted) {
+    if (state.streamBank.has(videoId) || state.streamBankInFlight.has(videoId)) continue;
+    // The phone resolves the very next track itself and ships the URL in the snapshot;
+    // asking for it again would be a second round trip for a URL we already have.
+    if (state.upNext && state.upNext.track && state.upNext.track.videoId === videoId) continue;
+    state.streamBankInFlight.add(videoId);
+    api(`/api/stream?videoId=${encodeURIComponent(videoId)}&clientId=${encodeURIComponent(CLIENT_ID)}`)
+      .then((res) => {
+        if (res && res.streamUrl) state.streamBank.set(videoId, res.streamUrl);
+      })
+      .catch(() => {
+        // A 409 means the phone doesn't consider this track upcoming any more, which the
+        // next snapshot will show. Nothing to recover.
+      })
+      .finally(() => state.streamBankInFlight.delete(videoId));
+  }
 }
 
 /// Tells the phone what this tab is actually playing after having moved on without it.
@@ -1197,6 +1315,9 @@ async function reconcileAfterDisconnection() {
     });
     state.playedWhileDisconnected = null;
     state.reconcileAttempts = 0;
+    // The phone now agrees about what is playing, so its queue no longer contains the
+    // tracks this tab consumed on its own and there is nothing left to skip over.
+    state.playedLocally.clear();
     refreshState();
   } catch (e) {
     // Still unreachable. Keep playing and retry on the next state that gets through, but
@@ -1255,6 +1376,7 @@ document.querySelectorAll("#np-device-menu button").forEach((btn) => {
     const alreadyActive = device === "computer" ? state.isCastTab : state.activeDevice === "iphone";
     if (alreadyActive) return;
 
+    const wasCastTab = state.isCastTab;
     state.isCastTab = device === "computer";
     state.needsGesture = false;
     if (state.isCastTab) {
@@ -1263,8 +1385,21 @@ document.querySelectorAll("#np-device-menu button").forEach((btn) => {
       releaseAudioElement();
     }
     // clientId is what makes the phone able to name *this* tab as the cast client.
-    await post("/api/device", { device, clientId: CLIENT_ID });
-    refreshState();
+    //
+    // Reported, and the optimistic local flip undone on failure. `isCastTab` is set above
+    // so the tab starts producing sound the instant the phone confirms rather than a
+    // broadcast tick later — but if the POST never lands, the phone has no idea this tab
+    // claimed anything, and leaving the flag set left a tab that believed it was casting
+    // while the phone played on by itself. Both devices, same song, a second apart.
+    try {
+      await post("/api/device", { device, clientId: CLIENT_ID });
+      await refreshState();
+    } catch (e) {
+      state.isCastTab = wasCastTab;
+      if (!state.isCastTab) releaseAudioElement();
+      renderDeviceLabel();
+      showError("Couldn't switch device — is your phone awake?");
+    }
   };
 });
 
@@ -1648,20 +1783,29 @@ audioEl.addEventListener("timeupdate", () => {
 /// the same endpoint the on-screen buttons use, so the phone stays the source of truth.
 function setupMediaSession() {
   if (!("mediaSession" in navigator)) return;
+  // Routed through the on-screen buttons rather than posting directly, so a media key gets
+  // the same treatment a click does: the failure is reported, and play/pause and next still
+  // work on this tab's own audio when the phone can't be reached. Pressing pause on the
+  // keyboard and having nothing happen — while the music kept playing out of this very
+  // machine — was the worst version of the silent-failure problem.
+  const relayToggle = () => document.getElementById("np-toggle").onclick();
   const handlers = {
-    play: () => post("/api/toggle").then(refreshState),
-    pause: () => post("/api/toggle").then(refreshState),
-    nexttrack: () => post("/api/next").then(refreshState),
-    previoustrack: () => post("/api/previous").then(refreshState),
+    play: relayToggle,
+    pause: relayToggle,
+    stop: relayToggle,
+    nexttrack: () => document.getElementById("np-next").onclick(),
+    previoustrack: () => document.getElementById("np-prev").onclick(),
     seekto: (details) => {
       if (typeof details.seekTime !== "number") return;
       suppressPlaybackEcho();
       audioEl.currentTime = details.seekTime;
-      post("/api/seek", { seconds: details.seekTime }).then(refreshState);
+      reporting("Seek", async () => {
+        await post("/api/seek", { seconds: details.seekTime });
+        await refreshState();
+      })();
     },
     seekforward: (d) => seekRelative(d.seekOffset || 10),
     seekbackward: (d) => seekRelative(-(d.seekOffset || 10)),
-    stop: () => post("/api/toggle").then(refreshState),
   };
   for (const [action, handler] of Object.entries(handlers)) {
     try {
@@ -1676,7 +1820,10 @@ function seekRelative(delta) {
   const target = Math.max(0, (state.last ? state.last.progress : 0) + delta);
   suppressPlaybackEcho();
   if (audioEl.src) audioEl.currentTime = target;
-  post("/api/seek", { seconds: target }).then(refreshState);
+  reporting("Seek", async () => {
+    await post("/api/seek", { seconds: target });
+    await refreshState();
+  })();
 }
 
 /// Feeds the OS the track details it displays next to those controls. Only rebuilt when
@@ -1767,6 +1914,21 @@ function isStaleSnapshot(s) {
     s.trackLoadEpoch < state.appliedTrackLoadEpoch;
 }
 
+/// Shared by both queue lists, which had the same three handlers written out twice — and
+/// both copies dropped their rejections, so playing or removing a queued track against a
+/// busy phone left the row sitting where it was with nothing said.
+const queueRowActions = {
+  onPlay: reporting("Play", async (t) => {
+    await post("/api/queue/skip-to", { track: t });
+    await refreshState();
+  }),
+  showRemove: true,
+  onRemove: reporting("Removing", async (t) => {
+    await post("/api/queue/remove", { track: t });
+    await refreshState();
+  }),
+};
+
 function renderNowPlaying(s) {
   if (isStaleSnapshot(s)) return;
   state.appliedEpoch = s.playbackEpoch;
@@ -1784,6 +1946,9 @@ function renderNowPlaying(s) {
   // user's next media-key press start the music again instead of resuming it.
   const playing = desiredPlayState(s);
   syncCastAudio(s, playing); // sets state.isCastTab, which the label depends on
+  // After syncCastAudio, which is what decides whether this tab is the one that would need
+  // the URLs. Buying them is only useful while the phone is still there to sell them.
+  prefetchUpcomingStreams(s);
   renderDeviceLabel();
   renderDocumentTitle(s, playing);
   const npArt = document.getElementById("np-art");
@@ -1833,11 +1998,7 @@ function renderNowPlaying(s) {
 
   state.likedIds = new Set(s.likedVideoIds || []);
 
-  renderList(document.getElementById("manual-queue-list"), s.manualQueue, {
-    onPlay: (t) => post("/api/queue/skip-to", { track: t }),
-    showRemove: true,
-    onRemove: (t) => post("/api/queue/remove", { track: t }),
-  });
+  renderList(document.getElementById("manual-queue-list"), s.manualQueue, queueRowActions);
   document.getElementById("context-queue-title").textContent = s.queueContextTitle
     ? `Next from: ${s.queueContextTitle}`
     : "Next Up";
@@ -1882,11 +2043,7 @@ function renderNowPlaying(s) {
   // Home only loads once; if that attempt failed, a reachable phone is the cue to retry.
   retryDeferredLoadsIfNeeded();
 
-  renderList(document.getElementById("context-queue-list"), s.contextQueue, {
-    onPlay: (t) => post("/api/queue/skip-to", { track: t }),
-    showRemove: true,
-    onRemove: (t) => post("/api/queue/remove", { track: t }),
-  });
+  renderList(document.getElementById("context-queue-list"), s.contextQueue, queueRowActions);
 }
 
 /// The phone leaves the queue and liked list out of a periodic broadcast when they haven't
@@ -1922,15 +2079,54 @@ async function refreshStateIdentified() {
 
 // ---------- transport ----------
 
-document.getElementById("np-toggle").onclick = () => post("/api/toggle").then(refreshState);
-document.getElementById("np-next").onclick = () => post("/api/next").then(refreshState);
-document.getElementById("np-prev").onclick = () => post("/api/previous").then(refreshState);
-document.getElementById("np-shuffle").onclick = () => post("/api/shuffle").then(refreshState);
-document.getElementById("np-like").onclick = async () => {
+/// Play/pause, for a tab that is producing the sound and can't reach the phone.
+///
+/// The phone is the source of truth, so the button relays to it — but when it doesn't
+/// answer, the music is still coming out of *this* tab's speakers and the user is entitled
+/// to stop it. Without this the transport went dead the moment the phone did: audio playing,
+/// every press swallowed, and no way to silence it short of closing the tab.
+///
+/// Only for the casting tab. Anywhere else there is nothing local to act on and pretending
+/// otherwise would just put the page out of step with the phone.
+function toggleLocally() {
+  if (!state.isCastTab || !audioEl.getAttribute("src")) return false;
+  suppressPlaybackEcho(); // our own doing, not the OS's — see onPlaybackEcho
+  if (audioEl.paused) playCastAudio();
+  else audioEl.pause();
+  return true;
+}
+
+/// Relays a transport command, falling back to acting on this tab's own audio when the
+/// phone can't be reached. `whenOffline` returning false means there was nothing local to
+/// do, and the failure is reported as usual.
+function transport(what, path, whenOffline) {
+  return async () => {
+    try {
+      await post(path);
+      await refreshState();
+    } catch (e) {
+      if (whenOffline && whenOffline()) return;
+      showError(`${what} failed — is your phone awake?`);
+    }
+  };
+}
+
+document.getElementById("np-toggle").onclick = transport("Play/pause", "/api/toggle", toggleLocally);
+document.getElementById("np-next").onclick = transport("Next", "/api/next", () => {
+  // The same lifeline the end of a track uses: a banked URL for whatever is next. Skipping
+  // is the most common thing to want during an outage and it used to be the one thing
+  // guaranteed not to work.
+  if (!state.isCastTab || !nextTrackToPlayLocally()) return false;
+  playUpNextLocally();
+  return true;
+});
+document.getElementById("np-prev").onclick = transport("Previous", "/api/previous");
+document.getElementById("np-shuffle").onclick = transport("Shuffle", "/api/shuffle");
+document.getElementById("np-like").onclick = reporting("Like", async () => {
   if (!state.current) return;
   await post("/api/library/liked/toggle", { track: state.current });
-  refreshState();
-};
+  await refreshState();
+});
 
 const seekEl = document.getElementById("np-seek");
 seekEl.addEventListener("pointerdown", () => (seekEl.dragging = true));
@@ -1979,24 +2175,31 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
 
+  // Every one of these used to be a bare `post(...).then(refreshState)`: an unhandled
+  // rejection whenever the phone was momentarily busy, and a keypress that silently did
+  // nothing. They go through the same wrappers as the on-screen buttons now, so a failure
+  // is reported and the ones with a local equivalent still work during an outage.
   const seekBy = (delta) => {
     const target = Math.max(0, Math.min(Number(seekEl.max) || 0, (state.last ? state.last.progress : 0) + delta));
     if (state.isCastTab && audioEl.src) audioEl.currentTime = target;
-    post("/api/seek", { seconds: target }).then(refreshState);
+    reporting("Seek", async () => {
+      await post("/api/seek", { seconds: target });
+      await refreshState();
+    })();
   };
 
   switch (e.key) {
     case " ":
       e.preventDefault(); // otherwise the page scrolls
-      post("/api/toggle").then(refreshState);
+      document.getElementById("np-toggle").onclick();
       break;
     case "ArrowRight": e.preventDefault(); seekBy(10); break;
     case "ArrowLeft": e.preventDefault(); seekBy(-10); break;
-    case "n": case "N": post("/api/next").then(refreshState); break;
-    case "p": case "P": post("/api/previous").then(refreshState); break;
-    case "s": case "S": post("/api/shuffle").then(refreshState); break;
+    case "n": case "N": document.getElementById("np-next").onclick(); break;
+    case "p": case "P": document.getElementById("np-prev").onclick(); break;
+    case "s": case "S": document.getElementById("np-shuffle").onclick(); break;
     case "l": case "L":
-      if (state.current) post("/api/library/liked/toggle", { track: state.current }).then(refreshState);
+      document.getElementById("np-like").onclick();
       break;
     case "/":
       e.preventDefault();
@@ -2019,10 +2222,10 @@ function gridTrackCard(track, tracks, contextTitle) {
     <div class="g-title">${escapeHtml(track.title)}</div>
     <div class="g-artist">${escapeHtml(track.artist)}</div>
   `;
-  card.querySelector(".g-queue-btn").onclick = (e) => {
+  card.querySelector(".g-queue-btn").onclick = reporting("Adding to queue", async (e) => {
     e.stopPropagation();
-    post("/api/queue/add", { track });
-  };
+    await post("/api/queue/add", { track });
+  });
   makeActivatable(
     card,
     `Play ${track.title} by ${track.artist}`,
@@ -2292,10 +2495,54 @@ async function loadLibraryList() {
 
 // ---------- live sync ----------
 
+/// The socket this tab is currently living on, if any.
+///
+/// Nothing tracked it, and every path that could want a connection simply made one. The
+/// consequences all pointed the same way — more sockets than the tab has any use for:
+///
+///   * `reconnectSocketNow` fires whenever the 5s poll succeeds and only checks
+///     `socketConnected`, which is false for the whole time a socket sits in CONNECTING.
+///     A phone that answers HTTP while the WebSocket handshake is slow therefore got a
+///     brand new socket every five seconds.
+///   * A superseded socket's `onclose` still ran the full handler, setting
+///     `socketConnected = false`, painting the "can't reach your iPhone" banner and
+///     scheduling *another* reconnect — while a perfectly healthy socket was open. So one
+///     dead connection reliably produced a second live one, and so on.
+///
+/// Each stray socket holds one of the phone's 32 connection slots for as long as it lives
+/// and runs its own 15s heartbeat, so this compounded into exactly the symptom it looked
+/// like: a remote that keeps losing its connection.
+let socket = null;
+/// Abandons a socket that never finished connecting. Without this a handshake that hangs
+/// (a phone that has gone to sleep answers neither the SYN nor a RST) leaves `socket`
+/// non-null in CONNECTING for as long as the OS takes to give up — often a minute or more —
+/// and `connectWebSocket` correctly refuses to replace it that whole time.
+const SOCKET_CONNECT_TIMEOUT_MS = 8000;
+
 function connectWebSocket() {
+  // One socket per tab. `CONNECTING` counts: replacing a handshake in progress is how the
+  // duplicates above got started.
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
   const ws = new WebSocket(`ws://${location.host}/ws`);
+  socket = ws;
   let heartbeat = null;
+  /// True once this socket has been replaced or deliberately abandoned. Its late events
+  /// must not touch shared state — that is the second bullet above.
+  const isCurrent = () => socket === ws;
+  const connectTimer = setTimeout(() => {
+    if (!isCurrent() || ws.readyState !== WebSocket.CONNECTING) return;
+    // Dropped rather than left to hang. `close()` on a CONNECTING socket still fires
+    // `onclose`, which schedules the retry.
+    ws.close();
+  }, SOCKET_CONNECT_TIMEOUT_MS);
   ws.onopen = () => {
+    clearTimeout(connectTimer);
+    if (!isCurrent()) {
+      ws.close();
+      return;
+    }
     // Lets the server tell this connection apart from one that silently died (closed
     // laptop lid, WiFi drop) without a clean close ever reaching it — see
     // LocalControlServer's socketLastSeen/pruneStaleSockets. Every frame carries this
@@ -2308,13 +2555,25 @@ function connectWebSocket() {
     };
     hello();
     heartbeat = setInterval(hello, 15000);
+    // Re-announces the moment the tab is looked at again. Browsers throttle timers in a
+    // hidden tab to about once a minute, so the heartbeat above is not something the phone
+    // can rely on for a backgrounded remote — the phone pings instead, and the browser
+    // answers those in its networking stack without running any of this. What the pings
+    // cannot carry is *which tab* the socket belongs to, and that is what the fall-back
+    // decision hangs on, so the id is re-sent at the first moment this tab is live again.
+    socketHello = hello;
     state.socketConnected = true;
     reconnectDelay = 1000;
-    markPhoneUnreachable(false);
+    noteContactWithPhone();
     // Back in touch: if this tab kept playing without the phone, square that up now.
     reconcileAfterDisconnection();
   };
   ws.onmessage = (event) => {
+    if (!isCurrent()) return;
+    // A frame arrived, so the phone is demonstrably there. Nothing recorded that, so
+    // reachability rested entirely on the 5s poll: with the socket delivering state ten
+    // times over, one slow poll still painted "Can't reach your iPhone" across the top.
+    noteContactWithPhone();
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "radio") {
@@ -2345,9 +2604,20 @@ function connectWebSocket() {
     }
   };
   ws.onclose = () => {
+    clearTimeout(connectTimer);
     if (heartbeat) clearInterval(heartbeat);
+    // A socket this tab has already moved on from. Letting it run the rest of this handler
+    // is what turned one dead connection into a second live one: it cleared
+    // `socketConnected` while another socket was open, and scheduled a reconnect that
+    // `connectWebSocket` had no way to recognise as redundant.
+    if (!isCurrent()) return;
+    socket = null;
+    socketHello = null;
     state.socketConnected = false;
-    markPhoneUnreachable(true);
+    // Not `markPhoneUnreachable(true)`. The socket dropping says nothing about the phone on
+    // its own — reconnects are routine, and the 5s poll usually keeps working right through
+    // one. The banner is driven by how long it has been since *anything* got through.
+    refreshReachability();
     // Backed off rather than a flat 2 s: a phone that's asleep, off the network or simply
     // switched off stays unreachable for hours, and hammering it every two seconds for
     // that whole time is pure battery on both ends.
@@ -2357,6 +2627,9 @@ function connectWebSocket() {
   ws.onerror = () => ws.close();
 }
 
+/// Re-sends `hello:<id>` on the live socket, or nothing if there isn't one.
+let socketHello = null;
+
 let reconnectDelay = 1000;
 let reconnectTimer = null;
 
@@ -2364,6 +2637,16 @@ function scheduleReconnect(delay) {
   clearTimeout(reconnectTimer);
   reconnectTimer = setTimeout(connectWebSocket, delay);
 }
+
+// Coming back to the tab is the cue to catch up on everything a throttled timer has been
+// too slow to do: re-announce this tab to the phone, re-read the state, and stop waiting out
+// a reconnect backoff that may have grown to half a minute while nobody was looking.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (socketHello) socketHello();
+  reconnectSocketNow();
+  refreshState().catch(() => {});
+});
 
 /// Reconnects the socket now, because something else just proved the phone is reachable.
 ///
@@ -2374,20 +2657,53 @@ function scheduleReconnect(delay) {
 /// including the lock-screen play/pause and seek relays, which are not retried anywhere:
 /// scrubbing on the phone moved its own scrubber and the Mac never budged.
 function reconnectSocketNow() {
-  if (state.socketConnected) return;
+  // A socket that is mid-handshake is not a reason to make another one; it is the single
+  // most common reason a *second* one used to get made. `connectWebSocket` refuses either
+  // way, but returning here also leaves the backoff alone rather than resetting it on
+  // evidence the handshake in flight has not produced yet.
+  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
   reconnectDelay = 1000;
   scheduleReconnect(0);
+}
+
+/// How long everything — socket frames, polls, command responses — has to go unanswered
+/// before the page says so.
+///
+/// The banner used to be a direct read of two events: the socket closing, and one 5s poll
+/// rejecting. Both are things a healthy setup does regularly. A socket drops and reconnects
+/// whenever the phone's Wi-Fi roams; a poll misses its 2s deadline whenever the phone is
+/// briefly busy (every request has to reach the main thread, so a scroll or an artwork
+/// decode is enough). Either one painted "Can't reach your iPhone" over a remote that went
+/// on working perfectly, which is most of what "it keeps losing connection" looked like.
+///
+/// Long enough to cover a reconnect and a missed poll or two, short enough to still be
+/// telling the truth by the time someone looks up at it.
+const UNREACHABLE_AFTER_MS = 12000;
+
+/// Records that the phone just answered something. Called from every transport, because
+/// any one of them succeeding is proof.
+function noteContactWithPhone() {
+  state.lastContactAt = Date.now();
+  refreshReachability();
 }
 
 /// Shows (or clears) the "can't reach your iPhone" state. Without it the page simply
 /// froze on its last snapshot — still captioned "Playing on iPhone" — while every click
 /// silently did nothing, which is indistinguishable from the app having hung.
-function markPhoneUnreachable(unreachable) {
+function refreshReachability() {
+  // `lastContactAt` starts at page load rather than at zero, so a fresh tab gets the same
+  // grace as a running one instead of flashing the banner for the half second before its
+  // first request lands.
+  const unreachable = Date.now() - state.lastContactAt > UNREACHABLE_AFTER_MS;
   if (unreachable === state.phoneUnreachable) return;
   state.phoneUnreachable = unreachable;
   document.body.classList.toggle("phone-unreachable", unreachable);
   if (!unreachable) reconnectDelay = 1000;
 }
+
+// The banner has to be able to appear without anything happening, since "nothing is
+// happening" is precisely the condition it reports. Every other call site is an event.
+setInterval(refreshReachability, 2000);
 
 // ---------- init ----------
 
@@ -2408,9 +2724,13 @@ setInterval(() => {
   // prefers. Every tab sends it, so the server attributes by id rather than assuming.
   refreshStateIdentified()
     .then(() => {
-      markPhoneUnreachable(false);
+      noteContactWithPhone();
       // HTTP just worked, so the phone is back regardless of what the backoff thinks.
       reconnectSocketNow();
     })
-    .catch(() => markPhoneUnreachable(true));
+    // No `markPhoneUnreachable(true)` here any more. One missed 2s deadline against a
+    // briefly busy phone is not an outage, and treating it as one is why the banner
+    // flickered on a remote that was working. `refreshReachability` decides on elapsed
+    // silence instead, and runs on its own interval so it still fires when nothing does.
+    .catch(() => refreshReachability());
 }, 5000);

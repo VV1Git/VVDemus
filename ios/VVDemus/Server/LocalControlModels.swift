@@ -221,6 +221,17 @@ struct StreamFailedResponse: Encodable {
     let streamUrl: String
 }
 
+/// Answers `/api/stream` with a URL for a track that hasn't started yet, so the casting
+/// browser can bank it against the phone being unreachable when it needs it.
+///
+/// The snapshot already carries one such URL (`nextStreamUrl`), which buys exactly one
+/// track transition — enough to survive a blip, not enough to survive a phone that sleeps
+/// mid-album. This route lets the browser fill a small window of them.
+struct ResolvedStreamResponse: Encodable {
+    let videoId: String
+    let streamUrl: String
+}
+
 struct CreatePlaylistBody: Decodable {
     let name: String
 }

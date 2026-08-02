@@ -140,4 +140,82 @@ final class ConnectSocketRegistryTests: XCTestCase {
         let registry = WebSocketRegistry()
         XCTAssertEqual(registry.heartbeatAge(clientId: "nobody", now: Date()), .infinity)
     }
+
+    // MARK: - Probing quiet sockets
+
+    /// Why the ping exists at all.
+    ///
+    /// Liveness used to rest entirely on the client's `setInterval` heartbeat, and browsers
+    /// throttle timers in a hidden tab to roughly once a minute — past `socketStaleTimeout`
+    /// and past the accepted socket's own read deadline. So a remote left in a background
+    /// tab had its connection torn down for no reason but being in the background, and
+    /// reconnected on a backoff running on those same throttled timers. A ping is answered
+    /// by the browser's networking stack, with no JavaScript involved.
+    func testASocketThatHasGoneQuietIsProbedBeforeItWouldBePruned() {
+        XCTAssertLessThan(
+            LocalControlServer.socketPingIdleInterval * 2,
+            45,
+            "A quiet tab has to be asked, and given time to answer, before it is judged"
+        )
+
+        let registry = WebSocketRegistry()
+        let now = Date()
+        let quiet = session(fd: 900_009)
+        registry.insert(quiet, at: now.addingTimeInterval(-30))
+
+        let due = registry.sessionsNeedingPing(now: now, idle: 10)
+        XCTAssertEqual(due.count, 1)
+        XCTAssertTrue(due.first?.session === quiet)
+    }
+
+    func testASocketThatJustSpokeIsNotProbed() {
+        let registry = WebSocketRegistry()
+        let now = Date()
+        registry.insert(session(fd: 900_010), at: now)
+
+        XCTAssertTrue(registry.sessionsNeedingPing(now: now, idle: 10).isEmpty)
+    }
+
+    /// The 1 Hz broadcast asks every tick, so without the separate stamp a quiet socket
+    /// would be pinged once a second for as long as it stayed quiet.
+    func testAProbedSocketIsNotProbedAgainUntilTheIntervalHasPassed() {
+        let registry = WebSocketRegistry()
+        let now = Date()
+        registry.insert(session(fd: 900_011), at: now.addingTimeInterval(-30))
+
+        XCTAssertEqual(registry.sessionsNeedingPing(now: now, idle: 10).count, 1)
+        XCTAssertTrue(
+            registry.sessionsNeedingPing(now: now.addingTimeInterval(1), idle: 10).isEmpty,
+            "One ping per interval, not one per broadcast tick"
+        )
+        XCTAssertEqual(registry.sessionsNeedingPing(now: now.addingTimeInterval(11), idle: 10).count, 1)
+    }
+
+    /// Our own probes are not evidence of anything. If pinging refreshed `lastSeen`, a peer
+    /// that had gone away would be kept alive by the server talking to itself and the pruner
+    /// could never reclaim it.
+    func testProbingASocketDoesNotMakeItLookAlive() {
+        let registry = WebSocketRegistry()
+        let now = Date()
+        let gone = session(fd: 900_012)
+        registry.insert(gone, at: now.addingTimeInterval(-30))
+
+        _ = registry.sessionsNeedingPing(now: now, idle: 10)
+
+        XCTAssertEqual(registry.lastSeen(for: gone), now.addingTimeInterval(-30))
+        XCTAssertEqual(registry.staleSessions(before: now.addingTimeInterval(-20)).count, 1)
+    }
+
+    /// The reply. A pong is a frame from the peer like any other, so it goes through
+    /// `touch` — which is what keeps a backgrounded tab registered.
+    func testAPongKeepsASocketOutOfThePruner() {
+        let registry = WebSocketRegistry()
+        let now = Date()
+        let backgrounded = session(fd: 900_013)
+        registry.insert(backgrounded, at: now.addingTimeInterval(-30))
+
+        registry.touch(backgrounded, at: now)
+
+        XCTAssertTrue(registry.staleSessions(before: now.addingTimeInterval(-20)).isEmpty)
+    }
 }
