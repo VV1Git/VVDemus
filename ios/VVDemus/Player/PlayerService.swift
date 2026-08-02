@@ -369,18 +369,35 @@ final class PlayerService: ObservableObject {
     /// wait, every stall test passed no matter what this method did.
     static var stallGrace: TimeInterval = 12
 
+    /// Keeps `isPlaying` describing what the engine is actually doing — in both directions.
+    ///
     /// The engine stopping on its own (a stall, an interruption the app didn't see, the
-    /// route going away) has to be reflected in `isPlaying` or the UI, the lock screen and
-    /// the AirPods gesture all end up out of step with reality.
+    /// route going away) has to be reflected or the UI, the lock screen and the AirPods
+    /// gesture all end up out of step with reality.
+    ///
+    /// And equally the other way round, which this used to miss. `AVPlayer.timeControlStatus`
+    /// changes asynchronously, so a reading taken in the instant after `attach` calls `play()`
+    /// can still say `.paused` about an instruction that is landing — and a reading is taken
+    /// in exactly that instant, because AVFoundation invokes the periodic observer on every
+    /// time jump and whenever playback starts or stops, and replacing the item at a track
+    /// boundary is both. Correcting only a true that should be false made one such stale
+    /// reading permanent: sound arrived a moment later underneath an `isPlaying` of false, and
+    /// nothing in the app ever raised the flag again.
+    ///
+    /// What that cost was a press, everywhere at once, because every control reads this flag.
+    /// The lock screen's `.pause` was dropped outright, its `.play` "resumed" music that had
+    /// never stopped, and `advanceIfPlayedPastTheRealEnd` and `handleStall` both switched
+    /// themselves off — so a song that had just started needed a pause, a play and a second
+    /// pause before anything happened.
     private func reconcileIsPlayingWithEngine() {
         guard activeDevice == .iphone, !isLoading, !isResumingAfterDeviceSwitch, currentTrack != nil else { return }
         // An interruption is handled by its own notification, which knows whether to
         // resume; don't let the periodic tick race it.
         guard !isInterrupted else { return }
-        if isPlaying && !engine.isEnginePlaying {
-            isPlaying = false
-            updateNowPlayingInfo()
-        }
+        let enginePlaying = engine.isEnginePlaying
+        guard isPlaying != enginePlaying else { return }
+        isPlaying = enginePlaying
+        updateNowPlayingInfo()
     }
 
     // MARK: - Lock screen / Control Center / AirPods gestures
@@ -390,14 +407,19 @@ final class PlayerService: ObservableObject {
     /// registered — a missing `togglePlayPause` in particular means a single tap does
     /// nothing at all, which is the control people use most.
     private func configureRemoteCommandCenter() {
+        // `setPlayback` rather than a toggle guarded by `isPlaying`: these two are absolute
+        // instructions, and gating them on the app's own record of playback is what let a
+        // press disappear without trace. When that record had drifted — which it can, since
+        // `AVPlayer` reports its state asynchronously — `.pause` did nothing at all and
+        // returned `.success`, so iOS was satisfied and the music carried on.
         commandCenter.setHandler(for: .play) { [weak self] _ in
             guard let self, self.currentTrack != nil else { return .noSuchContent }
-            if !self.isPlaying { self.togglePlayPause() }
+            self.setPlayback(playing: true)
             return .success
         }
         commandCenter.setHandler(for: .pause) { [weak self] _ in
             guard let self, self.currentTrack != nil else { return .noSuchContent }
-            if self.isPlaying { self.togglePlayPause() }
+            self.setPlayback(playing: false)
             return .success
         }
         commandCenter.setHandler(for: .togglePlayPause) { [weak self] _ in
@@ -635,6 +657,7 @@ final class PlayerService: ObservableObject {
         guard activeDevice == .iphone, let track = currentTrack else { return }
         NSLog("[PlayerService] playback failed: %@", error?.localizedDescription ?? "unknown")
         guard !hasRetriedCurrentTrack else {
+            stopEngineOnGivingUp()
             isPlaying = false
             isLoading = false
             errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
@@ -645,7 +668,6 @@ final class PlayerService: ObservableObject {
         // The cached URL is the thing that just failed; without dropping it the "retry"
         // below would be handed the very same dead URL and fail identically.
         streams.invalidate(videoId: track.videoId)
-        let wasPlaying = isPlaying
         isLoading = true
         loadTask?.cancel()
         loadTask = Task { [weak self] in
@@ -654,18 +676,42 @@ final class PlayerService: ObservableObject {
                 let urlString = try await self.streams.streamURL(videoId: track.videoId)
                 guard !Task.isCancelled, self.currentTrack?.videoId == track.videoId else { return }
                 guard let url = URL(string: urlString) else { throw APIError.invalidURL }
-                // Read now, not captured before the await, for the same reason as the
-                // ordinary load path: a scrub while the replacement URL was being fetched
-                // would otherwise be reverted to wherever playback happened to die.
-                self.attach(url: url, track: track, resumeAt: self.progress, autoplay: wasPlaying, recordHistory: false)
+                // Both read now rather than captured before the await, for the same reason:
+                // this Task is seconds long, and anything the user did inside it is newer
+                // than anything sampled before it started. A scrub would otherwise be
+                // reverted to wherever playback died, and a pause undone outright — the
+                // music restarting by itself moments after a press that appeared to do
+                // nothing. Deliberately `wantsPlayback` and not `isPlaying`: playback is
+                // stopped at this point by definition, so only the intent survives.
+                self.attach(url: url, track: track, resumeAt: self.progress,
+                            autoplay: self.wantsPlayback, recordHistory: false)
             } catch {
                 guard !Task.isCancelled else { return }
+                self.stopEngineOnGivingUp()
                 self.isLoading = false
                 self.isPlaying = false
                 self.errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
                 self.updateNowPlayingInfo()
             }
         }
+    }
+
+    /// Stops the player when the app gives up on the current track.
+    ///
+    /// Writing `isPlaying = false` is not the same as stopping. Reached from `handleStall`
+    /// the item hasn't failed, it has run dry, and a stalled `AVPlayer` is still an armed one
+    /// — `.waitingToPlayAtSpecifiedRate` means the rate is 1 and it is only waiting for
+    /// bytes. Leaving it alone meant coming back into coverage resumed the track by itself,
+    /// audibly, under a UI showing an error and a play button; and nothing ever repaired the
+    /// flag, because `reconcileIsPlayingWithEngine` only corrects a true that should be
+    /// false. The lock screen's pause then did nothing (`.pause` acts only `if isPlaying`),
+    /// play silently repaired the flag without changing the sound, and the press after that
+    /// finally paused — two presses to pause, for the rest of the track.
+    private func stopEngineOnGivingUp() {
+        // For the same reason `fallBackToPhone` does it: the app has just declared playback
+        // stopped, so a later reattach must not start the music again on its own.
+        wantsPlayback = false
+        engine.pause()
     }
 
     // MARK: - Playback entry points
@@ -821,10 +867,25 @@ final class PlayerService: ObservableObject {
 
     func togglePlayPause() {
         guard currentTrack != nil else { return }
+        setPlayback(playing: !isPlaying)
+    }
+
+    /// Absolute transport: what the lock screen's and Control Centre's separate buttons send,
+    /// and what a toggle resolves to.
+    ///
+    /// Asking for the state the app already believes it is in is not a no-op. `isPlaying` is
+    /// the app's *record* of playback and the engine is the thing making the sound; the two
+    /// can drift apart, and a control that reads only the record spends the press on
+    /// bookkeeping instead of on the music. That is what a dropped `.pause` was — nothing
+    /// happened and iOS was told the command had succeeded, so it had no reason to try
+    /// anything else.
+    func setPlayback(playing shouldPlay: Bool) {
+        guard currentTrack != nil else { return }
+        guard shouldPlay != isPlaying else { return restatePlaybackToEngine(shouldPlay) }
         // See `isStoppedAtEndOfQueue`: starting again from the end of a finished queue is a
         // restart, not a resume. Cleared unconditionally — once the user has touched
         // play/pause, whatever happens next is an ordinary transport state.
-        let restartsFinishedTrack = isStoppedAtEndOfQueue && !isPlaying
+        let restartsFinishedTrack = isStoppedAtEndOfQueue && shouldPlay
         isStoppedAtEndOfQueue = false
         if activeDevice == .computer {
             bumpPlaybackEpoch()
@@ -836,7 +897,7 @@ final class PlayerService: ObservableObject {
                 // the relayed toggle lands on nothing at all.
                 trackLoadEpoch &+= 1
             }
-            isPlaying.toggle()
+            isPlaying = shouldPlay
             pendingPlayIntent = (playing: isPlaying, at: Date())
             onComputerCommand?(.toggle)
             updateNowPlayingInfo()
@@ -845,7 +906,7 @@ final class PlayerService: ObservableObject {
         // Between items during a hand-back: touching the player would briefly resume the
         // outgoing item's audio, and the value set here is what the reattach reads.
         if isResumingAfterDeviceSwitch {
-            isPlaying.toggle()
+            isPlaying = shouldPlay
             updateNowPlayingInfo()
             return
         }
@@ -855,12 +916,20 @@ final class PlayerService: ObservableObject {
         // (about to be handed playback, or just watching) left the two agreeing on an
         // epoch that no longer described the same thing.
         bumpPlaybackEpoch()
-        if isPlaying {
+        if !shouldPlay {
             wantsPlayback = false
             engine.pause()
             isPlaying = false
         } else {
             wantsPlayback = true
+            // Asking for playback ends the interruption as far as this app is concerned.
+            // iOS doesn't promise an `.ended` for every `.began` — one the app is suspended
+            // through, or whose owner never hands the route back, never delivers one — and
+            // until `beginLoad` clears it a whole track later the flag keeps describing a
+            // state the user has already overruled: `attach` refuses to start the item a
+            // mid-track recovery just resolved, and the reconcile that notices the engine
+            // stopping by itself stays switched off.
+            isInterrupted = false
             if restartsFinishedTrack {
                 // An AVPlayer whose item has played to its end does nothing when told to
                 // play; it has to be wound back first.
@@ -873,6 +942,28 @@ final class PlayerService: ObservableObject {
             session.activate(casting: false)
             engine.play()
             isPlaying = true
+        }
+        updateNowPlayingInfo()
+    }
+
+    /// The app already believes it is doing what was just asked for — so say it to the engine
+    /// again, and only if the engine disagrees. That disagreement is the whole reason the
+    /// press would otherwise have been dropped, and it is invisible from `isPlaying` alone.
+    ///
+    /// Not reached while a load is in flight, a hand-back is in progress or an interruption is
+    /// running: in all three the flag is deliberately the *intent* and the engine deliberately
+    /// out of step with it, and restating anything there would resume the outgoing track or
+    /// play over a phone call.
+    private func restatePlaybackToEngine(_ shouldPlay: Bool) {
+        guard activeDevice == .iphone, !isLoading, !isResumingAfterDeviceSwitch, !isInterrupted else { return }
+        guard engine.isEnginePlaying != shouldPlay else { return }
+        if shouldPlay {
+            wantsPlayback = true
+            session.activate(casting: false)
+            engine.play()
+        } else {
+            wantsPlayback = false
+            engine.pause()
         }
         updateNowPlayingInfo()
     }
@@ -916,6 +1007,14 @@ final class PlayerService: ObservableObject {
         wantsPlayback = false
         isPlaying = false
         setActiveDevice(.iphone)
+        // Nobody is looking at the phone when this fires, so the lock screen has to be right
+        // the moment they do look. Nothing else covers the hand-back: the periodic tick is
+        // gated off while `isResumingAfterDeviceSwitch`, and the next publish is the reattach
+        // a network round trip later. Left unsaid, iOS keeps drawing the casting-era rate 1 —
+        // a pause button over silence, with the clock still running — and the press that
+        // invites is dropped by `.pause`'s own `isPlaying` guard. Published after
+        // `setActiveDevice` so the snapshot describes the state the phone settled into.
+        updateNowPlayingInfo()
     }
 
     func setActiveDevice(_ device: PlaybackDevice) {
@@ -1075,6 +1174,13 @@ final class PlayerService: ObservableObject {
         // one track replaced another, so the last track of every queue — the one the user
         // let play all the way through — was systematically the one never counted.
         recordListeningStats()
+        // Stopping the player, not only the flag. Reached from the safety net in
+        // `advanceIfPlayedPastTheRealEnd` the player is still running — running past the real
+        // end of the audio is what made that net fire — so writing `isPlaying = false` alone
+        // left the app claiming to be stopped over a player that was not. The reconcile now
+        // repairs that kind of disagreement, and left to itself it would repair this one the
+        // wrong way round, by declaring playback resumed.
+        if activeDevice == .iphone { engine.pause() }
         progress = 0
         isPlaying = false
         isLoading = false
@@ -1166,19 +1272,20 @@ final class PlayerService: ObservableObject {
             guard let self else { return }
             do {
                 // Reuse an already-cached mix for this seed (e.g. from having viewed its
-                // radio screen, or the web remote fetching it) instead of always re-fetching
-                // — and only 25 are needed, not 50, since just `fresh.first` is used
-                // immediately and the rest just seed the context queue.
+                // radio screen, or the web remote fetching it) instead of always re-fetching.
+                // The whole radio is taken, not the 25 autoplay strictly needs: the response
+                // is the same fixed page either way, and this fetch is frequently the one
+                // that populates the cache for that seed's radio screen.
                 let mix: [Track]
                 if let cached = self.sideEffects.cachedRadio(seedVideoId: seed.videoId), !cached.isEmpty {
                     mix = cached
                 } else {
                     let fetched = try await self.radios.radio(
                         videoId: seed.videoId,
-                        limit: InnerTubeClient.dataSaverLimit(default: 25)
+                        limit: InnerTubeClient.radioLength
                     )
                     // `cacheRadioIfAbsent`, so autoplay quietly refilling the queue can never
-                    // replace the mix shown on that radio's screen with its own shorter one.
+                    // replace the mix shown on that radio's screen with a different selection.
                     self.sideEffects.cacheRadioIfAbsent(fetched, seedVideoId: seed.videoId)
                     mix = fetched
                 }
@@ -1196,7 +1303,11 @@ final class PlayerService: ObservableObject {
                 self.queueContextTitle = "\(seed.title) Radio"
                 // Autoplay rolling into a radio counts as listening to it.
                 self.sideEffects.recordRadioSeed(seed)
-                self.load(next)
+                // Read after the fetch, not before it: the radio round trip takes seconds,
+                // and a pause taken inside that window is newer than the decision to advance.
+                // Asserting playback here regardless is what restarted the music by itself
+                // moments after a press that appeared to do nothing.
+                self.load(next, autoplay: self.wantsPlayback)
             } catch {
                 guard !Task.isCancelled else { return }
                 self.stopAtEndOfQueue()
@@ -1209,11 +1320,12 @@ final class PlayerService: ObservableObject {
     /// `orderedIndex` defaults to 0 because every caller that doesn't pass one is starting a
     /// context from the top — `play(track:context:)` queues everything *after* the track, and
     /// autoplay queues everything after `fresh.first`.
-    private func load(_ track: Track, origin: QueueOrigin = .context, orderedIndex: Int = 0) {
+    private func load(_ track: Track, origin: QueueOrigin = .context, orderedIndex: Int = 0,
+                      autoplay: Bool = true) {
         pushOntoBackStack()
         currentTrackOrigin = origin
         currentTrackOrderedIndex = orderedIndex
-        beginLoad(track)
+        beginLoad(track, autoplay: autoplay)
     }
 
     private func pushOntoBackStack() {
@@ -1224,10 +1336,14 @@ final class PlayerService: ObservableObject {
         }
     }
 
-    private func beginLoad(_ track: Track) {
+    private func beginLoad(_ track: Track, autoplay: Bool = true) {
         loadTask?.cancel()
-        // Starting a track is a request to play it.
-        wantsPlayback = true
+        // Starting a track is a request to play it — true whenever a person started it, which
+        // is every caller but one. `continueAutoplay` is the exception: seconds of radio fetch
+        // sit between the decision to advance and this call, and a pause taken inside that
+        // window is newer than the decision, so it passes the intent it was chosen under
+        // rather than asserting a fresh one.
+        wantsPlayback = autoplay
         // An interruption that never delivered its `.ended` notification (app suspended, the
         // interrupting app dismissed) would otherwise latch this flag true for the rest of
         // the process and permanently disable the reconcile safety net.
@@ -1331,6 +1447,11 @@ final class PlayerService: ObservableObject {
             externalStream = prefetched
             isLoading = false
             isPlaying = true
+            // Audio is genuinely starting, so the intent flag has to say so. Left unset here,
+            // it stayed false through an entire casting session and the reads that ask "does
+            // the user still want playback" — the autoplay hand-off at a track boundary, the
+            // expired-URL retry — silently answered no and stopped the music.
+            wantsPlayback = true
             updateNowPlayingInfo()
             prefetchUpNext()
             return
@@ -1347,6 +1468,7 @@ final class PlayerService: ObservableObject {
                 self.externalStream = ExternalStream(videoId: track.videoId, url: urlString)
                 self.isLoading = false
                 self.isPlaying = true
+                self.wantsPlayback = true
                 self.updateNowPlayingInfo()
                 self.prefetchUpNext()
             } catch {
@@ -1466,6 +1588,9 @@ final class PlayerService: ObservableObject {
         duration = track.durationSeconds.map(Double.init) ?? 0
         isLoading = false
         isPlaying = true
+        // The browser is audibly playing this, so the intent flag agrees rather than sitting
+        // false underneath it.
+        wantsPlayback = true
         sideEffects.recordPlay(track)
         // The browser already holds a working URL for this track (it's playing it); this
         // just brings the phone's own record back in step, without disturbing playback.
@@ -1591,7 +1716,20 @@ final class PlayerService: ObservableObject {
             session.activate(casting: false)
             engine.play()
             isPlaying = true
+            // Only ever raised here, never lowered: a caller that passed `autoplay: true`
+            // explicitly — the hand-back from a browser does — would otherwise start audio
+            // while the flag it never touched stayed false. Lowering it in the `else` would
+            // instead discard a pending intent, since an attach can decline to play for
+            // reasons that have nothing to do with what the user wants (an interruption).
+            wantsPlayback = true
         } else {
+            // Not merely "don't start it". `AVPlayer.replaceCurrentItem` keeps whatever rate
+            // the player already had, so an attach that declines to play can otherwise begin
+            // audio entirely on its own, underneath the `isPlaying = false` written here.
+            // Every caller reaches this through `beginLoad`'s own `pause()` today; the one
+            // that doesn't is the re-resolve after a stall, which leaves the player armed
+            // rather than stopped.
+            engine.pause()
             isPlaying = false
         }
         isLoading = false

@@ -233,6 +233,53 @@ final class StallHandlingTests: XCTestCase {
         XCTAssertEqual(harness.streams.resolveCount["a"] ?? 0, resolvesBefore)
     }
 
+    // MARK: - Giving up has to stop the player, not just the UI
+
+    /// Out of coverage the re-resolve fails too, and the failure path writes `isPlaying =
+    /// false` without telling the engine anything. A stalled AVPlayer is not a stopped one —
+    /// its rate is still 1 — so it is left armed, waiting for bytes.
+    func testAFailedStallRecoveryStopsThePlayerItSaysItStopped() async {
+        await harness.startPlaying(Fixtures.track("a"))
+        harness.engine.finishBuffering()
+        harness.engine.tick(to: 30)
+
+        // Walking into a lift: the buffer runs dry, and the re-resolve can't reach the
+        // network either.
+        harness.streams.failing.insert("a")
+        harness.engine.stall()
+        await harness.settle { self.harness.player.errorMessage != nil }
+
+        XCTAssertFalse(harness.player.isPlaying, "Precondition: the app has given up on this track")
+        XCTAssertFalse(harness.engine.isEnginePlaying,
+                       "The player was left armed, so the track resumes itself the moment the bytes arrive")
+    }
+
+    /// The whole sequence, as it happens in a pocket: the music comes back on its own while
+    /// `isPlaying` is false, and `.pause` only acts `if isPlaying` — so the press is dropped
+    /// and iOS is told it succeeded. Nothing repairs the flag either: the periodic reconcile
+    /// only handles `isPlaying && !isEnginePlaying`, never the other way round.
+    func testOnePressPausesAudioThatCameBackAfterAFailedStallRecovery() async {
+        await harness.startPlaying(Fixtures.track("a"))
+        harness.engine.finishBuffering()
+        harness.engine.tick(to: 30)
+
+        harness.streams.failing.insert("a")
+        harness.engine.stall()
+        await harness.settle { self.harness.player.errorMessage != nil }
+
+        // Back in coverage.
+        harness.engine.refillBufferAfterStall()
+        harness.engine.tick(to: 31)
+        await harness.drain()
+        harness.engine.clearEvents()
+
+        harness.commands.fire(.pause)
+        await harness.drain()
+
+        XCTAssertFalse(harness.engine.isEnginePlaying,
+                       "Two presses to pause: the first one was swallowed by a false isPlaying")
+    }
+
     /// Starting a different track supersedes any pending stall recovery, so the recovery
     /// can't fire against a track the user has already left.
     func testANewTrackCancelsPendingStallRecovery() async {
@@ -352,6 +399,62 @@ final class LoadWindowIntentTests: XCTestCase {
                        "The new track showed the old one's elapsed time")
         harness.streams.release()
         await harness.settle { !self.harness.player.isLoading }
+    }
+
+    // MARK: - Windows the user never opened
+
+    /// The same gap, but reached without anyone tapping anything: an expired stream URL (or a
+    /// stall that never cleared) sends `handlePlaybackFailure` off to re-resolve the track that
+    /// is already playing. It captures `isPlaying` *before* its await and hands that back as the
+    /// autoplay decision, so a pause taken while the replacement URL is in flight is reverted
+    /// the moment it lands — the music the press just stopped starts again by itself.
+    func testPausingDuringAFailureReResolveIsHonoured() async {
+        await harness.startPlaying(Fixtures.track("a"))
+        harness.engine.finishBuffering()
+        harness.engine.tick(to: 30)
+
+        // The URL died mid-track, which is routine — they are time-limited. One silent
+        // re-resolve follows.
+        harness.streams.isSuspended = true
+        harness.engine.fail()
+        await harness.drain()
+        XCTAssertTrue(harness.player.isLoading, "Precondition: the re-resolve is in flight")
+
+        harness.player.togglePlayPause()
+        XCTAssertFalse(harness.player.isPlaying)
+
+        harness.streams.release()
+        await harness.settle { !self.harness.player.isLoading }
+
+        XCTAssertFalse(harness.player.isPlaying, "The pause was undone when the replacement URL arrived")
+        XCTAssertFalse(harness.engine.didPlayAfterLastAttach)
+    }
+
+    /// Autoplay's window is wider still, and silent throughout: `advance()` hands off to
+    /// `continueAutoplay`, which fetches a whole radio before it has a track to load at all.
+    /// A pause pressed in that silence looks like a press that did nothing — until the radio
+    /// arrives and `beginLoad` re-asserts "starting a track is a request to play it" over it.
+    ///
+    /// The fetch returning instantly here doesn't close the window: it happens inside an
+    /// unstructured `Task`, so the press below lands before any of it has run.
+    func testPausingWhileAutoplayIsFindingTheNextTrackIsHonoured() async {
+        harness.radios.results["a"] = Fixtures.tracks(["r1"])
+        await harness.startPlaying(Fixtures.track("a"))
+        harness.engine.finishBuffering()
+
+        harness.engine.finishTrack()
+        XCTAssertTrue(harness.player.isLoading, "Precondition: the radio fetch is in flight")
+
+        // On the lock screen, where this happens — the screen is off and the queue ran out.
+        harness.commands.fire(.pause)
+        XCTAssertFalse(harness.player.isPlaying)
+
+        await harness.settle {
+            self.harness.player.currentTrack?.videoId == "r1" && !self.harness.player.isLoading
+        }
+
+        XCTAssertFalse(harness.player.isPlaying, "The radio started itself over a pause already pressed")
+        XCTAssertFalse(harness.engine.didPlayAfterLastAttach)
     }
 }
 

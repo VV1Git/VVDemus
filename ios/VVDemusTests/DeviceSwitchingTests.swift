@@ -178,6 +178,69 @@ final class DeviceSwitchingTests: XCTestCase {
         XCTAssertTrue(harness.engine.events.contains(.play))
     }
 
+    // MARK: - The browser going away on its own
+
+    /// Handing back because the lid closed is not a pause anyone pressed, and nobody is
+    /// looking at the phone when it happens — the lock screen is the whole of what they get
+    /// when they finally do look.
+    ///
+    /// `fallBackToPhone` flipped `isPlaying` to false and said nothing, so
+    /// `MPNowPlayingInfoCenter` kept the casting-era snapshot: rate 1, which iOS draws as a
+    /// pause button and extrapolates a running clock from, over silence. Nothing else covers
+    /// the gap either — the periodic tick is gated off for the length of a hand-back — so it
+    /// lasts until the resolve lands, which is a network round trip on a connection that has
+    /// just proved itself unreliable.
+    func testFallingBackFromADeadBrowserTellsTheLockScreenAtOnce() async {
+        await harness.startPlaying(Fixtures.track("a"))
+        harness.player.setActiveDevice(.computer)
+        await harness.settle { self.harness.player.externalStream != nil }
+        harness.player.applyExternalReport(
+            epoch: harness.player.playbackEpoch, videoId: "a", progress: 42, duration: 180, isPlaying: true
+        )
+        XCTAssertEqual(harness.nowPlaying.latest?.rate, 1, "Precondition: the lock screen shows the browser playing")
+
+        harness.streams.isSuspended = true
+        harness.player.fallBackToPhone()
+        await harness.drain()
+        harness.engine.tick(to: 50) // the old item is still attached and still ticking
+
+        XCTAssertFalse(harness.player.isPlaying, "Precondition: the fallback stops claiming to play")
+        XCTAssertEqual(harness.nowPlaying.latest?.rate, 0, "The lock screen is still counting up over silence")
+        XCTAssertEqual(harness.nowPlaying.latest?.elapsed ?? -1, 42, accuracy: 0.001)
+
+        harness.streams.release()
+        await harness.settle { !self.harness.player.isLoading }
+    }
+
+    /// The consequence, pressed through the real lock screen: the button drawn there is the
+    /// pause one, and `.pause` drops every press against an `isPlaying` that is already
+    /// false — returning `.success` and republishing nothing, so not even the icon changes
+    /// to explain it.
+    func testTheButtonTheLockScreenShowsAfterAFallbackRespondsToBeingPressed() async {
+        await harness.startPlaying(Fixtures.track("a"))
+        harness.player.setActiveDevice(.computer)
+        await harness.settle { self.harness.player.externalStream != nil }
+        harness.player.applyExternalReport(
+            epoch: harness.player.playbackEpoch, videoId: "a", progress: 42, duration: 180, isPlaying: true
+        )
+
+        harness.streams.isSuspended = true
+        harness.player.fallBackToPhone()
+        await harness.drain()
+
+        // Whatever was published last is what the user is looking at, so it decides which
+        // button they press.
+        let rateOnScreen = harness.nowPlaying.latest?.rate
+        let pressed: RemoteCommandKind = rateOnScreen == 1 ? .pause : .play
+        XCTAssertEqual(harness.commands.fire(pressed), .success)
+        await harness.drain()
+
+        XCTAssertNotEqual(harness.nowPlaying.latest?.rate, rateOnScreen, "The press did nothing and changed nothing")
+
+        harness.streams.release()
+        await harness.settle { !self.harness.player.isLoading }
+    }
+
     // MARK: - Reports from the browser
 
     func testReportsFromTheBrowserDriveProgress() async {

@@ -159,6 +159,31 @@ final class FakePlaybackEngine: PlaybackEngine {
         state = .paused
     }
 
+    /// Audio starting without the app asking for it *now*.
+    ///
+    /// Models the gap between `AVPlayer.play()` and `timeControlStatus` describing it.
+    /// That property is documented to change asynchronously, so a read taken on the main
+    /// thread just after `play()` — which is exactly when the periodic observer fires, since
+    /// it is invoked on every time jump and whenever playback starts or stops — can still
+    /// say `.paused` about an instruction that is about to take effect. Sound then arrives
+    /// with nothing further for the app to observe.
+    func startPlayingBehindOurBack() {
+        state = .playing
+    }
+
+    /// Coming back into coverage: the bytes a stalled item was waiting for arrive and its
+    /// buffer refills.
+    ///
+    /// Only produces sound if the app left the player armed. A stall doesn't zero the rate —
+    /// `.waitingToPlayAtSpecifiedRate` is still "told to play" — so a stalled player picks
+    /// the track back up by itself, while one that was actually paused stays silent. That
+    /// asymmetry is the point: it tells "the app gave up but never stopped the player" apart
+    /// from "the app stopped the player".
+    func refillBufferAfterStall() {
+        guard state == .stalled else { return }
+        state = .playing
+    }
+
     func clearEvents() { events.removeAll() }
 
     var didPlayAfterLastAttach: Bool {

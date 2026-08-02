@@ -163,4 +163,64 @@ final class InterruptionTests: XCTestCase {
         XCTAssertFalse(harness.engine.events.contains(.play))
         XCTAssertFalse(harness.player.isPlaying)
     }
+
+    // MARK: - An interruption that never ends
+
+    /// iOS does not promise an `.ended` for every `.began`. An interruption the app is
+    /// suspended through, or an interrupting app that never gives the route back, leaves
+    /// `isInterrupted` set with nothing to clear it until the next `beginLoad` — a whole
+    /// track later. Pressing play does not clear it: `togglePlayPause` starts the engine and
+    /// sets `isPlaying`, but never touches the interruption bookkeeping, so the app spends
+    /// the rest of the track playing audibly while still believing it is interrupted.
+    ///
+    /// What that costs is the recovery. `attach` vetoes `shouldPlay` whenever the flag is
+    /// set, so when the stream URL expires mid-track the app re-resolves it, attaches the
+    /// replacement item, and then refuses to start it. The music stops dead with no error
+    /// and no failed load — the only symptom is silence, and a play button that needs
+    /// pressing twice.
+    func testRecoveringAnExpiredUrlStillPlaysAfterAnInterruptionThatNeverEnded() async {
+        await harness.startPlaying(Fixtures.track("a"))
+        harness.engine.finishBuffering()
+        harness.engine.tick(to: 40)
+
+        // A `.began` with no `.ended` behind it — ever.
+        harness.beginInterruption()
+        await harness.settle { !self.harness.player.isPlaying }
+
+        harness.commands.fire(.play)
+        XCTAssertTrue(harness.player.isPlaying, "Precondition: the user got their music back")
+        harness.engine.finishBuffering()
+        harness.engine.clearEvents()
+
+        // Mid-track the stream URL dies. One silent re-resolve is meant to put the music
+        // back exactly where it was.
+        harness.engine.fail()
+        await harness.settle { (self.harness.streams.resolveCount["a"] ?? 0) > 1 }
+        await harness.settle { !self.harness.player.isLoading }
+
+        XCTAssertTrue(harness.engine.didPlayAfterLastAttach,
+                      "The replacement item was attached and then left silent")
+        XCTAssertTrue(harness.player.isPlaying)
+        XCTAssertEqual(harness.nowPlaying.latest?.rate, 1, "and the lock screen has to agree")
+    }
+
+    /// The same latch switches off the only thing that notices the engine stopping by
+    /// itself: `reconcileIsPlayingWithEngine` returns early while it is set. A later dropout
+    /// then leaves `isPlaying` stuck true over silence — the AirPods double-tap bug again,
+    /// for the rest of the track.
+    func testTheEngineStoppingIsStillNoticedAfterAnInterruptionThatNeverEnded() async {
+        await harness.startPlaying(Fixtures.track("a"))
+        harness.beginInterruption()
+        await harness.settle { !self.harness.player.isPlaying }
+
+        harness.commands.fire(.play)
+        XCTAssertTrue(harness.player.isPlaying, "Precondition: playing again")
+
+        harness.engine.stopBehindOurBack()
+        harness.engine.tick(to: 12)
+        await harness.settle { !self.harness.player.isPlaying }
+
+        XCTAssertFalse(harness.player.isPlaying, "The button claims playback over silence")
+        XCTAssertEqual(harness.nowPlaying.latest?.rate, 0)
+    }
 }
