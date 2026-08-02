@@ -14,6 +14,27 @@ struct MiniPlayerBar: View {
 
     private var isInline: Bool { placement == .inline }
 
+    /// The accessory's glass is a capsule, so each end is a semicircle of radius height/2 —
+    /// 44pt of controls, 6pt above and below, plus the 2pt hairline, so R = 29. The artwork's
+    /// clearance from that arc peaks where its own 6pt corner arc shares the capsule arc's
+    /// centre line, at R - 6 = 23, rounded up to `Space.xl` to stay on the theme's 4pt scale.
+    /// At the old 16 the corner cleared by 6.4pt against a 16pt gap at the bar's mid-height,
+    /// and that mismatch is what read as the art being shoved into the nose of the pill.
+    ///
+    /// Inline is left alone: it drops the vertical padding and the hairline, so the block is
+    /// 44pt tall, R = 22, and the same rule gives 22 - 6 = 16 — what the gutter already is.
+    private var leadingInset: CGFloat { isInline ? Theme.Metrics.gutter : Theme.Space.xl }
+
+    /// The trailing side wants the opposite. `forward.fill` is a ~19pt glyph centred in a 44pt
+    /// frame, so it already carries ~13pt of optical inset; another 16 put its visual edge at
+    /// 29 against the artwork's 16 and tipped the whole row left.
+    ///
+    /// Inline keeps the gutter on both sides rather than applying that reasoning again: the
+    /// merged pill is the system's own tab-bar shape, it is much narrower, and its one control
+    /// is all that stands between the title and the end — trimming there costs legibility
+    /// without a capsule nose to clear.
+    private var trailingInset: CGFloat { isInline ? Theme.Metrics.gutter : Theme.Space.md }
+
     var body: some View {
         if let track = player.currentTrack {
             VStack(spacing: 0) {
@@ -92,12 +113,10 @@ struct MiniPlayerBar: View {
                         .accessibilityLabel("Next track")
                     }
                 }
-                // 16, not 12: the accessory's glass is a capsule, so its edge curves inward
-                // most sharply exactly where the artwork's corners are. At 12 the curve
-                // clipped into the album art's leading corners; this clears it without
-                // changing the bar's height or the artwork's size.
-                .padding(.horizontal, Theme.Metrics.gutter)
-                .padding(.vertical, isInline ? 0 : 6)
+                // See `leadingInset` / `trailingInset` for why these differ.
+                .padding(.leading, leadingInset)
+                .padding(.trailing, trailingInset)
+                .padding(.vertical, isInline ? 0 : Theme.Metrics.rowVertical)
 
                 // The hairline needs a row of its own, which only the expanded placement has.
                 if !isInline {
@@ -129,9 +148,11 @@ struct MiniPlayerBar: View {
     /// A hairline of progress along the bottom of the bar — enough to tell at a glance how
     /// far into a track you are without opening Now Playing.
     ///
-    /// Inset to the gutter and clipped to a capsule: as a full-width sibling of the padded
-    /// row it ran edge-to-edge under inset content, and the system's own capsule clip on the
-    /// accessory sliced its square ends off. Accent, to match the Now Playing scrubber.
+    /// Inset to the same pair as the row above and clipped to a capsule: as a full-width
+    /// sibling of the padded row it ran edge-to-edge under inset content, and the system's own
+    /// capsule clip on the accessory sliced its square ends off. Sharing the row's insets
+    /// rather than the plain gutter is what keeps its ends under the artwork and the last
+    /// control instead of 8pt adrift of them. Accent, to match the Now Playing scrubber.
     private var progressLine: some View {
         GeometryReader { geometry in
             let fraction = player.duration > 0 ? min(max(player.progress / player.duration, 0), 1) : 0
@@ -144,7 +165,8 @@ struct MiniPlayerBar: View {
             }
         }
         .frame(height: 2)
-        .padding(.horizontal, Theme.Metrics.gutter)
+        .padding(.leading, leadingInset)
+        .padding(.trailing, trailingInset)
         .accessibilityHidden(true)
     }
 }

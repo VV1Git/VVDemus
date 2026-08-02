@@ -187,11 +187,6 @@ enum Haptics {
         return generator
     }
 
-    /// Call as a gesture begins, so the engine is warm by the time the action fires.
-    static func prepare(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
-        generator(for: style).prepare()
-    }
-
     static func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
         let generator = generator(for: style)
         generator.impactOccurred()

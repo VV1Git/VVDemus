@@ -30,12 +30,23 @@ struct RootView: View {
         // reading. This is the system doing it — there is nothing here to keep in sync.
         .tabBarMinimizeBehavior(.onScrollDown)
         // Where Music puts its mini player. The system owns the glass, the placement and the
-        // safe-area inset it costs every scrolling view, which is why `MiniPlayerInset` and
-        // the hand-measured `BottomBar` geometry are both gone.
-        .tabViewBottomAccessory {
-            if player.currentTrack != nil {
-                MiniPlayerBar(player: player) { showNowPlaying = true }
-            }
+        // safe-area inset it costs every scrolling view, which is why `MiniPlayerInset` and the
+        // hand-measured `BottomBar` geometry are both gone.
+        //
+        // `isEnabled:` rather than a conditional inside the closure: the accessory draws its
+        // glass capsule whenever the modifier is attached, so returning nothing from the content
+        // left an empty pill sitting above the tab bar the whole time the app was idle. The
+        // content closure is the wrong lever — by the time it runs, the capsule already exists.
+        //
+        // And rather than attaching the modifier conditionally, which is the obvious fix and a
+        // trap: `if playing { tabs.tabViewBottomAccessory { … } } else { tabs }` gives SwiftUI
+        // two different view types, so the whole `TabView` is rebuilt the moment the first song
+        // starts — new `UITabBarController`, new hosting controller per tab, every tab's
+        // navigation stack and scroll position gone. The visible cost is searching for a song,
+        // tapping it, and watching the results vanish. `BottomAccessoryVisibilityTests` holds
+        // both halves of this down.
+        .tabViewBottomAccessory(isEnabled: player.currentTrack != nil) {
+            MiniPlayerBar(player: player) { showNowPlaying = true }
         }
         .fullScreenCover(isPresented: $showNowPlaying) {
             NowPlayingView(player: player)
