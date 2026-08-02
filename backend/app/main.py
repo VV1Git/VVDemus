@@ -193,7 +193,7 @@ def playlist(playlist_id: str):
 
 
 @app.get("/radio/{video_id}", response_model=list[Track])
-def radio(video_id: str, limit: int = Query(30, ge=1, le=100)):
+def radio(video_id: str, limit: int = Query(50, ge=1, le=100)):
     """YouTube Music's 'radio' for a track: the seed track followed by similar songs.
     Powers both the per-song Radio screen and autoplay continuation."""
     try:

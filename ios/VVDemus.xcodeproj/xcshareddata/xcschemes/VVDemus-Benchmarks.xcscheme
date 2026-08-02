@@ -89,6 +89,9 @@
                   Identifier = "PersistenceAndParsingTests">
                </Test>
                <Test
+                  Identifier = "TasteProfileTests">
+               </Test>
+               <Test
                   Identifier = "DurationReconciliationTests">
                </Test>
                <Test

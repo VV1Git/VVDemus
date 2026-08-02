@@ -1,8 +1,8 @@
 name: VVDemus
 options:
-  bundleIdPrefix: com.nv7.vvdemus
+  bundleIdPrefix: com.vvdemus
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "26.1"
   createIntermediateGroups: true
 configs:
   Debug: debug
@@ -18,7 +18,7 @@ targets:
   VVDemus:
     type: application
     platform: iOS
-    deploymentTarget: "26.0"
+    deploymentTarget: "26.1"
     sources:
       - path: VVDemus
         excludes:
@@ -45,12 +45,12 @@ targets:
           - audio
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.nv7.vvdemus.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.vvdemus.app
         # Kept here rather than only in the Xcode UI. Set through Xcode it lives solely in
         # project.pbxproj, which XcodeGen rewrites from scratch on every `xcodegen
         # generate` — so the signing team silently vanished each time the project was
         # regenerated, and the next device build failed with "requires a development team".
-        DEVELOPMENT_TEAM: FTVNWWU5J2
+        DEVELOPMENT_TEAM: 7DJSY2AKJK
         CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: "1.1"
         CURRENT_PROJECT_VERSION: "2"
@@ -63,7 +63,7 @@ targets:
   VVDemusTests:
     type: bundle.unit-test
     platform: iOS
-    deploymentTarget: "26.0"
+    deploymentTarget: "26.1"
     sources:
       - path: VVDemusTests
     dependencies:
@@ -73,8 +73,8 @@ targets:
       - package: Swifter
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.nv7.vvdemus.app.tests
-        DEVELOPMENT_TEAM: FTVNWWU5J2
+        PRODUCT_BUNDLE_IDENTIFIER: com.vvdemus.app.tests
+        DEVELOPMENT_TEAM: 7DJSY2AKJK
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
@@ -126,6 +126,7 @@ schemes:
             - LocalControlServerTests
             - NowPlayingInfoTests
             - PersistenceAndParsingTests
+            - TasteProfileTests
             - DurationReconciliationTests
             - QueueAndTransportTests
             - RateLimitTests

@@ -1,8 +1,12 @@
 import Foundation
 
-/// Builds "Because you listened to…" shelves from recent play history — one seed track per
-/// shelf, fetched concurrently. Shared by HomeView (native UI) and LocalControlServer (web
-/// remote) so the personalization logic only lives in one place.
+/// Builds "Because you listened to…" shelves — one seed track per shelf, fetched
+/// concurrently. Shared by HomeView (native UI) and LocalControlServer (web remote) so the
+/// personalization logic only lives in one place.
+///
+/// Seeds come from `TasteProfile`, not from "the three most recent plays": those were
+/// unweighted and unspread, so three songs off one album in a row produced three shelves of
+/// what is effectively the same radio, all titled after the same artist.
 enum RecommendationsBuilder {
     struct Section: Identifiable, Codable {
         var id: String { title }
@@ -15,6 +19,10 @@ enum RecommendationsBuilder {
     /// freshly fetched "Because you listened to…" row every time Home appears.
     private static let cacheFreshness: TimeInterval = 30 * 60
 
+    /// `perSeedLimit` is how long a shelf is, not how much is fetched: the radios behind
+    /// these shelves are always pulled in full, since this is frequently the fetch that
+    /// fills `RadioCacheStore` for a seed — and whatever it stores is what that radio's
+    /// own screen shows from then on.
     static func build(seeds: [Track], perSeedLimit: Int = InnerTubeClient.dataSaverLimit(default: 15)) async throws -> [Section] {
         guard !seeds.isEmpty else { return [] }
         // A radio fetched recently — by the autoplay engine, a radio screen, or a previous
@@ -45,17 +53,22 @@ enum RecommendationsBuilder {
         let radios = await withTaskGroup(of: (Int, [Track]).self) { group -> [[Track]] in
             for (index, seed) in seeds.enumerated() {
                 if let hit = cached[seed.videoId] ?? nil, !hit.isEmpty {
-                    group.addTask { (index, Array(hit.dropFirst())) }
+                    group.addTask { (index, Array(hit.dropFirst().prefix(perSeedLimit))) }
                     continue
                 }
                 group.addTask {
-                    guard let mix = try? await APIClient.shared.radio(videoId: seed.videoId, limit: perSeedLimit) else {
+                    guard let mix = try? await APIClient.shared.radio(videoId: seed.videoId) else {
                         return (index, [])
                     }
-                    // Never overwrites an existing mix: these shelves fetch a short slice,
-                    // and writing it through would shrink the radio's own screen to match.
+                    // The whole radio is cached even though the shelf shows a slice of it:
+                    // this is often the first fetch for a seed, and a truncated mix here is
+                    // what the radio's own screen would then be stuck with.
+                    //
+                    // Never overwrites an existing mix, though — YouTube returns a different
+                    // selection on every call, so writing this one through would rearrange a
+                    // radio screen someone may be looking at.
                     await MainActor.run { RadioCacheStore.shared.storeIfAbsent(mix, for: seed.videoId) }
-                    return (index, Array(mix.dropFirst()))
+                    return (index, Array(mix.dropFirst().prefix(perSeedLimit)))
                 }
             }
             var results = Array(repeating: [Track](), count: seeds.count)
@@ -88,8 +101,13 @@ final class HomeFeedStore: ObservableObject {
     @Published private(set) var isLoading = false
     private(set) var generatedAt: Date?
 
-    private let key = "home_feed_v2" // v1 shelves predate the long-form mix filter
+    // v1 shelves predate the long-form mix filter; v2 shelves are seeded from the three most
+    // recently played tracks, so a cached one is usually three rows of the same artist.
+    private let key = "home_feed_v3"
     private let freshness: TimeInterval = 30 * 60
+    /// One radio each, so the request count is exactly what it was before the shelves were
+    /// personalized — the seeds are chosen better, not fetched more.
+    private static let shelfCount = 3
     /// Shared so that Home appearing and the web remote asking at the same moment produce
     /// one fetch between them, not two.
     private var inFlight: Task<[RecommendationsBuilder.Section], Error>?
@@ -110,9 +128,13 @@ final class HomeFeedStore: ObservableObject {
     @discardableResult
     func refresh() async throws -> [RecommendationsBuilder.Section] {
         if let inFlight { return try await inFlight.value }
+        // Resolved here rather than inside the task: the profile is main-actor state, and
+        // reading it before the fetch starts keeps the shelves matched to the listening that
+        // was true when the refresh was asked for.
+        let seeds = TasteProfile.current().seeds(Self.shelfCount)
         let task = Task { () throws -> [RecommendationsBuilder.Section] in
             async let quickPicks = APIClient.shared.home()
-            var built = try await RecommendationsBuilder.build(seeds: PlayHistoryStore.shared.recentSeeds(3))
+            var built = try await RecommendationsBuilder.build(seeds: seeds)
             if let picks = try? await quickPicks, !picks.isEmpty {
                 built.append(RecommendationsBuilder.Section(title: "Quick Picks", tracks: picks))
             }

@@ -158,7 +158,7 @@ final class LocalControlServer: ObservableObject {
     }
     /// A radio's mix, for the two routes that serve one.
     nonisolated let radioMix = UpstreamCall<String, [Track]> { videoId in
-        try await APIClient.shared.radio(videoId: videoId, limit: 50)
+        try await APIClient.shared.radio(videoId: videoId)
     }
     /// The port the request guards compare against.
     ///

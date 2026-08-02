@@ -6,7 +6,10 @@ import Foundation
 final class RadioCacheStore: ObservableObject {
     static let shared = RadioCacheStore()
 
-    private let key = "radio_track_cache_v2" // v1 entries hold years-as-durations
+    // v1 entries hold years-as-durations; v2 entries were whatever length the background
+    // fetch that got there first asked for (10, 15 or 25), and nothing re-fetches a radio
+    // that already has a cached mix — so without a bump they'd stay short forever.
+    private let key = "radio_track_cache_v3"
     private let limit = 20
     private var cache: [String: [Track]] = [:]
     private var order: [String] = []
@@ -58,10 +61,13 @@ final class RadioCacheStore: ObservableObject {
     /// Records a mix only if this radio has none yet.
     ///
     /// Background fetches — autoplay refilling the queue, a recommendation shelf being
-    /// built — ask for their own, usually smaller, slice of a radio. Letting those write
-    /// through meant a radio you had open could quietly swap its 50 songs for whatever 25
-    /// autoplay happened to fetch, which read as the list reordering or losing tracks on
-    /// its own. They now defer to whatever is already there.
+    /// built — pull a radio of their own for a seed someone may already be looking at.
+    /// YouTube returns a different selection on every call, so letting those write through
+    /// meant a radio you had open could quietly swap songs around, which read as the list
+    /// reordering or losing tracks on its own. They now defer to whatever is already there.
+    ///
+    /// They all fetch the full `InnerTubeClient.radioLength` mix, so whichever gets there
+    /// first still leaves a complete radio behind for the screen to show.
     func storeIfAbsent(_ tracks: [Track], for seedVideoId: String) {
         guard cache[seedVideoId]?.isEmpty ?? true else { return }
         store(tracks, for: seedVideoId)

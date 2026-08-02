@@ -110,7 +110,7 @@ struct RadioDetailView: View {
     }
 
     private func fetchTracks() async throws -> [Track] {
-        try await APIClient.shared.radio(videoId: seedTrack.videoId, limit: 50)
+        try await APIClient.shared.radio(videoId: seedTrack.videoId)
     }
 
     /// Fetches a mix only the first time a radio is opened; after that the cached list is

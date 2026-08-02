@@ -39,6 +39,7 @@
 		5251DBA6686BC794174515E5 /* StreamingResourceLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BD379E17791582A8E7F7054 /* StreamingResourceLoader.swift */; };
 		547F8E0C49C42A6FA49EA4D1 /* ConnectRequestGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D51AE0530B20B7E4C72DBA12 /* ConnectRequestGuardTests.swift */; };
 		5AECAB7DC0B793C3FAE846AF /* MiniPlayerBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8435F1A3A9C3B73536259A1 /* MiniPlayerBar.swift */; };
+		5B9B896FE780FFFAFD33F0C2 /* TasteProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 580A43BA54F0F61B25F5186D /* TasteProfileTests.swift */; };
 		5CFDB35D296F50CEAD27AA8C /* JumpBackInCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C73BE8983E44C1581A2E34 /* JumpBackInCard.swift */; };
 		5DEADB996E32527572BDF9E8 /* SwifterHardeningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E72AC6D69ABA613F9A1A3851 /* SwifterHardeningTests.swift */; };
 		624ACA706C32353FAFF77B86 /* DownloadProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F6B277709C96BE61373C66 /* DownloadProgressTests.swift */; };
@@ -77,8 +78,10 @@
 		9CD584C637204CD56CBB61DA /* PlaylistStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23D4D1FB74714A8C3E085B63 /* PlaylistStore.swift */; };
 		9CDB186C49C14E8B6164DB1D /* StreamUrlRangeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC90415B7D75641B807404FD /* StreamUrlRangeTests.swift */; };
 		A1034084A54014007E68A8CB /* ListeningStatsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B199BDB292F52DCB8B3A18D5 /* ListeningStatsStore.swift */; };
+		A70D9D0F66CADDC6AB98D0CC /* TasteProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF74A76793FD0D96877A933D /* TasteProfile.swift */; };
 		A786FE0F591D4D7A208B7D11 /* InnerTubeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93D23C7FF3F19509E309CB2D /* InnerTubeClient.swift */; };
 		A9F7615CABBB4BB5E47956B1 /* StatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9ACC9D92E90466786942C6B /* StatsView.swift */; };
+		AE6394785258AF83B230C899 /* TrackTransitionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D95A79E0729C424065CB7264 /* TrackTransitionTests.swift */; };
 		B3B818FC353E3F4018990D9C /* NavigationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D3A453163BFAC3310F05268 /* NavigationCoordinator.swift */; };
 		B4E1B0DE2BA745CA668931CD /* VVDemusApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50964CDD65DBD8591D6D540 /* VVDemusApp.swift */; };
 		BA996A0B22DCCBCDB2DDBAE9 /* Swifter in Frameworks */ = {isa = PBXBuildFile; productRef = AA3E23E8482543956F4F8BBB /* Swifter */; };
@@ -102,6 +105,7 @@
 		E1DD2412792513A059F0D027 /* TrackRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C3AD15A14F7B2833A3EC05 /* TrackRow.swift */; };
 		E29AC88FF8A5687BFC6927D6 /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15FF0189CD04B25B84B47893 /* DownloadManager.swift */; };
 		E4DDFBB8DACEAF0D0AF20591 /* ArtworkColorLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69462CBED0F68B02C8DF2CD5 /* ArtworkColorLoader.swift */; };
+		E87B7F360188A5EB32DA3D03 /* BottomAccessoryVisibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F40B2FF2858E7C18E736425 /* BottomAccessoryVisibilityTests.swift */; };
 		E8B4AEB756E7DC6F8ECAD86D /* index.html in Resources */ = {isa = PBXBuildFile; fileRef = EF7E811952198D1673A0A90C /* index.html */; };
 		EAA784217508A6CA5260198A /* BackgroundKeepAlive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F5BF39076947A7C25F1C027 /* BackgroundKeepAlive.swift */; };
 		ECADF6950ADDC8380A45DBEE /* Playlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 764FE1B65E9781A3D93FB7F7 /* Playlist.swift */; };
@@ -152,6 +156,7 @@
 		38BE5AEDC91A647B9D93A53A /* SystemMediaWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMediaWiringTests.swift; sourceTree = "<group>"; };
 		38E39F4D61E3AD2CB0318EB4 /* app.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = app.js; sourceTree = "<group>"; };
 		3986CC91F2A338DEB6202F9E /* JSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSON.swift; sourceTree = "<group>"; };
+		3F40B2FF2858E7C18E736425 /* BottomAccessoryVisibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottomAccessoryVisibilityTests.swift; sourceTree = "<group>"; };
 		406923FFB280590D32023F78 /* RadioStation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadioStation.swift; sourceTree = "<group>"; };
 		4103EA7AD0538E3154A61CED /* DaylistDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaylistDetailView.swift; sourceTree = "<group>"; };
 		42D564F837E8E34909D3D329 /* ConnectCastLivenessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectCastLivenessTests.swift; sourceTree = "<group>"; };
@@ -162,6 +167,7 @@
 		51C67A0D69A2630240DD7B50 /* ConnectServerRoutesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectServerRoutesTests.swift; sourceTree = "<group>"; };
 		52994059AB22AB5A4FD1C32D /* LibraryDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDestination.swift; sourceTree = "<group>"; };
 		531CDB2CD96A3B2898813D74 /* QueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueView.swift; sourceTree = "<group>"; };
+		580A43BA54F0F61B25F5186D /* TasteProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasteProfileTests.swift; sourceTree = "<group>"; };
 		59AFBA7F84ADF5F4C1301501 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		5B5F85AA2A70538931EF9CEE /* PersistenceAndParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceAndParsingTests.swift; sourceTree = "<group>"; };
 		5D3A453163BFAC3310F05268 /* NavigationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationCoordinator.swift; sourceTree = "<group>"; };
@@ -213,6 +219,7 @@
 		D3FAEF2A7FD08DF8FB170D78 /* DurationReconciliationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DurationReconciliationTests.swift; sourceTree = "<group>"; };
 		D51AE0530B20B7E4C72DBA12 /* ConnectRequestGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectRequestGuardTests.swift; sourceTree = "<group>"; };
 		D871A7E71B17E6E8B3D1B0A6 /* LocalControlServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalControlServer.swift; sourceTree = "<group>"; };
+		D95A79E0729C424065CB7264 /* TrackTransitionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackTransitionTests.swift; sourceTree = "<group>"; };
 		D9DF3D4F42D29E3AFB672771 /* LikedSongsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LikedSongsStore.swift; sourceTree = "<group>"; };
 		DCA3A3F064C2520E555A9E8F /* PlaybackDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackDependencies.swift; sourceTree = "<group>"; };
 		DF660773C7BC7989E7E05D5B /* RemoteImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImage.swift; sourceTree = "<group>"; };
@@ -221,6 +228,7 @@
 		E72AC6D69ABA613F9A1A3851 /* SwifterHardeningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwifterHardeningTests.swift; sourceTree = "<group>"; };
 		ECCEBCF252A93278D92DC52C /* RateLimit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RateLimit.swift; sourceTree = "<group>"; };
 		ED1470D91139176AA91722C3 /* ConnectSocketRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectSocketRegistryTests.swift; sourceTree = "<group>"; };
+		EF74A76793FD0D96877A933D /* TasteProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasteProfile.swift; sourceTree = "<group>"; };
 		EF7E811952198D1673A0A90C /* index.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = index.html; sourceTree = "<group>"; };
 		F3DE5ADA58B7310FCED42EAD /* AirPodsRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirPodsRouteTests.swift; sourceTree = "<group>"; };
 		F3F4B2C370B76B0EF49CCAB1 /* NetworkByteCounter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkByteCounter.swift; sourceTree = "<group>"; };
@@ -269,6 +277,7 @@
 				CF702811EC67336BA91B3AE4 /* AppVersionTests.swift */,
 				A6A0C5404D66AE5F823E4576 /* BackgroundAudioPolicyTests.swift */,
 				ABE3BFFBF54F6B4ED91C7828 /* BackgroundPlaybackTests.swift */,
+				3F40B2FF2858E7C18E736425 /* BottomAccessoryVisibilityTests.swift */,
 				42D564F837E8E34909D3D329 /* ConnectCastLivenessTests.swift */,
 				D51AE0530B20B7E4C72DBA12 /* ConnectRequestGuardTests.swift */,
 				51C67A0D69A2630240DD7B50 /* ConnectServerRoutesTests.swift */,
@@ -295,6 +304,8 @@
 				CC90415B7D75641B807404FD /* StreamUrlRangeTests.swift */,
 				E72AC6D69ABA613F9A1A3851 /* SwifterHardeningTests.swift */,
 				38BE5AEDC91A647B9D93A53A /* SystemMediaWiringTests.swift */,
+				580A43BA54F0F61B25F5186D /* TasteProfileTests.swift */,
+				D95A79E0729C424065CB7264 /* TrackTransitionTests.swift */,
 				0B146B3928B7B5C1598FCE9B /* VisitorDataTests.swift */,
 				6A4F737BC84ED1E47DA96A0B /* Support */,
 			);
@@ -451,6 +462,7 @@
 				23D4D1FB74714A8C3E085B63 /* PlaylistStore.swift */,
 				7B4F97F5AA3AFEC724762820 /* RadioCacheStore.swift */,
 				C57FFD369DF49FF64FEBBBBE /* RadioHistoryStore.swift */,
+				EF74A76793FD0D96877A933D /* TasteProfile.swift */,
 			);
 			path = Persistence;
 			sourceTree = "<group>";
@@ -543,11 +555,11 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					7E396043DF741FD6DF754A4A = {
-						DevelopmentTeam = FTVNWWU5J2;
+						DevelopmentTeam = 7DJSY2AKJK;
 						ProvisioningStyle = Automatic;
 					};
 					F70F31859F8EDDE8AE0B8805 = {
-						DevelopmentTeam = FTVNWWU5J2;
+						DevelopmentTeam = 7DJSY2AKJK;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -599,6 +611,7 @@
 				C19EDE426858C0FB96048297 /* AppVersionTests.swift in Sources */,
 				8C8DE89A22B22633428C17B8 /* BackgroundAudioPolicyTests.swift in Sources */,
 				4E53C619AD7FBD33F5AFCAC9 /* BackgroundPlaybackTests.swift in Sources */,
+				E87B7F360188A5EB32DA3D03 /* BottomAccessoryVisibilityTests.swift in Sources */,
 				71F05D4EA18525036617D681 /* ConnectCastLivenessTests.swift in Sources */,
 				547F8E0C49C42A6FA49EA4D1 /* ConnectRequestGuardTests.swift in Sources */,
 				C521D76F37BBFE20E1E99446 /* ConnectServerRoutesTests.swift in Sources */,
@@ -626,6 +639,8 @@
 				9CDB186C49C14E8B6164DB1D /* StreamUrlRangeTests.swift in Sources */,
 				5DEADB996E32527572BDF9E8 /* SwifterHardeningTests.swift in Sources */,
 				93606D622242CF64B9049EAF /* SystemMediaWiringTests.swift in Sources */,
+				5B9B896FE780FFFAFD33F0C2 /* TasteProfileTests.swift in Sources */,
+				AE6394785258AF83B230C899 /* TrackTransitionTests.swift in Sources */,
 				7107F2807793F772ABDF09AC /* VisitorDataTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -692,6 +707,7 @@
 				1AD640E01EC2F0AE388F625F /* ShortcutRow.swift in Sources */,
 				A9F7615CABBB4BB5E47956B1 /* StatsView.swift in Sources */,
 				5251DBA6686BC794174515E5 /* StreamingResourceLoader.swift in Sources */,
+				A70D9D0F66CADDC6AB98D0CC /* TasteProfile.swift in Sources */,
 				4D0137A3F9FE0048026FEF92 /* Theme.swift in Sources */,
 				C2605EED52D38BEA1F7996A1 /* Track.swift in Sources */,
 				2AD3E7AF38454586E73D2CC4 /* TrackCard.swift in Sources */,
@@ -764,7 +780,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -781,15 +797,15 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = FTVNWWU5J2;
+				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.nv7.vvdemus.app.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vvdemus.app.tests;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -842,7 +858,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -858,15 +874,15 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = FTVNWWU5J2;
+				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.nv7.vvdemus.app.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vvdemus.app.tests;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -883,16 +899,16 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = FTVNWWU5J2;
+				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = Generated/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.nv7.vvdemus.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vvdemus.app;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -908,16 +924,16 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = FTVNWWU5J2;
+				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = Generated/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.nv7.vvdemus.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vvdemus.app;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;

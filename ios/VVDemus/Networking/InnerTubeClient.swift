@@ -32,6 +32,16 @@ enum InnerTubeClient {
         UserDefaults.standard.bool(forKey: dataSaverDefaultsKey) ? max(1, defaultLimit / 2) : defaultLimit
     }
 
+    /// How many songs a radio holds, everywhere one is fetched.
+    ///
+    /// The `next` endpoint hands back a fixed 50-item page, so asking for fewer downloads
+    /// exactly the same bytes and throws the rest away while parsing. Background fetches
+    /// used to each ask for their own smaller slice — 10 for the Daylist, 15 for a
+    /// recommendation shelf, 25 for autoplay — and whichever landed first became the
+    /// cached mix, so a radio opened afterwards showed 15 songs rather than 50. They all
+    /// take the whole page now and slice it locally for their own use.
+    static let radioLength = 50
+
     /// Built from a fixed Gregorian calendar in UTC, not a locale-sensitive
     /// `DateFormatter`.
     ///
@@ -142,7 +152,7 @@ enum InnerTubeClient {
 
     // MARK: - Radio
 
-    static func radio(videoId: String, limit: Int) async throws -> [Track] {
+    static func radio(videoId: String, limit: Int = radioLength) async throws -> [Track] {
         let body: [String: Any] = [
             "context": [
                 "client": ["clientName": "WEB_REMIX", "clientVersion": clientVersion],
