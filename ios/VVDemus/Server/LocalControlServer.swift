@@ -1279,20 +1279,20 @@ final class LocalControlServer: ObservableObject {
     /// wasn't producing sound — the same reason `/api/playback/report` checks the id.
     private func noteClientPolled(_ clientId: String?) {
         guard let clientId, clientId == castClientId else { return }
+        creditedPolls += 1
         lastComputerReportAt = Date()
     }
 
-    /// When the casting tab was last heard from over HTTP. Exposed so a test can assert
-    /// that a poll carrying the tab id counts as evidence — the whole point of
-    /// `noteClientPolled`, and unobservable otherwise without sleeping through the
-    /// ninety-second paused window.
-    var lastComputerReportAtForTesting: Date? { lastComputerReportAt }
-
-    /// Puts the server back to "nothing has been heard from the browser", which is what a
-    /// paused cast looks like a few seconds after the pause.
-    func forgetComputerReportsForTesting() {
-        lastComputerReportAt = nil
-    }
+    /// How many polls have been credited to the casting tab, in the sense above. Observable
+    /// for the same reason `routeRegistrations` is.
+    ///
+    /// Tests assert on this rather than on `lastComputerReportAt` directly, because the 1 Hz
+    /// broadcast writes that field too — whenever a new track starts, and after any gap long
+    /// enough to look like the app having been suspended. A test asserting that a poll from
+    /// the *wrong* tab credited nothing was therefore racing the timer, and lost whenever
+    /// another suite had run first and left the process slow enough for a tick to land in
+    /// between.
+    private(set) var creditedPolls = 0
 
     /// Frames are `hello:<clientId>` (sent on connect and with every heartbeat).
     private static func clientId(fromFrame text: String) -> String? {

@@ -424,16 +424,13 @@ final class ConnectServerRoutesTests: XCTestCase {
     /// alone. A background tab whose heartbeat timer the browser had throttled then lost the
     /// cast, and the next play came out of the phone.
     func testAPollFromTheCastingTabCountsAsProofItIsStillThere() async throws {
-        let videoId = uniqueId("current")
-        try await beginCasting(clientId: "tab-cast", videoId: videoId)
-        // Pretend the tab has been quiet for longer than a playing cast is given.
-        server.forgetComputerReportsForTesting()
-        XCTAssertNil(server.lastComputerReportAtForTesting, "Precondition: nothing has been heard")
+        try await beginCasting(clientId: "tab-cast", videoId: uniqueId("current"))
+        let before = server.creditedPolls
 
         _ = try await request("GET", "/api/state?clientId=tab-cast")
 
-        XCTAssertNotNil(
-            server.lastComputerReportAtForTesting,
+        XCTAssertEqual(
+            server.creditedPolls, before + 1,
             "A poll from the casting tab is the only liveness signal a paused cast produces"
         )
     }
@@ -441,9 +438,8 @@ final class ConnectServerRoutesTests: XCTestCase {
     /// Sent as a header instead, which app.js also does. Reading only one of the two would
     /// have been a silent half-fix.
     func testTheTabIdIsAlsoAcceptedAsAHeader() async throws {
-        let videoId = uniqueId("current")
-        try await beginCasting(clientId: "tab-cast", videoId: videoId)
-        server.forgetComputerReportsForTesting()
+        try await beginCasting(clientId: "tab-cast", videoId: uniqueId("current"))
+        let before = server.creditedPolls
 
         guard let url = URL(string: baseURL.absoluteString + "/api/state") else {
             throw XCTSkip("could not build URL")
@@ -452,21 +448,20 @@ final class ConnectServerRoutesTests: XCTestCase {
         request.setValue("tab-cast", forHTTPHeaderField: "X-VVDemus-Client-Id")
         _ = try await URLSession.shared.data(for: request)
 
-        XCTAssertNotNil(server.lastComputerReportAtForTesting)
+        XCTAssertEqual(server.creditedPolls, before + 1)
     }
 
     /// The same reason `/api/playback/report` checks the id: otherwise a stale tab, or
     /// anything else on the network, could pin playback on a computer producing no sound and
     /// the fallback to the phone could never fire.
     func testAPollFromSomeOtherTabIsNotProofTheCastingTabIsThere() async throws {
-        let videoId = uniqueId("current")
-        try await beginCasting(clientId: "tab-cast", videoId: videoId)
-        server.forgetComputerReportsForTesting()
+        try await beginCasting(clientId: "tab-cast", videoId: uniqueId("current"))
+        let before = server.creditedPolls
 
         _ = try await request("GET", "/api/state?clientId=a-different-tab")
         _ = try await request("GET", "/api/state")
 
-        XCTAssertNil(server.lastComputerReportAtForTesting)
+        XCTAssertEqual(server.creditedPolls, before, "Only the casting tab's own poll counts")
     }
 
     /// Hands the named track to the phone as "the browser is playing this", which is the
