@@ -1,12 +1,21 @@
 name: VVDemus
 options:
-  bundleIdPrefix: com.vvdemus
+  # Unused in practice — both targets set PRODUCT_BUNDLE_IDENTIFIER explicitly — but it is
+  # XcodeGen-time text, so it cannot reference the build setting the real prefix lives in.
+  # Left neutral rather than carrying a real one for no reason.
+  bundleIdPrefix: com.example.vvdemus
   deploymentTarget:
     iOS: "26.1"
   createIntermediateGroups: true
 configs:
   Debug: debug
   Release: release
+# Signing team and bundle id prefix, which are per-machine rather than per-project. See
+# Config/Signing.xcconfig: it holds placeholders and optionally includes a gitignored
+# Signing.local.xcconfig with the real values, so a commit never carries either.
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
 packages:
   # A vendored fork, not the upstream release. Swifter 1.5.0 has defects that can only be
   # fixed inside the library (an accept() loop that dies for good on any transient error,
@@ -45,12 +54,11 @@ targets:
           - audio
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.vvdemus.app
-        # Kept here rather than only in the Xcode UI. Set through Xcode it lives solely in
-        # project.pbxproj, which XcodeGen rewrites from scratch on every `xcodegen
-        # generate` — so the signing team silently vanished each time the project was
-        # regenerated, and the next device build failed with "requires a development team".
-        DEVELOPMENT_TEAM: 7DJSY2AKJK
+        # Composed from the prefix in Config/Signing.xcconfig, so the id this build answers
+        # to is a local fact and not something a commit reassigns. DEVELOPMENT_TEAM comes
+        # from that same file and is deliberately absent here — naming it at target level
+        # would both put it back in the diff and let it override the config file.
+        PRODUCT_BUNDLE_IDENTIFIER: $(VVDEMUS_BUNDLE_ID_PREFIX).app
         CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: "1.1"
         CURRENT_PROJECT_VERSION: "2"
@@ -73,8 +81,7 @@ targets:
       - package: Swifter
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.vvdemus.app.tests
-        DEVELOPMENT_TEAM: 7DJSY2AKJK
+        PRODUCT_BUNDLE_IDENTIFIER: $(VVDEMUS_BUNDLE_ID_PREFIX).app.tests
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"

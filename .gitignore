@@ -11,3 +11,7 @@ ios/DerivedData/
 ios/build/
 **/xcuserdata/
 *.xcuserstate
+
+# This machine's signing team and bundle id prefix. The committed Signing.xcconfig holds
+# placeholders and optionally includes this; see the comments in it.
+ios/Config/Signing.local.xcconfig

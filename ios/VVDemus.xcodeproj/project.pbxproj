@@ -230,6 +230,7 @@
 		ED1470D91139176AA91722C3 /* ConnectSocketRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectSocketRegistryTests.swift; sourceTree = "<group>"; };
 		EF74A76793FD0D96877A933D /* TasteProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasteProfile.swift; sourceTree = "<group>"; };
 		EF7E811952198D1673A0A90C /* index.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = index.html; sourceTree = "<group>"; };
+		F3A86E681CAB374C151F3F43 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 		F3DE5ADA58B7310FCED42EAD /* AirPodsRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirPodsRouteTests.swift; sourceTree = "<group>"; };
 		F3F4B2C370B76B0EF49CCAB1 /* NetworkByteCounter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkByteCounter.swift; sourceTree = "<group>"; };
 		F64AC8017670B94E6B96A579 /* QueueAndTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueAndTransportTests.swift; sourceTree = "<group>"; };
@@ -331,6 +332,14 @@
 			path = WebUI;
 			sourceTree = "<group>";
 		};
+		55B095EF75D0DD6F61A6EFA1 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				F3A86E681CAB374C151F3F43 /* Signing.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
 		6493D86A693BE7B013927EA9 /* App */ = {
 			isa = PBXGroup;
 			children = (
@@ -373,6 +382,7 @@
 		7EC2EAF9124EF98FA9FD0056 = {
 			isa = PBXGroup;
 			children = (
+				55B095EF75D0DD6F61A6EFA1 /* Config */,
 				BDFD872EF8DAC4E5D5D4B63E /* Packages */,
 				B263AB807D9FD8C44DE7DDEB /* VVDemus */,
 				13A09D3F200706F4F920A8C8 /* VVDemusTests */,
@@ -555,11 +565,11 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					7E396043DF741FD6DF754A4A = {
-						DevelopmentTeam = 7DJSY2AKJK;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 					F70F31859F8EDDE8AE0B8805 = {
-						DevelopmentTeam = 7DJSY2AKJK;
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -731,6 +741,7 @@
 /* Begin XCBuildConfiguration section */
 		19E163367032D21C5A8ABC48 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = F3A86E681CAB374C151F3F43 /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -797,7 +808,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -805,7 +815,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.vvdemus.app.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VVDEMUS_BUNDLE_ID_PREFIX).app.tests";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -815,6 +825,7 @@
 		};
 		5A1D6F8F320100142B8C48E4 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = F3A86E681CAB374C151F3F43 /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -874,7 +885,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -882,7 +892,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.vvdemus.app.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VVDEMUS_BUNDLE_ID_PREFIX).app.tests";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -899,7 +909,6 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = Generated/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
@@ -908,7 +917,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.vvdemus.app;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VVDEMUS_BUNDLE_ID_PREFIX).app";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -924,7 +933,6 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "";
-				DEVELOPMENT_TEAM = 7DJSY2AKJK;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = Generated/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
@@ -933,7 +941,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.vvdemus.app;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VVDEMUS_BUNDLE_ID_PREFIX).app";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
