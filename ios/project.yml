@@ -54,11 +54,13 @@ targets:
           - audio
     settings:
       base:
-        # Composed from the prefix in Config/Signing.xcconfig, so the id this build answers
-        # to is a local fact and not something a commit reassigns. DEVELOPMENT_TEAM comes
-        # from that same file and is deliberately absent here — naming it at target level
-        # would both put it back in the diff and let it override the config file.
-        PRODUCT_BUNDLE_IDENTIFIER: $(VVDEMUS_BUNDLE_ID_PREFIX).app
+        # Comes from Config/Signing.xcconfig, so the id this build answers to is a local
+        # fact and not something a commit reassigns — see the long note there about why the
+        # bundle id is the one setting that must never change behind your back.
+        # DEVELOPMENT_TEAM comes from that same file and is deliberately absent here:
+        # naming it at target level would both put it back in the diff and let it override
+        # the config file.
+        PRODUCT_BUNDLE_IDENTIFIER: $(VVDEMUS_BUNDLE_ID)
         CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: "1.1"
         CURRENT_PROJECT_VERSION: "2"
@@ -68,6 +70,31 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         DEVELOPMENT_ASSET_PATHS: ""
         ENABLE_PREVIEWS: YES
+    preBuildScripts:
+      # Installing a device build under the wrong bundle id is the one mistake here that
+      # costs real data: iOS keys the app's container to it, so a changed id means a second
+      # app with empty defaults and a first app that has become unreachable. It happened —
+      # a missing Signing.local.xcconfig let a placeholder id through and produced exactly
+      # that, and it read as "the update wiped my history".
+      #
+      # Simulator builds are deliberately exempt: nothing anyone cares about lives in a
+      # simulator container, and a fresh clone has to be able to build and run the suite
+      # with no local file at all.
+      - name: Verify signing identity
+        basedOnDependencyAnalysis: false
+        script: |
+          [ "$PLATFORM_NAME" = "iphoneos" ] || exit 0
+          case "$PRODUCT_BUNDLE_IDENTIFIER" in
+            *CHANGE-ME*)
+              echo "error: ios/Config/Signing.local.xcconfig is missing, so this build fell back to the placeholder bundle id '$PRODUCT_BUNDLE_IDENTIFIER'."
+              echo "error: Installing it would create a SECOND app on the phone with empty history rather than updating the real one."
+              echo "error: Create ios/Config/Signing.local.xcconfig with the two lines for this machine, e.g.:"
+              echo "error:     DEVELOPMENT_TEAM = ABCDE12345"
+              echo "error:     VVDEMUS_BUNDLE_ID = com.yourprefix.vvdemus.app"
+              echo "error: Use the SAME VVDEMUS_BUNDLE_ID this machine has always used — changing it orphans the app data already on your phone."
+              exit 1
+              ;;
+          esac
   VVDemusTests:
     type: bundle.unit-test
     platform: iOS
@@ -81,7 +108,7 @@ targets:
       - package: Swifter
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: $(VVDEMUS_BUNDLE_ID_PREFIX).app.tests
+        PRODUCT_BUNDLE_IDENTIFIER: $(VVDEMUS_BUNDLE_ID).tests
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"

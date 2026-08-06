@@ -1,31 +1,42 @@
 // Who this build is signed as, and what it calls itself.
 //
 // Both are per-machine facts, not project ones: they name a particular Apple developer
-// account and a bundle id registered against it. They used to sit in `project.yml`, so every
-// commit carried them and pulling someone else's change quietly reassigned your signing team.
+// account and a bundle id registered against it. Two people work on this repo under two
+// different developer teams, so neither value can live in a committed file without each
+// push reassigning the other person's.
 //
-// The values below are deliberately placeholders. Real ones go in `Signing.local.xcconfig`
-// next to this file, which is gitignored — see the `#include?` at the bottom. Nothing here
-// is secret (a Team ID is visible in any distributed app), it just has no business being
-// shared or fought over in a diff.
+// Real values go in `Signing.local.xcconfig` next to this file, which is gitignored — see
+// the `#include?` at the bottom. Nothing here is secret (a Team ID is visible in any
+// distributed app), it just has no business being shared or fought over in a diff.
 //
-// Kept as a config file rather than in the Xcode UI for the reason the old `project.yml`
-// comment gave: settings made through Xcode live only in `project.pbxproj`, which XcodeGen
-// rewrites from scratch on every `xcodegen generate`, so the signing team silently vanished
-// each time the project was regenerated and the next device build failed with "requires a
-// development team". XcodeGen never rewrites this file — it only references it.
+// Kept as a config file rather than in the Xcode UI because settings made through Xcode
+// live in `project.pbxproj`, which XcodeGen rewrites from scratch on every `xcodegen
+// generate` — so they silently vanish. XcodeGen never rewrites this file, it only
+// references it.
 
-// Empty is the correct default, not a made-up team id. Simulator builds need no team at all,
-// so a fresh clone builds and tests without one; a device build fails with Xcode's own
-// "requires a development team", which is a far better prompt than mysteriously signing
-// against an account you don't have.
+// Empty is the correct default, not a made-up team id. Simulator builds need no team at
+// all, so a fresh clone builds and tests without one; a device build fails with Xcode's
+// own "requires a development team", which is a far better prompt than mysteriously
+// signing against an account you don't have.
 DEVELOPMENT_TEAM =
 
-// `PRODUCT_BUNDLE_IDENTIFIER` is composed from this in `project.yml` rather than set here,
-// because the app and the test bundle need different ones and this file applies to both.
-VVDEMUS_BUNDLE_ID_PREFIX = com.example.vvdemus
+// THE BUNDLE ID IS THE APP'S IDENTITY ON A PHONE, AND IDENTITY IS WHAT OWNS THE USER'S
+// DATA. iOS keys a container to it: change it and the next install is a brand-new app with
+// empty defaults — no play history, no downloads, no radios — while the old container sits
+// there under the old id, invisible and unreachable from the new one.
+//
+// This default is therefore a deliberate tripwire, not a usable value. It used to be a
+// plausible-looking `com.example.vvdemus`, which is exactly the wrong thing: with no
+// `Signing.local.xcconfig` present, a device build succeeded, installed a *second* app
+// alongside the real one, and looked for all the world like the history had been wiped.
+// A device build now refuses to run rather than guess — see `Verify signing identity` in
+// project.yml, which fails the build while this value is still here.
+//
+// Simulator builds are left alone: no real data lives in a simulator, and a fresh clone
+// must still be able to build and run the test suite with no local file at all.
+VVDEMUS_BUNDLE_ID = com.example.CHANGE-ME.vvdemus
 
-// Local overrides. `#include?` is the optional form — no error when the file is absent, which
-// is exactly the fresh-clone case. Last assignment wins in an xcconfig, so this has to come
+// Local overrides. `#include?` is the optional form — no error when the file is absent,
+// which is the fresh-clone case. Last assignment wins in an xcconfig, so this has to come
 // after the defaults above or it would be the one being overridden.
 #include? "Signing.local.xcconfig"

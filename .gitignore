@@ -12,6 +12,18 @@ ios/build/
 **/xcuserdata/
 *.xcuserstate
 
-# This machine's signing team and bundle id prefix. The committed Signing.xcconfig holds
-# placeholders and optionally includes this; see the comments in it.
+# This machine's signing team and bundle id. The committed Signing.xcconfig holds a
+# placeholder team and a deliberately invalid bundle id, and optionally includes this; see
+# the comments in it.
 ios/Config/Signing.local.xcconfig
+
+# Generated from project.yml by `xcodegen generate` — a build artifact, not a source file.
+#
+# Tracked, it was the second way the two developers' signing settings kept overwriting each
+# other: XcodeGen writes this file from project.yml, but *Xcode* rewrites it too whenever it
+# "fixes" signing for you, baking in whichever DEVELOPMENT_TEAM that machine happens to have.
+# It shipped `DEVELOPMENT_TEAM = FTVNWWU5J2` for exactly that reason. Untracked, Xcode can
+# scribble in it freely and git never sees it.
+#
+# Run `xcodegen generate` in ios/ after cloning, and after any change to project.yml.
+ios/VVDemus.xcodeproj/
