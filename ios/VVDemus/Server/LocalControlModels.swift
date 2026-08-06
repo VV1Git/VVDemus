@@ -17,6 +17,11 @@ struct StateSnapshot: Codable {
     let progress: Double
     let duration: Double
     let isShuffling: Bool
+    /// Volume for the device currently producing sound, 0...1. Each device keeps its own
+    /// level (see `PlayerService.volume`), so this changes when `activeDevice` does — and a
+    /// casting browser applies it to its `<audio>` element, since while it is casting this
+    /// is *its* level.
+    let volume: Double
     // No `hasPrevious`: it was encoded into every broadcast and read by nothing. The web
     // UI's previous button is always enabled and simply POSTs `/api/previous`, which the
     // phone no-ops when there is no back stack.
@@ -89,6 +94,7 @@ struct StateSnapshot: Codable {
             progress: progress,
             duration: duration,
             isShuffling: isShuffling,
+            volume: volume,
             queueContextTitle: queueContextTitle,
             currentTrack: currentTrack,
             manualQueue: nil,
@@ -189,6 +195,14 @@ struct PlayRequestBody: Decodable {
 
 struct SeekRequestBody: Decodable {
     let seconds: Double
+}
+
+/// Sets the level for whichever device is currently producing sound — the web slider is a
+/// remote for the active device, exactly as the transport buttons are. Clamped on arrival
+/// by `PlayerService.setVolume`, so a hand-written request can't mute playback with a value
+/// no slider could produce.
+struct VolumeRequestBody: Decodable {
+    let volume: Double
 }
 
 struct TrackOnlyBody: Decodable {

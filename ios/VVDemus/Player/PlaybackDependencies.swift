@@ -24,6 +24,16 @@ protocol PlaybackEngine: AnyObject {
     /// an interruption, a route change, a stall, a failed item.
     var isEnginePlaying: Bool { get }
 
+    /// Attenuation applied *under* the system volume, 0...1 — the hardware buttons keep
+    /// doing exactly what they did, this only ever quietens what they set.
+    ///
+    /// A property of the engine rather than an argument to `replaceItem`, because it
+    /// outlives any one item: every track plays at whatever level was last set.
+    ///
+    /// It does *not* survive `rebuild()` — a fresh `AVPlayer` starts at 1.0 — so
+    /// `PlayerService`, which owns the stored level, puts it back after a reset.
+    var volume: Double { get set }
+
     func rebuild()
     func replaceItem(url: URL, forwardBufferDuration: TimeInterval)
     func play()
@@ -137,6 +147,13 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// Only `.paused` means the app should stop claiming to play.
     var isEnginePlaying: Bool { player.timeControlStatus != .paused }
 
+    /// `AVPlayer.volume` is a `Float` multiplier under the system volume, so this is a
+    /// per-app attenuation and not a replacement for the phone's own volume control.
+    var volume: Double {
+        get { Double(player.volume) }
+        set { player.volume = Float(newValue) }
+    }
+
     /// Waiting to play, with the reason being an empty buffer rather than normal start-up.
     ///
     /// Without this the app cannot distinguish "buffering for a moment" from "stalled in a
@@ -164,6 +181,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         removeItemObservers()
         activeResourceLoader?.shutdown()
         activeResourceLoader = nil
+        // Back at 1.0, along with everything else the discarded player was holding.
+        // `PlayerService.handleMediaServicesReset` is what restores the level.
         player = AVPlayer()
         installTimeObserver()
     }

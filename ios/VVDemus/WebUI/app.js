@@ -165,6 +165,14 @@ const ICONS = {
   remove:
     '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>',
   note: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V5l11-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zm11-2a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+  // Three states of the same speaker, so the level is readable at a glance without
+  // measuring the track. Same cone in all three; only the waves differ.
+  volumeMute:
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 4.5v15l-5-4H3v-7h3zm3.5 3.4L16.9 10l2.4-2.1 1.3 1.5L18.4 11.5l2.2 2.1-1.3 1.5L16.9 13l-2.4 2.1-1.3-1.5 2.2-2.1-2.2-2.1z"/></svg>',
+  volumeLow:
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 4.5v15l-5-4H3v-7h3zm3.2 4a4.5 4.5 0 0 1 0 7l-1-1.7a2.6 2.6 0 0 0 0-3.6z"/></svg>',
+  volumeHigh:
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 4.5v15l-5-4H3v-7h3zm3.2 4a4.5 4.5 0 0 1 0 7l-1-1.7a2.6 2.6 0 0 0 0-3.6zm2.3-3a8.5 8.5 0 0 1 0 13l-1-1.7a6.6 6.6 0 0 0 0-9.6z"/></svg>',
 };
 
 // ---------- helpers ----------
@@ -1477,6 +1485,36 @@ function renderDeviceLabel() {
   }
 }
 
+const volumeEl = document.getElementById("np-volume");
+const volumeIconEl = document.getElementById("np-volume-icon");
+
+function renderVolumeIcon(level) {
+  const key = level <= 0 ? "volumeMute" : level < 0.5 ? "volumeLow" : "volumeHigh";
+  // Guarded: this runs on every state broadcast, and reassigning innerHTML once a second
+  // rebuilds the SVG for nothing.
+  if (volumeIconEl.dataset.icon === key) return;
+  volumeIconEl.dataset.icon = key;
+  volumeIconEl.innerHTML = ICONS[key];
+}
+
+/// Keeps the slider, the icon and this tab's `<audio>` element on the phone's stored level.
+///
+/// The phone keeps one level per device, and the snapshot always carries the *active*
+/// device's — so this slider is the computer's level while casting and the iPhone's while
+/// the phone is playing, and switching devices makes it jump to the incoming device's
+/// level. That is the point: it always adjusts whatever is actually making the sound.
+function renderVolume(s) {
+  // `dragging`/`committing` mirror the seek bar, and cover the audio element as well as
+  // the thumb. Until the POST lands, every snapshot still carries the *pre-drag* level —
+  // applied, it would drag the thumb back out from under the finger and, worse, audibly
+  // fight it, since the `input` handler below has already set the real level.
+  if (volumeEl.dragging || volumeEl.committing) return;
+  const level = typeof s.volume === "number" ? s.volume : 1;
+  if (s.activeDevice === "computer") audioEl.volume = level;
+  volumeEl.value = Math.round(level * 100);
+  renderVolumeIcon(level);
+}
+
 /// Keeps this tab's <audio> element in sync with the server's playback state whenever
 /// this tab is the one that actually chose "This Computer" — a no-op for every other tab
 /// (or when the phone is the active device), and idempotent so it can be called from the
@@ -1950,6 +1988,9 @@ function renderNowPlaying(s) {
   // the URLs. Buying them is only useful while the phone is still there to sell them.
   prefetchUpcomingStreams(s);
   renderDeviceLabel();
+  // After syncCastAudio, so a tab that just took over casting sets the level on an
+  // element that already has its source.
+  renderVolume(s);
   renderDocumentTitle(s, playing);
   const npArt = document.getElementById("np-art");
   setArt(npArt, s.currentTrack ? s.currentTrack.thumbnailUrl : null, 56);
@@ -2160,6 +2201,43 @@ seekEl.addEventListener("change", async () => {
     seekEl.seeking = false;
     refreshState().catch(() => {});
   }
+});
+
+// The same `dragging` latch the seek bar needs, and for the same reason: while it is set,
+// snapshots are not allowed to move the thumb, so a handler that fails to clear it freezes
+// the control until the page is reloaded. `pointerup` is what actually ends a drag —
+// `change` doesn't fire when the thumb is pressed and released without moving.
+// Painted now rather than waiting for the first snapshot: the phone may be unreachable at
+// load, and an empty box beside the slider reads as a broken control.
+renderVolumeIcon(Number(volumeEl.value) / 100);
+
+volumeEl.addEventListener("pointerdown", () => (volumeEl.dragging = true));
+["pointerup", "pointercancel", "blur"].forEach((ev) =>
+  volumeEl.addEventListener(ev, () => (volumeEl.dragging = false))
+);
+
+/// Debounces the write to the phone. The level is applied to this tab's `<audio>` element
+/// on every `input` — instant and free — but the phone owns the stored value, and a single
+/// drag fires dozens of these.
+let volumePostTimer = null;
+
+volumeEl.addEventListener("input", () => {
+  const level = Number(volumeEl.value) / 100;
+  if (state.last && state.last.activeDevice === "computer") audioEl.volume = level;
+  renderVolumeIcon(level);
+  // Held from the first `input` until the POST settles, so the window between releasing
+  // the thumb and the phone agreeing is covered too — `dragging` alone ends at pointerup.
+  volumeEl.committing = true;
+  clearTimeout(volumePostTimer);
+  volumePostTimer = setTimeout(() => {
+    // Cleared in every outcome including a timeout: left set, renderVolume stops updating
+    // the slider for good, so an unreachable phone would silently freeze the control.
+    post("/api/volume", { volume: level })
+      .catch(() => {})
+      .finally(() => {
+        volumeEl.committing = false;
+      });
+  }, 150);
 });
 
 // ---------- keyboard control ----------

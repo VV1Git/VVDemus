@@ -70,6 +70,9 @@ final class FakePlaybackEngine: PlaybackEngine {
 
     var currentTimeSeconds: Double = 0
     var itemDurationSeconds: Double?
+    /// Survives `replaceItem` but not `rebuild()`, exactly as `AVPlayer.volume` does: a
+    /// level belongs to the player, and a rebuild throws the player away.
+    var volume: Double = 1
     /// What the player told the engine to treat as the end of the item, so a test can assert
     /// that a doubled item duration is cut back to the real one.
     var forwardPlaybackEndTime: Double?
@@ -97,6 +100,8 @@ final class FakePlaybackEngine: PlaybackEngine {
         events.append(.rebuild)
         state = .paused
         attachedURL = nil
+        // A fresh `AVPlayer` is at full volume, and the app is what has to notice.
+        volume = 1
     }
 
     func replaceItem(url: URL, forwardBufferDuration: TimeInterval) {
@@ -375,11 +380,23 @@ final class PlayerHarness {
     /// Private to this harness, so tests can post real `AVAudioSession` notifications
     /// without reaching every other `PlayerService` alive in the test process.
     let notifications = NotificationCenter()
+    /// Private to this harness for the same reason `notifications` is: volume is persisted,
+    /// and a test must neither read the developer's own level nor leave one behind in the
+    /// app's real defaults. Torn down in `deinit`.
+    let defaults: UserDefaults
+    private let defaultsSuiteName: String
 
     /// Commands relayed to a casting browser.
     private(set) var relayedCommands: [String] = []
 
-    init() {
+    /// - Parameter storedVolumes: levels already on disk when the app starts, for testing
+    ///   what a relaunch restores. Empty means a fresh install.
+    init(storedVolumes: [PlaybackDevice: Double] = [:]) {
+        defaultsSuiteName = "VVDemusTests-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: defaultsSuiteName)!
+        for (device, level) in storedVolumes {
+            defaults.set(level, forKey: PlayerService.volumeDefaultsKey(for: device))
+        }
         player = PlayerService(
             engine: engine,
             session: session,
@@ -389,7 +406,8 @@ final class PlayerHarness {
             downloads: downloads,
             sideEffects: sideEffects,
             radios: radios,
-            notifications: notifications
+            notifications: notifications,
+            defaults: defaults
         )
         player.onComputerCommand = { [weak self] command in
             switch command {
@@ -397,6 +415,12 @@ final class PlayerHarness {
             case .seek(let seconds): self?.relayedCommands.append("seek:\(seconds)")
             }
         }
+    }
+
+    /// `UserDefaults(suiteName:)` writes a real plist into the test process's container, so
+    /// without this every harness ever constructed leaves one behind.
+    deinit {
+        UserDefaults.standard.removePersistentDomain(forName: defaultsSuiteName)
     }
 
     // MARK: Simulated system events

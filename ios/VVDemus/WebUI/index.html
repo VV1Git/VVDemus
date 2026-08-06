@@ -181,6 +181,15 @@
     </div>
 
     <div class="np-right">
+      <!-- Adjusts whichever device is actually playing, because the phone keeps one stored
+           level per device and this is a remote for the active one — same as the transport
+           buttons beside it. The glyph is an indicator, not a mute button. -->
+      <div class="np-volume">
+        <span id="np-volume-icon" class="np-volume-icon" aria-hidden="true"></span>
+        <input id="np-volume" type="range" min="0" max="100" value="100" step="1"
+               title="Volume" aria-label="Volume">
+      </div>
+
       <div class="np-device-switcher">
         <button id="np-device-btn" class="np-device" title="Choose playback device"
                 aria-label="Choose playback device — playing on iPhone"

@@ -25,6 +25,16 @@ final class PlayerService: ObservableObject {
     /// AVPlayer or reattaches it — all queue/radio/stats logic above stays exactly the
     /// same regardless of which device is playing.
     @Published private(set) var activeDevice: PlaybackDevice = .iphone
+    /// Playback volume for whichever device is currently producing sound, 0...1 — an
+    /// attenuation *under* the system volume rather than a replacement for it, so the
+    /// phone's hardware buttons keep working exactly as they did.
+    ///
+    /// Each device remembers its own level: the phone and a casting browser are different
+    /// speakers, usually in different rooms, and a level that suits one rarely suits the
+    /// other. Switching devices swaps which stored level this reflects rather than dragging
+    /// one across. Both levels are kept here rather than half of them in the browser, so
+    /// the phone can turn the computer down and a reloaded tab comes back where it was.
+    @Published private(set) var volume: Double = 1
     /// Only set while `activeDevice == .computer` — what the browser's `<audio>` element
     /// should load. Cleared when switching back to the phone.
     ///
@@ -131,6 +141,7 @@ final class PlayerService: ObservableObject {
     private let sideEffects: PlaybackSideEffects
     private let radios: RadioFetching
     private let notifications: NotificationCenter
+    private let defaults: UserDefaults
 
     private var loadTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
@@ -217,7 +228,11 @@ final class PlayerService: ObservableObject {
         downloads: DownloadLocating,
         sideEffects: PlaybackSideEffects,
         radios: RadioFetching,
-        notifications: NotificationCenter
+        notifications: NotificationCenter,
+        /// Injectable so a test's volume levels don't land in — or read out of — the real
+        /// app's defaults. Everything else `PlayerService` persists already goes through a
+        /// store it can be handed a fake of; two scalars didn't warrant a whole store.
+        defaults: UserDefaults = .standard
     ) {
         self.engine = engine
         self.session = session
@@ -228,7 +243,9 @@ final class PlayerService: ObservableObject {
         self.sideEffects = sideEffects
         self.radios = radios
         self.notifications = notifications
+        self.defaults = defaults
 
+        loadVolumes()
         configureEngineCallbacks()
         configureRemoteCommandCenter()
         observeAudioSession()
@@ -642,6 +659,10 @@ final class PlayerService: ObservableObject {
         // The player object itself is dead after a reset, not just its item — rebuild
         // before anything else, or the reattach below plays into a corpse.
         engine.rebuild()
+        // The replacement player is at full volume. Nothing about a media daemon restarting
+        // is the user asking for that, and it happens with the phone in a pocket — left
+        // unrestored, a track being listened to quietly comes back at 100% mid-song.
+        engine.volume = deviceVolumes[.iphone] ?? 1
         isInterrupted = false
         session.activate(casting: activeDevice == .computer)
         guard activeDevice == .iphone, currentTrack != nil, let url = attachedURL else { return }
@@ -1017,9 +1038,57 @@ final class PlayerService: ObservableObject {
         updateNowPlayingInfo()
     }
 
+    // MARK: - Volume
+
+    static func volumeDefaultsKey(for device: PlaybackDevice) -> String {
+        "volume.\(device.rawValue)"
+    }
+
+    /// The stored level for each device, so switching between them restores the level that
+    /// device was last left at rather than carrying one across.
+    private var deviceVolumes: [PlaybackDevice: Double] = [:]
+
+    private static func clampVolume(_ value: Double) -> Double {
+        // A non-finite value is a corrupt default or a malformed request body, not a
+        // request for silence, so it falls back to full rather than to 0.
+        guard value.isFinite else { return 1 }
+        return min(max(value, 0), 1)
+    }
+
+    private func loadVolumes() {
+        for device in [PlaybackDevice.iphone, .computer] {
+            // `object(forKey:)`, not `double(forKey:)`: an absent key reads as 0.0 there,
+            // which is silence — a fresh install would have started muted.
+            let stored = defaults.object(forKey: Self.volumeDefaultsKey(for: device)) as? Double
+            deviceVolumes[device] = stored.map(Self.clampVolume) ?? 1
+        }
+        volume = deviceVolumes[activeDevice] ?? 1
+        // The engine always holds the *phone's* level, whichever device is active — while
+        // casting its item is merely paused, and this is the level it comes back at.
+        engine.volume = deviceVolumes[.iphone] ?? 1
+    }
+
+    /// Sets the level for the device currently producing sound, and remembers it for that
+    /// device alone.
+    func setVolume(_ newValue: Double) {
+        let clamped = Self.clampVolume(newValue)
+        let device = activeDevice
+        deviceVolumes[device] = clamped
+        volume = clamped
+        // While casting, this is the *computer's* level: it belongs to the browser's
+        // `<audio>` element (which reads it off the state snapshot), not to an AVPlayer
+        // that is producing no sound and whose own level must survive the handoff.
+        if device == .iphone { engine.volume = clamped }
+        defaults.set(clamped, forKey: Self.volumeDefaultsKey(for: device))
+    }
+
     func setActiveDevice(_ device: PlaybackDevice) {
         guard device != activeDevice else { return }
         activeDevice = device
+        // Before anything can make a sound on the new device: the slider in both UIs reads
+        // this, and it must already say what the incoming device was last left at.
+        volume = deviceVolumes[device] ?? 1
+        if device == .iphone { engine.volume = volume }
         bumpPlaybackEpoch()
         pendingPlayIntent = nil
         session.activate(casting: device == .computer)

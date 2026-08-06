@@ -137,6 +137,7 @@ struct NowPlayingView: View {
         VStack(spacing: Theme.Space.lg) {
             progressSection
             transportControls
+            volumeSection
         }
         // The panel supplies its own inner inset. The screen gutter is applied once, on the
         // outer stack, and stops at the glass edge.
@@ -270,6 +271,26 @@ struct NowPlayingView: View {
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
         }
+    }
+
+    /// Volume for whatever device is playing, flanked by the two speaker glyphs that say
+    /// which way is quieter.
+    ///
+    /// Inside the same glass as the scrubber and the transport rather than loose on the
+    /// gradient: it is one more thing you do to the sound coming out right now, and the
+    /// panel is what groups those. Deliberately smaller and dimmer than the scrubber — this
+    /// is a trim, not the control the screen is about.
+    private var volumeSection: some View {
+        HStack(spacing: Theme.Space.md) {
+            Image(systemName: "speaker.fill")
+            Slider(value: Binding(get: { player.volume }, set: { player.setVolume($0) }), in: 0...1)
+                .tint(Theme.accent)
+                .accessibilityLabel("Volume")
+                .accessibilityValue("\(Int((player.volume * 100).rounded())) percent")
+            Image(systemName: "speaker.wave.3.fill")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 
     private var transportControls: some View {

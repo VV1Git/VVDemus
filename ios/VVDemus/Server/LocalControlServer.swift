@@ -524,6 +524,11 @@ final class LocalControlServer: ObservableObject {
             self?.onMain { PlayerService.shared.toggleShuffle() }
             return .ok(.text("ok"))
         }
+        server.POST["/api/volume"] = { [weak self] request in
+            guard let self, let body: VolumeRequestBody = self.decodeBody(request) else { return .badRequest(.text("bad body")) }
+            self.onMain { PlayerService.shared.setVolume(body.volume) }
+            return .ok(.text("ok"))
+        }
 
         server.POST["/api/device"] = { [weak self] request in
             guard let self, let body: DeviceRequestBody = self.decodeBody(request) else { return .badRequest(.text("bad body")) }
@@ -1012,6 +1017,7 @@ final class LocalControlServer: ObservableObject {
             progress: player.progress,
             duration: player.duration,
             isShuffling: player.isShuffling,
+            volume: player.volume,
             queueContextTitle: player.queueContextTitle,
             currentTrack: player.currentTrack,
             manualQueue: player.manualQueue,
