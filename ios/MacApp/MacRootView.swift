@@ -41,7 +41,6 @@ struct MacRootView: View {
     var body: some View {
         NavigationSplitView {
             sidebar
-                .contentMargins(.bottom, transportHeight, for: .scrollContent)
         } detail: {
             // The queue sits beside the content rather than over it, so it can stay open
             // while you keep browsing — the reason it is a panel and not a sheet.
@@ -82,9 +81,16 @@ struct MacRootView: View {
         // This was previously claimed to work; it does not. Both columns went on scrolling to
         // the window's bottom edge and the bar sat over them — the last few tracks of a playlist
         // were unreachable, and in the sidebar it was Settings, the permanently-last row, so it
-        // was covered no matter how far you scrolled. Hence the measured height above and the
-        // `contentMargins` on each column: the inset positions the bar, the margins keep the
-        // content out from under it.
+        // was covered no matter how far you scrolled. Hence the measured height above: the inset
+        // positions the bar, and each column keeps its own content out from under it.
+        //
+        // The two columns do that differently, and the difference is not cosmetic.
+        // `contentMargins(for: .scrollContent)` holds in the detail column, whose screens are
+        // built on `ScrollView`. It does not hold on the sidebar: a `NavigationSplitView`
+        // sidebar `List` is table-backed on macOS, and the margin was silently dropped there —
+        // Settings went back under the bar and could only be glimpsed by dragging into the
+        // rubber-band past the end. So the sidebar buys its clearance with a real row instead,
+        // which no scroll container can decline to lay out. See `bottomClearance`.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 // The Mac's only surface for `player.errorMessage`. It is rendered on the phone by
@@ -194,8 +200,27 @@ struct MacRootView: View {
             Section {
                 row(.destination(.settings), "Settings", "gearshape.fill")
             }
+
+            bottomClearance
         }
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
+    }
+
+    /// Empty space the height of the transport bar, as the sidebar's last row.
+    ///
+    /// A row rather than a margin because the margin does not survive the sidebar's table-backed
+    /// list — see the note on `safeAreaInset` above. It is stripped of everything that would
+    /// make it read as a row: no insets, no separator, no background, and `selectionDisabled` so
+    /// arrowing down past Settings does not land on a blank selection, or worse, drive `detail`
+    /// to a section that is not one of the cases it handles.
+    private var bottomClearance: some View {
+        Color.clear
+            .frame(height: transportHeight)
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .selectionDisabled()
+            .accessibilityHidden(true)
     }
 
     private func row(_ section: MacSection, _ title: String, _ icon: String) -> some View {
