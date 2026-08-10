@@ -118,6 +118,12 @@ struct SearchView: View {
                     } label: {
                         HStack(spacing: Theme.Space.md) {
                             Image(systemName: "clock.arrow.circlepath")
+                                // The same font as the title beside it. Left unset, the glyph
+                                // takes the row's environment font instead — which is not
+                                // `rowTitle` and rendered the clock noticeably larger than the
+                                // word next to it, so the icon read as the subject of the row
+                                // rather than a marker on it.
+                                .font(.rowTitle)
                                 .foregroundStyle(.secondary)
                                 // As wide as a result row's artwork, so a recent search and a
                                 // search result start their text on the same leading edge —
