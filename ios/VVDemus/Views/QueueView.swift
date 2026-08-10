@@ -2,6 +2,11 @@ import SwiftUI
 
 struct QueueView: View {
     @ObservedObject var player: PlayerService
+    /// The queue on screen belongs to whichever device owns the session, so every row comes
+    /// from here — while the paired device owns it this one's `PlayerService` holds nothing at
+    /// all. Taps, swipes and menu items still go to `player`, which relays them to the owner
+    /// (`SessionOwning`) addressed by videoId rather than by the position they were rendered at.
+    @ObservedObject private var peer = PeerPlayback.shared
     @State private var path = NavigationPath()
     /// A real binding, not `.constant(.active)`.
     ///
@@ -9,17 +14,20 @@ struct QueueView: View {
     /// the four from `.trackActions` — so swiping a queue row did nothing at all and there
     /// was no affordance explaining why. Reordering is now opt-in via the Edit button, and
     /// swiping works the rest of the time.
-    @State private var editMode: EditMode = .inactive
+    @State private var editMode: PlatformEditMode = .inactive
 
     private var isQueueEmpty: Bool {
-        player.manualQueue.isEmpty && player.contextQueue.isEmpty
+        peer.displayedManualQueue.isEmpty && peer.displayedContextQueue.isEmpty
     }
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                if let current = player.currentTrack {
-                    Section("Now Playing") {
+                if let current = peer.displayedTrack {
+                    // "Now Playing on <device>" while the session is elsewhere: the rows below
+                    // are the other device's queue, and a header that says so is the smallest
+                    // thing that explains why the phone is showing songs it isn't playing.
+                    Section(peer.owningDeviceName.map { "Now Playing on \($0)" } ?? "Now Playing") {
                         nowPlayingRow(current)
                     }
                 }
@@ -33,37 +41,45 @@ struct QueueView: View {
                     .listRowSeparator(.hidden)
                 }
 
-                if !player.manualQueue.isEmpty {
+                if !peer.displayedManualQueue.isEmpty {
                     Section("Next in Queue") {
-                        ForEach(Array(player.manualQueue.enumerated()), id: \.offset) { index, track in
-                            queueRow(
-                                track,
-                                skip: { player.skipToManualQueueEntry(at: index, expecting: track) },
-                                remove: { player.removeFromManualQueue(at: index, expecting: track) }
-                            )
-                        }
-                        .onMove { player.moveInManualQueue(from: $0, to: $1) }
+                        reorderable(
+                            ForEach(Array(peer.displayedManualQueue.enumerated()), id: \.offset) { index, track in
+                                queueRow(
+                                    track,
+                                    skip: { player.skipToManualQueueEntry(at: index, expecting: track) },
+                                    remove: { player.removeFromManualQueue(at: index, expecting: track) }
+                                )
+                            },
+                            move: { player.moveInManualQueue(from: $0, to: $1) }
+                        )
                     }
                 }
 
-                if !player.contextQueue.isEmpty {
-                    Section(player.queueContextTitle.map { "Next from: \($0)" } ?? "Next Up") {
-                        ForEach(Array(player.contextQueue.enumerated()), id: \.offset) { index, track in
-                            queueRow(
-                                track,
-                                skip: { player.skipToContextQueueEntry(at: index, expecting: track) },
-                                remove: { player.removeFromContextQueue(at: index, expecting: track) }
-                            )
-                        }
-                        .onMove { player.moveInContextQueue(from: $0, to: $1) }
+                if !peer.displayedContextQueue.isEmpty {
+                    Section(peer.displayedContextTitle.map { "Next from: \($0)" } ?? "Next Up") {
+                        reorderable(
+                            ForEach(Array(peer.displayedContextQueue.enumerated()), id: \.offset) { index, track in
+                                queueRow(
+                                    track,
+                                    skip: { player.skipToContextQueueEntry(at: index, expecting: track) },
+                                    remove: { player.removeFromContextQueue(at: index, expecting: track) }
+                                )
+                            },
+                            move: { player.moveInContextQueue(from: $0, to: $1) }
+                        )
                     }
                 }
             }
             .listStyle(.plain)
-            .environment(\.editMode, $editMode)
+            .platformEditMode($editMode)
             .navigationTitle("Queue")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                // `EditButton` is iOS-only, and so is the mode it toggles. macOS needs
+                // neither: a List row with `.onMove` is draggable whenever it is on screen, so
+                // reordering the queue there is always available.
+                #if os(iOS)
+                ToolbarItem(placement: .trailingActions) {
                     // The same `$editMode` state is injected again here: toolbar content is
                     // hoisted into the navigation bar, so it does not reliably inherit the
                     // environment written onto the List below it.
@@ -71,6 +87,7 @@ struct QueueView: View {
                         .environment(\.editMode, $editMode)
                         .disabled(isQueueEmpty)
                 }
+                #endif
             }
             .navigationDestination(for: LibraryDestination.self) { destination in
                 destination.destination(player: player)
@@ -79,11 +96,25 @@ struct QueueView: View {
         }
     }
 
+    /// Reordering works from either device.
+    ///
+    /// It was the one queue edit with no command on the wire, so a drag on the mirroring device
+    /// rearranged nothing — the local queue it mutates is empty there — and the rows snapped back
+    /// on the next poll. `moveInQueue` carries the move now, along with the dragged track's
+    /// videoId so the owner can find the row again if its position has shifted in the meantime.
+    @ViewBuilder
+    private func reorderable<Rows: DynamicViewContent>(
+        _ rows: Rows,
+        move: @escaping (IndexSet, Int) -> Void
+    ) -> some View {
+        rows.onMove(perform: move)
+    }
+
     private func queueRow(_ track: Track, skip: @escaping () -> Void, remove: @escaping () -> Void) -> some View {
         // By position, like `remove` below. `skipTo(track)` matches the first entry
         // with that id, so tapping the second of two identical rows played the first
         // and discarded everything in between.
-        TrackRow(track: track, isActive: player.currentTrack?.id == track.id, onTap: skip)
+        TrackRow(track: track, isActive: peer.displayedTrack?.id == track.id, onTap: skip)
             .trackRowMetrics()
             // Queue owns the trailing edge, so the shared actions keep only their leading
             // swipe — two trailing sets on one row crammed three buttons together and made
@@ -98,6 +129,11 @@ struct QueueView: View {
                 } label: {
                     Label("Remove", systemImage: "minus.circle.fill")
                 }
+            }
+            // The same action as a menu item, because a Mac cannot swipe. Without this, removing
+            // something from the queue was simply not possible on the desktop.
+            .contextMenu {
+                Button("Remove from Queue", role: .destructive) { remove() }
             }
     }
 
@@ -116,6 +152,7 @@ struct QueueView: View {
                 track: track,
                 isActive: true,
                 showsDownloadControl: false,
+                showsLikeControl: false,
                 onTap: { player.togglePlayPause() }
             )
             transportButton
@@ -134,13 +171,13 @@ struct QueueView: View {
         Button {
             player.togglePlayPause()
         } label: {
-            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+            Image(systemName: peer.displayedIsPlaying ? "pause.fill" : "play.fill")
                 .font(.title3)
                 .foregroundStyle(Theme.accent)
                 .frame(width: Theme.Metrics.trailingControl, height: Theme.Metrics.hitTarget)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.pressable)
-        .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+        .accessibilityLabel(peer.displayedIsPlaying ? "Pause" : "Play")
     }
 }

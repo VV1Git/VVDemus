@@ -70,7 +70,7 @@ struct DownloadsView: View {
         }
         .background(Theme.background)
         .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .compactNavigationTitle()
         .toolbar {
             // Select mode addresses `downloadedTracks` only, so it stays gated on that list
             // rather than on whether the screen has any content at all.
@@ -78,7 +78,7 @@ struct DownloadsView: View {
                 // Select All and Delete live in the nav bar, not `.bottomBar`: the bottom bar
                 // sits under the mini-player accessory and the minimizing tab bar.
                 if isSelecting {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItem(placement: .leadingActions) {
                         Button(allSelected ? "Deselect All" : "Select All") {
                             withAnimation(.snappy) {
                                 selectedIDs = allSelected ? [] : Set(downloads.downloadedTracks.map(\.id))
@@ -86,7 +86,7 @@ struct DownloadsView: View {
                         }
                     }
                 }
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .trailingActions) {
                     if isSelecting {
                         Button(role: .destructive) {
                             deleteSelected()
@@ -157,6 +157,15 @@ struct DownloadsView: View {
                                     downloads.dismissFailed(in: [entry.id])
                                 } label: {
                                     Label("Dismiss", systemImage: "xmark")
+                                }
+                            }
+                        }
+                        // Same action for the desktop, which has no swipe — otherwise a failed
+                        // download had no exit there at all.
+                        .contextMenu {
+                            if entry.state.isFailed {
+                                Button("Dismiss", role: .destructive) {
+                                    downloads.dismissFailed(in: [entry.id])
                                 }
                             }
                         }

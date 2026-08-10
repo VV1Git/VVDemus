@@ -34,9 +34,9 @@ struct DaylistDetailView: View {
         }
         .background(Theme.background)
         .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .compactNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingActions) {
                 Menu {
                     MixSortPicker(selection: $sortOption)
                     Section {
@@ -48,7 +48,7 @@ struct DaylistDetailView: View {
                         .disabled(store.isRefreshing)
                     }
                 } label: {
-                    Label("More", systemImage: "ellipsis.circle")
+                    Label("More", systemImage: "ellipsis")
                 }
             }
         }

@@ -16,9 +16,14 @@ struct DaylistCard: View {
             Text(title)
                 .font(.cardTitle)
                 .foregroundStyle(.primary)
-                // Reserves the second line: the title arrives asynchronously, and a card
-                // that gains a line on load shoved the whole page down under the user.
-                .lineLimit(2, reservesSpace: true)
+                // Two lines when it needs them, but the second is no longer *reserved*. It was,
+                // because the title arrives asynchronously and a card that gains a line on load
+                // shoved the page down under the user — but the card's height is already pinned
+                // by the 64pt artwork and its padding, which two lines of this font cannot
+                // exceed, so nothing moved anyway. What the reserved line did do was leave an
+                // empty second row under every one-line title, lifting it ~9pt above the centre
+                // the artwork and the chevron beside it both sit on.
+                .lineLimit(2)
 
             Spacer(minLength: Theme.Space.md)
 

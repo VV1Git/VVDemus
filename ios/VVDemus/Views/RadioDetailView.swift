@@ -36,7 +36,10 @@ struct RadioDetailView: View {
             if isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let errorMessage {
+            } else if let errorMessage, tracks.isEmpty {
+                // `tracks.isEmpty`, because a refresh that fails while a cached mix is on
+                // screen must not throw that mix away in order to say so — those songs are
+                // still there and still playable. That case gets the line inside `trackList`.
                 ErrorRow(message: errorMessage) { Task { await load() } }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if tracks.isEmpty {
@@ -51,9 +54,9 @@ struct RadioDetailView: View {
         }
         .background(Theme.background)
         .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .compactNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingActions) {
                 Menu {
                     MixSortPicker(selection: $sortOption)
                     Section {
@@ -65,7 +68,7 @@ struct RadioDetailView: View {
                         .disabled(isRefreshing)
                     }
                 } label: {
-                    Label("More", systemImage: "ellipsis.circle")
+                    Label("More", systemImage: "ellipsis")
                 }
             }
         }
@@ -85,6 +88,23 @@ struct RadioDetailView: View {
                 onShuffle: { playAll(shuffled: true) }
             )
             .mixHeaderRowMetrics()
+
+            if let errorMessage {
+                // A refresh that never landed, said above the songs rather than in place of
+                // them. Warning, not red: the mix you already have is fine, it just isn't the
+                // new one you asked for.
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.warning)
+                    .listRowInsets(Theme.Metrics.rowInsets)
+                    .listRowSeparator(.hidden)
+                    // Dismissable, because the only other thing that clears it is another
+                    // refresh: someone who has decided not to retry would otherwise be left
+                    // looking at the line for as long as the screen stays open.
+                    .contentShape(Rectangle())
+                    .onTapGesture { self.errorMessage = nil }
+                    .accessibilityHint("Tap to dismiss")
+            }
 
             if visibleTracks.isEmpty {
                 ContentUnavailableView.search(text: searchText)
@@ -144,8 +164,16 @@ struct RadioDetailView: View {
     /// updates every view (and every connected web browser) watching this radio.
     private func refresh() async {
         isRefreshing = true
-        if let fresh = try? await fetchTracks() {
+        errorMessage = nil
+        do {
+            let fresh = try await fetchTracks()
             RadioCacheStore.shared.store(fresh, for: seedTrack.videoId)
+        } catch {
+            // The `try?` this replaces made a refresh that never reached YouTube look exactly
+            // like one that came back with the same songs: the menu item stopped saying
+            // "Refreshing…" and nothing else on the screen moved. `load()` has always reported
+            // its failure; a refresh the user explicitly asked for earns it more, not less.
+            errorMessage = "Couldn't refresh this radio. Check your connection."
         }
         isRefreshing = false
     }

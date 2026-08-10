@@ -24,13 +24,13 @@ struct LikedSongsView: View {
         }
         .background(Theme.background)
         .navigationTitle("Liked Songs")
-        .navigationBarTitleDisplayMode(.inline)
+        .compactNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingActions) {
                 Menu {
                     MixSortPicker(selection: $sortOption)
                 } label: {
-                    Label("More", systemImage: "ellipsis.circle")
+                    Label("More", systemImage: "ellipsis")
                 }
             }
         }

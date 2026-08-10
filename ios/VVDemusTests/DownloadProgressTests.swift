@@ -768,6 +768,134 @@ final class DownloadManagerProgressTests: XCTestCase {
         XCTAssertFalse(manager.isDownloaded(tracks[0]))
     }
 
+    // MARK: The job a detail header actually shows
+
+    /// Single-tap downloads are the one path that resolves without the drain loop's gate in front
+    /// of it, so a test that leaves one alive would reach YouTube the moment it suspended. Each
+    /// of these bodies is synchronous end to end and drops its entries before returning; the
+    /// `active` check at the top of `startTransfer` is what makes that sufficient.
+    private func tapDownload(_ tracks: [Track]) {
+        for track in tracks { manager.download(track) }
+    }
+
+    /// The bug this scoping exists for: tapping download on a few rows of a long playlist used to
+    /// raise the hero's collection bar over every track in it, captioned "Downloading 0 of 50",
+    /// with a Stop that would have taken the other forty-seven with it.
+    func testSingleTapDownloadsRaiseNoCollectionJob() {
+        let tracks = makeTracks(50, prefix: "dlloose")
+        tapDownload([tracks[3], tracks[7]])
+
+        XCTAssertNil(manager.downloadJob(for: tracks))
+        // The collection aggregate still sees them: it answers the other question — how much of
+        // this collection is on disk — and the rows' own rings come from it.
+        XCTAssertEqual(manager.collectionProgress(for: tracks).active, 2)
+
+        manager.cancelAll(tracks)
+    }
+
+    func testDownloadAllRaisesAJobOverTheWholeCollection() throws {
+        let tracks = makeTracks(3, prefix: "dljob")
+        manager.downloadAll(tracks, title: "Job Mix")
+
+        let job = try XCTUnwrap(manager.downloadJob(for: tracks))
+        XCTAssertEqual(job.videoIds, tracks.map(\.videoId))
+        XCTAssertEqual(job.progress.total, 3)
+        XCTAssertEqual(job.progress.active, 3)
+    }
+
+    /// A batch started from an album's own screen shares a song with every playlist that song is
+    /// in. Picking a job by mere overlap hung that album's progress under the playlist's header
+    /// for the sake of the one track they have in common.
+    func testAJobIsPickedByHowMuchOfTheCollectionItOwnsNotByOverlap() throws {
+        let playlist = makeTracks(6, prefix: "dlownership")
+        let foreignAlbum = makeTracks(4, prefix: "dlforeign") + [playlist[5]]
+
+        manager.downloadAll(foreignAlbum, title: "Some Album")
+        manager.downloadAll(playlist, title: "The Playlist")
+
+        let job = try XCTUnwrap(manager.downloadJob(for: playlist))
+        XCTAssertEqual(job.progress.total, 6, "The playlist's own job owns five of these six; the album owns one")
+        // Scoped to what is on this screen, so the album's four other tracks are not counted here.
+        XCTAssertEqual(Set(job.videoIds), Set(playlist.map(\.videoId)))
+
+        // And the album's own screen still sees its own job, whole.
+        let albumJob = try XCTUnwrap(manager.downloadJob(for: foreignAlbum))
+        XCTAssertEqual(albumJob.progress.total, 5)
+    }
+
+    /// Download All over rows the user had already tapped by hand: those transfers join the job
+    /// rather than running beside it. Left loose, the batch owned none of the live downloads.
+    func testDownloadAllAdoptsTransfersTheUserStartedByHand() throws {
+        let tracks = makeTracks(3, prefix: "dladopt")
+        tapDownload([tracks[0]])
+        XCTAssertEqual(manager.state(for: tracks[0]), DownloadState.resolving)
+
+        manager.downloadAll(tracks, title: "Adopt Mix")
+
+        let batch = try XCTUnwrap(manager.batch(for: tracks))
+        XCTAssertEqual(ourEntries(tracks).compactMap(\.batchId), Array(repeating: batch.id, count: 3))
+        // Re-parented rather than re-inserted, which is what protects an adopted transfer's
+        // progress: `insert` carries nothing over, so it would have knocked this back to `.queued`
+        // and reset the ring of something already part-way through.
+        XCTAssertEqual(manager.state(for: tracks[0]), DownloadState.resolving)
+        XCTAssertEqual(manager.state(for: tracks[1]), DownloadState.queued)
+
+        let job = try XCTUnwrap(manager.downloadJob(for: tracks))
+        XCTAssertEqual(job.progress.total, 3)
+        XCTAssertEqual(job.progress.active, 3)
+
+        manager.cancelAll(tracks)
+    }
+
+    /// The edge the adoption pass also fixes: with every row already tapped there is nothing left
+    /// to queue, and the old `guard !queued.isEmpty` minted no batch at all — so Download All did
+    /// nothing visible and its button stayed a plain arrow over a collection that was downloading.
+    func testDownloadAllOverACollectionAlreadyFullyInFlightStillMintsAJob() throws {
+        let tracks = makeTracks(2, prefix: "dladoptall")
+        tapDownload(tracks)
+        XCTAssertNil(manager.downloadJob(for: tracks))
+
+        manager.downloadAll(tracks, title: "All In Flight")
+
+        let job = try XCTUnwrap(manager.downloadJob(for: tracks))
+        XCTAssertEqual(job.progress.active, 2)
+
+        manager.cancelAll(tracks)
+    }
+
+    /// The hero's Stop is scoped to its job, so a song the user is separately downloading from a
+    /// row is not collateral — `cancelAll(_:)` over the whole collection would have taken it.
+    func testCancellingByJobIdsSparesLooseDownloadsInTheSameCollection() throws {
+        let tracks = makeTracks(3, prefix: "dlscopedcancel")
+        manager.downloadAll([tracks[0], tracks[1]], title: "Scoped Cancel")
+        tapDownload([tracks[2]])
+
+        let job = try XCTUnwrap(manager.downloadJob(for: tracks))
+        XCTAssertEqual(job.progress.total, 2, "The loose download is not one of the job's tracks")
+        manager.cancelAll(videoIds: job.videoIds)
+
+        XCTAssertNil(manager.state(for: tracks[0]))
+        XCTAssertNil(manager.state(for: tracks[1]))
+        XCTAssertNotNil(manager.state(for: tracks[2]), "A single-tap download is not part of the collection's job")
+
+        manager.cancel(tracks[2])
+    }
+
+    /// A cancel landing before the resolve Task gets its turn used to start the transfer anyway,
+    /// after `cancelTasks` had already walked the session — so nothing was left to stop it, the
+    /// whole file arrived minutes later, and the delegate dropped it for want of a track.
+    func testCancellingBeforeTheResolveRunsLeavesNothingToResolve() async throws {
+        let tracks = makeTracks(1, prefix: "dlcancelrace")
+        manager.download(tracks[0])
+        manager.cancel(tracks[0])
+
+        // Long enough for the scheduled Task to have taken its turn and bailed. A resolve that
+        // did happen would land an error on the manager, since the videoId is not a real one.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(manager.state(for: tracks[0]))
+        XCTAssertNil(manager.errorMessage, "A cancelled download must not go on to resolve a stream")
+    }
+
     // MARK: The whole picture
 
     /// One batch in every phase at once, which is what a forty-track playlist actually looks

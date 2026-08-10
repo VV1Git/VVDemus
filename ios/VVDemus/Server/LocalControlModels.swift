@@ -72,6 +72,22 @@ struct StateSnapshot: Codable {
     /// The web remote reloads its sidebar when this moves, so a radio you just started
     /// appears under Radio straight away instead of only after a page reload.
     let librarySignature: Int
+    /// Which paired device owns the session — see `OwnershipClaim`. Read only by the paired app;
+    /// the browser has no session of its own to own and ignores both of these.
+    ///
+    /// Optional, and decoded as "absent" rather than failing, because the two apps are built and
+    /// installed separately: a Mac running yesterday's build must still be *readable* by a phone
+    /// running today's, rather than making every poll throw.
+    let sessionOwnerId: String?
+    let sessionClaim: Int?
+    /// The track a radio was generated from, when the queue is a radio.
+    ///
+    /// Sent so the mirroring device can name the station rather than showing a loose list of
+    /// songs — and, more importantly, so it can carry the station over if the device playing it
+    /// disappears. Without it a resumed session is a queue with no radio behind it, and autoplay
+    /// has nothing to continue from. One track object, and it is kept even in a trimmed broadcast
+    /// for the same reason `nextTrack` is: it is small, and it is the lifeline.
+    let contextSeed: Track?
 
     /// Identifies the contents of the heavy fields, so an unchanged one can be left out of
     /// the next broadcast.
@@ -109,8 +125,17 @@ struct StateSnapshot: Codable {
             nextTrack: nextTrack,
             nextStreamUrl: nextStreamUrl,
             serverInstanceId: serverInstanceId,
-            librarySignature: librarySignature
+            librarySignature: librarySignature,
+            sessionOwnerId: sessionOwnerId,
+            sessionClaim: sessionClaim,
+            contextSeed: contextSeed
         )
+    }
+
+    /// Who this snapshot says owns the session, when it says anything at all.
+    var ownership: OwnershipClaim? {
+        guard let sessionOwnerId else { return nil }
+        return OwnershipClaim(ownerPeerId: sessionOwnerId, claim: sessionClaim ?? 0)
     }
 }
 

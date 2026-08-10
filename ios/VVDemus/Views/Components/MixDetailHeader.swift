@@ -19,14 +19,21 @@ struct MixDetailHeader: View {
     let onShuffle: () -> Void
 
     @ObservedObject private var downloads = DownloadManager.shared
+    /// Still observed although the body reads `peer` for state: `displayed*` is computed and
+    /// subscribes to nothing, so without this the button would miss a local play/pause.
     @ObservedObject private var player = PlayerService.shared
+    @ObservedObject private var peer = PeerPlayback.shared
     @State private var showCancelConfirm = false
 
     /// True when the thing this header describes is the thing currently coming out of the
-    /// speaker. Tapping Play and having the button go on saying "Play" gave no acknowledgement
-    /// at all that anything had happened.
+    /// speaker — on whichever device that is. Tapping Play and having the button go on saying
+    /// "Play" gave no acknowledgement at all that anything had happened.
+    ///
+    /// Asked of the local player, that was exactly what a mirroring device did: its own player is
+    /// empty, so the button was stuck on "Play" and the next tap took the wrong branch, restarting
+    /// the collection from track one instead of pausing the device that was playing it.
     private var isPlayingThisCollection: Bool {
-        guard player.isPlaying, let current = player.currentTrack else { return false }
+        guard peer.displayedIsPlaying, let current = peer.displayedTrack else { return false }
         return tracks.contains { $0.id == current.id }
     }
 
@@ -34,12 +41,17 @@ struct MixDetailHeader: View {
     /// replaced — the body re-evaluates on every progress publish, and each of those scans was
     /// walking the whole collection to answer a question the manager already tracks.
     private var aggregate: CollectionDownloadProgress { downloads.collectionProgress(for: tracks) }
-    private var isFullyDownloaded: Bool { aggregate.isComplete }
 
     var body: some View {
-        // Resolved once and threaded through: `collectionProgress` is O(tracks.count), and the
-        // button and the strip both want the same answer.
-        let progress = aggregate
+        // Two different questions, deliberately kept apart. `collection` is "how much of this is
+        // on disk", which is what the checkmark and VoiceOver answer. `job` is "what did Download
+        // All start", which is what the bar and the Stop control *are* — and it is nil while the
+        // only downloads running are rows the user tapped one at a time.
+        //
+        // Both resolved once and threaded through, including into the `isComplete` the button
+        // reads: each is O(tracks.count), and this body re-evaluates on every progress publish.
+        let collection = aggregate
+        let job = downloads.downloadJob(for: tracks)
         return VStack(alignment: .leading, spacing: Theme.Space.lg) {
             HeroArtwork(url: imageURL)
 
@@ -94,7 +106,7 @@ struct MixDetailHeader: View {
 
                 Spacer()
 
-                downloadAllButton(progress)
+                downloadAllButton(collection: collection, job: job)
             }
             .controlSize(.large)
             .buttonBorderShape(.capsule)
@@ -104,14 +116,18 @@ struct MixDetailHeader: View {
             // bar through a row of capsules either squashes them or shoves them sideways.
             // Sitting below, the bar reads as the status of the thing that was just tapped.
             // Zero height when idle — no reserved gap.
-            if progress.isActive || progress.hasFailures {
+            //
+            // Driven by `job`, never by the collection aggregate. A single-tap download is
+            // described by its own row's ring, and raising a collection-wide bar for one is
+            // both the wrong scale and the wrong scope.
+            if let job, job.progress.isActive || job.progress.hasFailures {
                 CollectionDownloadStrip(
-                    progress: progress,
+                    progress: job.progress,
                     onStop: { showCancelConfirm = true },
-                    onRetry: progress.hasFailures ? { downloads.retryFailed(in: tracks.map(\.videoId)) } : nil,
+                    onRetry: job.progress.hasFailures ? { downloads.retryFailed(in: job.videoIds) } : nil,
                     // Without this a permanently failed track kept the strip — and the hero's
                     // orange retry button — on the screen for the rest of the session.
-                    onDismiss: progress.hasFailures ? { downloads.dismissFailed(in: tracks.map(\.videoId)) } : nil
+                    onDismiss: job.progress.hasFailures ? { downloads.dismissFailed(in: job.videoIds) } : nil
                 )
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -119,28 +135,41 @@ struct MixDetailHeader: View {
         .padding(.vertical, Theme.Space.md)
         // Value-scoped, so the strip's own four-times-a-second fraction updates never animate
         // the hero — only its appearance and disappearance do.
-        .animation(.snappy(duration: 0.28), value: progress.isActive)
+        .animation(.snappy(duration: 0.28), value: job?.progress.isActive ?? false)
         .confirmationDialog("Stop downloading \(title)?", isPresented: $showCancelConfirm, titleVisibility: .visible) {
             // A forty-track batch is too expensive to lose to a mis-tap, and the cancel control
-            // occupies exactly the spot the user tapped to start it.
-            Button("Stop \(progress.active) Downloads", role: .destructive) { downloads.cancelAll(tracks) }
+            // occupies exactly the spot the user tapped to start it. Scoped to the job, so a
+            // song the user is separately downloading from a row is not collateral.
+            if let job {
+                Button("Stop \(job.progress.active) Downloads", role: .destructive) {
+                    downloads.cancelAll(videoIds: job.videoIds)
+                }
+            }
             Button("Keep Downloading", role: .cancel) {}
         }
     }
 
+    /// Stop / retry / download, in that order of precedence — but only ever for a *job*. With
+    /// this driven by the collection aggregate, tapping download on one row turned this into a
+    /// Stop control for the entire playlist.
     @ViewBuilder
-    private func downloadAllButton(_ progress: CollectionDownloadProgress) -> some View {
+    private func downloadAllButton(
+        collection: CollectionDownloadProgress,
+        job: CollectionDownloadJob?
+    ) -> some View {
+        let progress = job?.progress
+        let isFullyDownloaded = collection.isComplete
         Button {
-            if progress.isActive {
+            if progress?.isActive == true {
                 showCancelConfirm = true
-            } else if progress.hasFailures {
-                downloads.retryFailed(in: tracks.map(\.videoId))
+            } else if let job, job.progress.hasFailures {
+                downloads.retryFailed(in: job.videoIds)
             } else {
                 downloads.downloadAll(tracks, title: title, artworkURL: imageURL)
             }
         } label: {
             ZStack {
-                if progress.isActive {
+                if let progress, progress.isActive {
                     // The ring is a pure function of the aggregate fraction, so it is fed a
                     // synthetic byte pair rather than any one track's real counters.
                     DownloadRing(
@@ -153,7 +182,7 @@ struct MixDetailHeader: View {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.title3)
                         .foregroundStyle(Theme.accent)
-                } else if progress.hasFailures {
+                } else if progress?.hasFailures == true {
                     Image(systemName: "arrow.clockwise.circle")
                         .font(.title3)
                         .foregroundStyle(Theme.warning)
@@ -174,17 +203,19 @@ struct MixDetailHeader: View {
         // `PressableButtonStyle` dims a disabled label, so the finished checkmark no longer
         // draws at full strength while doing nothing.
         .disabled(tracks.isEmpty || isFullyDownloaded)
-        .accessibilityLabel(downloadAllLabel(progress))
-        .accessibilityValue(downloadAllValue(progress))
+        .accessibilityLabel(downloadAllLabel(progress, isFullyDownloaded: isFullyDownloaded))
+        .accessibilityValue(downloadAllValue(progress ?? collection))
     }
 
-    private func downloadAllLabel(_ progress: CollectionDownloadProgress) -> String {
-        if progress.isActive { return "Stop downloading \(title)" }
+    private func downloadAllLabel(_ progress: CollectionDownloadProgress?, isFullyDownloaded: Bool) -> String {
+        if progress?.isActive == true { return "Stop downloading \(title)" }
         if isFullyDownloaded { return "Downloaded" }
-        if progress.hasFailures { return "Retry failed downloads" }
+        if progress?.hasFailures == true { return "Retry failed downloads" }
         return "Download all"
     }
 
+    /// Spoken against the job while one is running, so it agrees with the strip beneath it, and
+    /// against the collection otherwise — which is what an idle Download All button is about.
     private func downloadAllValue(_ progress: CollectionDownloadProgress) -> String {
         guard progress.total > 0 else { return "" }
         if progress.isActive {

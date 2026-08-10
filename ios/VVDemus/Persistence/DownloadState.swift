@@ -52,7 +52,10 @@ enum DownloadState: Equatable {
 /// relaunch would try to adopt a transfer that no longer exists.
 struct DownloadEntry: Identifiable, Equatable {
     let track: Track
-    let batchId: UUID?
+    /// `var`, because a collection can claim a download that started outside one: tapping
+    /// Download All over tracks the user had already tapped individually adopts those transfers
+    /// into the new batch rather than leaving them running beside it.
+    var batchId: UUID?
     /// Monotonic insertion counter. `active` is a dictionary and has no order of its own, and
     /// the Downloads list must not reshuffle every time a fraction publishes.
     let order: Int
@@ -74,6 +77,25 @@ struct DownloadBatch: Identifiable, Codable, Equatable {
     /// "10 of 40" rather than "0 of 30" when ten were already on disk.
     let videoIds: [String]
     let startedAt: Date
+}
+
+/// The collection-level download job running over a screen's tracks: which of them it covers,
+/// and how far along it is.
+///
+/// Deliberately not the same question as `collectionProgress(for:)`, which answers "how much of
+/// this collection is on disk" over every track regardless of how it got there. A detail hero's
+/// progress strip is the readout of a *job* — the thing Download All started — and conflating
+/// the two meant tapping download on three rows of a fifty-song playlist raised a bar captioned
+/// "Downloading 0 of 50". Nobody asked for fifty, and the three rings that did describe the
+/// request were the only honest thing on the screen. The Downloads screen has always drawn this
+/// line — a batch gets a card, a single-tap download gets its own row — and the hero was the one
+/// place that didn't.
+struct CollectionDownloadJob: Equatable {
+    /// The job's tracks that are also in the collection asking, so a batch started elsewhere
+    /// reports only the part of itself that is on this screen. Also the scope of the strip's
+    /// Stop, Retry and Dismiss, which must not reach a loose download the user started by hand.
+    let videoIds: [String]
+    let progress: CollectionDownloadProgress
 }
 
 /// Aggregate download state of an arbitrary set of tracks — an album, a playlist, a radio.

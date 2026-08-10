@@ -7,6 +7,10 @@ struct RootView: View {
     @ObservedObject private var player = PlayerService.shared
     @StateObject private var coordinator = NavigationCoordinator()
     @ObservedObject private var controlServer = LocalControlServer.shared
+    /// Watched for the audio-session decision below, which cannot be made from this phone's own
+    /// player alone: while the paired device owns the session, this one's `PlayerService` is
+    /// empty and its `isPlaying` is false however loudly the Mac is playing.
+    @ObservedObject private var peer = PeerPlayback.shared
     @State private var showNowPlaying = false
     @Environment(\.scenePhase) private var scenePhase
 
@@ -25,6 +29,9 @@ struct RootView: View {
             }
         }
         .tint(Theme.accent)
+        // Top rather than bottom: the bottom belongs to the tab bar and its accessory, and the
+        // system owns the geometry of both.
+        .safeAreaInset(edge: .top) { ResumeFromPeerBar() }
         // The Phone-app behaviour: the bar shrinks to a pill as you scroll into content and
         // comes back when you scroll up, so the glass never sits on top of what you're
         // reading. This is the system doing it — there is nothing here to keep in sync.
@@ -45,20 +52,32 @@ struct RootView: View {
         // navigation stack and scroll position gone. The visible cost is searching for a song,
         // tapping it, and watching the results vanish. `BottomAccessoryVisibilityTests` holds
         // both halves of this down.
-        .tabViewBottomAccessory(isEnabled: player.currentTrack != nil) {
+        //
+        // Keyed on the *displayed* track, not this device's own: while the paired device owns the
+        // session this one's player is deliberately empty, and reading `player.currentTrack` here
+        // hid the mini bar — and with it the only route to Now Playing and the queue — for exactly
+        // the case the mirroring is for.
+        .tabViewBottomAccessory(isEnabled: peer.displayedTrack != nil) {
             MiniPlayerBar(player: player) { showNowPlaying = true }
         }
         .fullScreenCover(isPresented: $showNowPlaying) {
             NowPlayingView(player: player)
         }
         .task {
-            if UserDefaults.standard.bool(forKey: LocalControlServer.defaultsKey) {
-                LocalControlServer.shared.start()
-            }
+            // Started unconditionally. The toggle governs the browser remote, not the link to
+            // the paired device — which needs this server to answer pairing and sync at all.
+            LocalControlServer.shared.setWebRemoteEnabled(
+                UserDefaults.standard.bool(forKey: LocalControlServer.defaultsKey)
+            )
+            LocalControlServer.shared.start()
             // Downloads now run in a system-owned background session, so some may have
             // been finishing (or finished) while the app wasn't running. Pick their
             // progress back up rather than showing them stalled at zero.
             DownloadManager.shared.resumeInFlightDownloads()
+            // After the server, which owns the port being advertised.
+            PeerLink.shared.start()
+            PeerPlayback.shared.start()
+            await PeerLink.shared.refreshResumeOffer()
         }
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
@@ -69,6 +88,13 @@ struct RootView: View {
                 // Deliberately does not reactivate the audio session. Foregrounding the
                 // app to browse shouldn't stop the podcast the user is listening to; the
                 // session is claimed when playback actually starts.
+                //
+                // The offer, on the other hand, is only ever *worth* refreshing here: its own
+                // doc comment says "called on launch and on returning to the foreground", but
+                // only the launch half was ever wired up — so picking the phone up after
+                // listening on the Mac showed either nothing or whatever the peer had been
+                // playing whenever the app last started, which could be days ago.
+                Task { await PeerLink.shared.refreshResumeOffer() }
             default:
                 break
             }
@@ -87,15 +113,26 @@ struct RootView: View {
         // below — and it can happen at any time from the web remote, including while the
         // screen is already locked.
         .onChange(of: player.activeDevice) { _, _ in updateBackgroundKeepAlive() }
+        // Handing the session to (or taking it back from) the paired device changes the same
+        // thing a device switch does: whether this phone is making any sound of its own.
+        .onChange(of: peer.isMirroring) { _, _ in updateBackgroundKeepAlive() }
+        // And while it is mirroring, the play/pause that matters is the *owner's*. It never
+        // touches anything on this device — it arrives on a poll — so nothing above would notice
+        // the Mac being paused, and the phone would sit on an active session (and a silent clip)
+        // over music that stopped ten minutes ago, keeping AirPods pinned to it.
+        .onChange(of: peer.displayedIsPlaying) { _, _ in updateBackgroundKeepAlive() }
     }
 
     private func updateBackgroundKeepAlive() {
         let decision = BackgroundAudioPolicy.decide(
             .init(
                 isBackgrounded: scenePhase == .background,
-                isPlaying: player.isPlaying,
+                // Playing *anywhere*: this device's own player when it owns the session, the
+                // owner's when it does not. See `BackgroundAudioPolicy.Inputs.isPlaying`.
+                isPlaying: peer.displayedIsPlaying,
                 activeDevice: player.activeDevice,
-                isConnectServerRunning: controlServer.isRunning
+                isConnectServerRunning: controlServer.isRunning,
+                isMirroringPeer: peer.isMirroring
             )
         )
         if decision.runKeepAlive {

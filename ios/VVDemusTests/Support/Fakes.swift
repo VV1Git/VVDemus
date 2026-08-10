@@ -37,6 +37,7 @@ enum Fixtures {
 final class FakePlaybackEngine: PlaybackEngine {
     enum Event: Equatable {
         case replaceItem(URL)
+        case detach
         case play
         case pause
         case seek(Double)
@@ -115,6 +116,19 @@ final class FakePlaybackEngine: PlaybackEngine {
         // would, but keeping the two triggers separate here is what lets a test tell the
         // primary mechanism (`finishTrack`) apart from the safety net (ticking past the end).
         forwardPlaybackEndTime = nil
+    }
+
+    /// Left with nothing loaded, which is the state a real `AVPlayer` is in after
+    /// `replaceCurrentItem(with: nil)` — no item, no duration, and nothing for a stray `play()`
+    /// to resume. Distinct from `.pause` on purpose: what a test needs to tell apart is a device
+    /// that has stopped from one that has genuinely let the session go.
+    func detach() {
+        events.append(.detach)
+        attachedURL = nil
+        currentTimeSeconds = 0
+        itemDurationSeconds = nil
+        forwardPlaybackEndTime = nil
+        state = .paused
     }
 
     /// Enters `.buffering`, not `.playing` — a real player does not produce sound the

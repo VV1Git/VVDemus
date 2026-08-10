@@ -6,6 +6,13 @@ struct MiniPlayerBar: View {
     /// ways people already expect a compact player to expand.
     var onExpand: () -> Void = {}
     @ObservedObject private var colorLoader = ArtworkColorLoader.shared
+    /// Everything the bar *shows* comes from here; everything it *does* still goes to
+    /// `player`. The asymmetry is the whole design: while the paired device owns the session
+    /// this one's `PlayerService` is deliberately empty, so reading it would draw a blank bar
+    /// over a Mac that is playing — but `PlayerService` relays every transport method to the
+    /// owner (see `SessionOwning`), so the buttons are already correct without knowing which
+    /// device they are driving. Nothing below may branch on `isMirroring` to decide an action.
+    @ObservedObject private var peer = PeerPlayback.shared
 
     /// `.expanded` when the accessory sits as its own row above the tab bar, `.inline` once
     /// the bar minimises on scroll and the two merge into a single pill. The inline form has
@@ -18,12 +25,18 @@ struct MiniPlayerBar: View {
     /// 44pt of controls, 6pt above and below, plus the 2pt hairline, so R = 29. The artwork's
     /// clearance from that arc peaks where its own 6pt corner arc shares the capsule arc's
     /// centre line, at R - 6 = 23, rounded up to `Space.xl` to stay on the theme's 4pt scale.
-    /// At the old 16 the corner cleared by 6.4pt against a 16pt gap at the bar's mid-height,
+    /// At the old 16 the corner cleared by 4.6pt against a 16pt gap at the bar's mid-height,
     /// and that mismatch is what read as the art being shoved into the nose of the pill.
     ///
     /// Inline is left alone: it drops the vertical padding and the hairline, so the block is
     /// 44pt tall, R = 22, and the same rule gives 22 - 6 = 16 — what the gutter already is.
-    private var leadingInset: CGFloat { isInline ? Theme.Metrics.gutter : Theme.Space.xl }
+    /// That one is the floor, not a preference: `ArtSize.mini` is the full 44, so inline the
+    /// artwork's corner arc runs tangent to the capsule's. Any less inset and it crosses it.
+    ///
+    /// Expanded now takes the same gutter. It used to take 24 because the artwork was also 44
+    /// there and needed the extra clearance from the capsule's arc; at `ArtSize.accessory`'s 36
+    /// the arc rule asks for far less than 16, so 24 was only pushing the whole row inward.
+    private var leadingInset: CGFloat { Theme.Metrics.gutter }
 
     /// The trailing side wants the opposite. `forward.fill` is a ~19pt glyph centred in a 44pt
     /// frame, so it already carries ~13pt of optical inset; another 16 put its visual edge at
@@ -36,9 +49,9 @@ struct MiniPlayerBar: View {
     private var trailingInset: CGFloat { isInline ? Theme.Metrics.gutter : Theme.Space.md }
 
     var body: some View {
-        if let track = player.currentTrack {
+        if let track = peer.displayedTrack {
             VStack(spacing: 0) {
-                HStack(spacing: 12) {
+                HStack(spacing: Theme.Space.md) {
                     // A real Button, not just the bar's tap gesture: VoiceOver and Switch
                     // Control had no way at all to open Now Playing. It wraps only the
                     // artwork and labels — nesting the transport buttons inside a Button's
@@ -46,20 +59,17 @@ struct MiniPlayerBar: View {
                     Button {
                         onExpand()
                     } label: {
-                        HStack(spacing: 12) {
-                            RemoteImage(url: track.thumbnailUrl, size: 40)
+                        HStack(spacing: Theme.Space.md) {
+                            RemoteImage(url: track.thumbnailUrl, size: isInline ? Theme.ArtSize.mini : Theme.ArtSize.accessory)
 
-                            VStack(alignment: .leading, spacing: 1) {
+                            VStack(alignment: .leading, spacing: Theme.Metrics.labelSpacing) {
                                 Text(track.title)
                                     .font(.miniTitle)
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
                                 // The inline pill has room for exactly one line.
                                 if !isInline {
-                                    Text(track.artist)
-                                        .font(.miniSubtitle)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
+                                    subtitleLine(for: track)
                                 }
                             }
                             // Takes the slack itself instead of a trailing Spacer, so the
@@ -80,20 +90,20 @@ struct MiniPlayerBar: View {
                         player.togglePlayPause()
                     } label: {
                         ZStack {
-                            if player.isLoading {
+                            if peer.displayedIsLoading {
                                 ProgressView().tint(.white)
                             } else {
-                                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                Image(systemName: peer.displayedIsPlaying ? "pause.fill" : "play.fill")
                                     .font(.title3)
                                     .foregroundStyle(.white)
                             }
                         }
-                        .frame(width: 44, height: 44)
+                        .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.pressable)
-                    .disabled(player.isLoading)
-                    .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                    .disabled(peer.displayedIsLoading)
+                    .accessibilityLabel(peer.displayedIsPlaying ? "Pause" : "Play")
 
                     // Skipping is the single most common thing to want from the mini
                     // player, and previously meant opening the full Now Playing screen
@@ -106,7 +116,7 @@ struct MiniPlayerBar: View {
                             Image(systemName: "forward.fill")
                                 .font(.subheadline)
                                 .foregroundStyle(.white)
-                                .frame(width: 44, height: 44)
+                                .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.pressable)
@@ -116,7 +126,10 @@ struct MiniPlayerBar: View {
                 // See `leadingInset` / `trailingInset` for why these differ.
                 .padding(.leading, leadingInset)
                 .padding(.trailing, trailingInset)
-                .padding(.vertical, isInline ? 0 : Theme.Metrics.rowVertical)
+                // 4, not `rowVertical`'s 6: the accessory's interior is 46pt, and 6 + 36 + 6 + the
+                // 2pt hairline is 50. `rowVertical` is the list-row rhythm and this is not a list
+                // row — see `ArtSize.accessory`.
+                .padding(.vertical, isInline ? 0 : Theme.Space.xs)
 
                 // The hairline needs a row of its own, which only the expanded placement has.
                 if !isInline {
@@ -145,6 +158,31 @@ struct MiniPlayerBar: View {
         }
     }
 
+    /// The artist, or which device the song is coming out of while that isn't this one.
+    ///
+    /// The device wins the line rather than sharing it: at `.miniSubtitle` on the second row of
+    /// a 44pt bar there is room for one truncated string, and "the sound is on the Mac" is the
+    /// thing this bar can't otherwise say — the artist is one tap away in Now Playing, which is
+    /// where the swap sends anyone who wonders where it went. Accent, matching the equalizer
+    /// bars and the active row, so "live over there" reads the same everywhere.
+    @ViewBuilder
+    private func subtitleLine(for track: Track) -> some View {
+        if let device = peer.owningDeviceName {
+            HStack(spacing: Theme.Space.xs) {
+                Image(systemName: "speaker.wave.2.fill")
+                Text("Playing on \(device)")
+                    .lineLimit(1)
+            }
+            .font(.miniSubtitle)
+            .foregroundStyle(Theme.accent)
+        } else {
+            Text(track.artist)
+                .font(.miniSubtitle)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
     /// A hairline of progress along the bottom of the bar — enough to tell at a glance how
     /// far into a track you are without opening Now Playing.
     ///
@@ -155,7 +193,8 @@ struct MiniPlayerBar: View {
     /// control instead of 8pt adrift of them. Accent, to match the Now Playing scrubber.
     private var progressLine: some View {
         GeometryReader { geometry in
-            let fraction = player.duration > 0 ? min(max(player.progress / player.duration, 0), 1) : 0
+            let duration = peer.displayedDuration
+            let fraction = duration > 0 ? min(max(peer.displayedProgress / duration, 0), 1) : 0
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.white.opacity(0.18))

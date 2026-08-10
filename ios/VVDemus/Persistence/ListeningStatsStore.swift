@@ -38,6 +38,33 @@ final class ListeningStatsStore: ObservableObject {
         events.filter { $0.playedAt >= date }
     }
 
+    /// The newest thing in the log, which is what the peer is asked to send from.
+    var newestEventAt: Date? { events.map(\.playedAt).max() }
+
+    /// Folds in the paired device's plays.
+    ///
+    /// The easiest store to merge, and the reason the rest of Home converges for free: events
+    /// are immutable and append-only, so a union is the whole algorithm. Deduped on
+    /// `(videoId, playedAt)` because a round can legitimately re-send events already held —
+    /// the cursor is a lower bound, not an exact watermark.
+    @discardableResult
+    func merge(_ incoming: [PlayEvent]) -> Int {
+        guard !incoming.isEmpty else { return 0 }
+        var seen = Set(events.map { "\($0.track.videoId)|\($0.playedAt.timeIntervalSince1970)" })
+        var added = 0
+        for event in incoming {
+            let key = "\(event.track.videoId)|\(event.playedAt.timeIntervalSince1970)"
+            guard seen.insert(key).inserted else { continue }
+            events.append(event)
+            added += 1
+        }
+        guard added > 0 else { return 0 }
+        events.sort { $0.playedAt < $1.playedAt }
+        prune()
+        save()
+        return added
+    }
+
     private func prune() {
         guard let cutoff = Calendar.current.date(byAdding: .day, value: -maxAgeDays, to: Date()) else { return }
         events.removeAll { $0.playedAt < cutoff }

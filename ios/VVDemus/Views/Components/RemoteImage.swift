@@ -1,23 +1,22 @@
 import SwiftUI
-import UIKit
 
 /// Bounded in-memory bitmap cache shared by every `RemoteImage`. Plain `AsyncImage` has no
 /// decoded-image cache of its own — scrolling a list back and forth re-downloads and
 /// re-decodes the same thumbnail every time it re-enters the view hierarchy. Most track art
 /// is reused constantly (same song in Home, a shelf, the queue, and the now-playing bar all
-/// at once), so caching the decoded `UIImage` turns that into a one-time cost.
+/// at once), so caching the decoded bitmap turns that into a one-time cost.
 @MainActor
 private final class ImageCache {
     static let shared = ImageCache()
-    private let cache = NSCache<NSString, UIImage>()
+    private let cache = NSCache<NSString, PlatformImage>()
 
     private init() {
         cache.countLimit = 300 // plenty for anything this app shows at once; NSCache also
         // evicts under memory pressure on its own, so this is a soft ceiling, not a hard cap.
     }
 
-    func image(for key: String) -> UIImage? { cache.object(forKey: key as NSString) }
-    func store(_ image: UIImage, for key: String) { cache.setObject(image, forKey: key as NSString) }
+    func image(for key: String) -> PlatformImage? { cache.object(forKey: key as NSString) }
+    func store(_ image: PlatformImage, for key: String) { cache.setObject(image, forKey: key as NSString) }
 }
 
 struct RemoteImage: View {
@@ -31,7 +30,7 @@ struct RemoteImage: View {
     /// Set once the bitmap has been loaded, together with the key it was loaded for. The key
     /// is what makes a recycled cell correct: state survives reuse, so a stale image must not
     /// be shown for a new URL.
-    @State private var loadedImage: UIImage?
+    @State private var loadedImage: PlatformImage?
     @State private var loadedKey: String?
 
     private var radius: CGFloat { cornerRadius ?? Theme.Radius.art(for: size) }
@@ -46,7 +45,7 @@ struct RemoteImage: View {
     /// Resolved during `body`, not in `.task`: the task only runs after the first frame, so
     /// consulting the memory cache there made every recycled cell flash the gray placeholder
     /// even though its bitmap was already in memory. A hit here draws on frame one.
-    @MainActor private var image: UIImage? {
+    @MainActor private var image: PlatformImage? {
         guard let cacheKey else { return nil }
         if let loadedImage, loadedKey == cacheKey { return loadedImage }
         return ImageCache.shared.image(for: cacheKey)
@@ -55,7 +54,7 @@ struct RemoteImage: View {
     var body: some View {
         Group {
             if let image {
-                Image(uiImage: image)
+                Image(platformImage: image)
                     .resizable()
                     .scaledToFill()
                     .transition(.opacity)
@@ -91,7 +90,7 @@ struct RemoteImage: View {
         loadedImage = nil
         loadedKey = cacheKey
 
-        if let diskData = await DiskImageCache.shared.data(for: cacheKey), let image = UIImage(data: diskData) {
+        if let diskData = await DiskImageCache.shared.data(for: cacheKey), let image = PlatformImage(data: diskData) {
             guard !Task.isCancelled else { return }
             ImageCache.shared.store(image, for: cacheKey)
             set(image, for: cacheKey)
@@ -99,14 +98,14 @@ struct RemoteImage: View {
         }
         guard let requestURL = URL(string: cacheKey),
               let (data, _) = try? await NetworkSessions.image.data(from: requestURL),
-              let image = UIImage(data: data) else { return }
+              let image = PlatformImage(data: data) else { return }
         guard !Task.isCancelled else { return }
         ImageCache.shared.store(image, for: cacheKey)
         await DiskImageCache.shared.store(data, for: cacheKey)
         set(image, for: cacheKey)
     }
 
-    private func set(_ image: UIImage, for key: String) {
+    private func set(_ image: PlatformImage, for key: String) {
         loadedImage = image
         loadedKey = key
     }

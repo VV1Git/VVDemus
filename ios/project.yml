@@ -10,6 +10,12 @@ options:
 configs:
   Debug: debug
   Release: release
+# Deliberately no `SYMROOT` override here. Redirecting build products into a `.noindex`
+# directory would keep the iOS build out of Spotlight, but setting SYMROOT at all switches
+# Xcode to "legacy build locations", which SwiftPM refuses: "Packages are not supported when
+# using legacy build locations". The vendored Swifter is a package, so this project cannot
+# have both. Keeping the iOS app bundles out of Spotlight has to be done outside the project
+# (System Settings › Spotlight › Search Privacy).
 # Signing team and bundle id prefix, which are per-machine rather than per-project. See
 # Config/Signing.xcconfig: it holds placeholders and optionally includes a gitignored
 # Signing.local.xcconfig with the real values, so a commit never carries either.
@@ -52,6 +58,14 @@ targets:
         UIUserInterfaceStyle: Dark
         UIBackgroundModes:
           - audio
+        # Pairing with the Mac. The app has never needed these: it only ever *listened* for
+        # incoming connections, which iOS does not gate. Browsing for a peer does need them,
+        # and without the usage string iOS refuses the prompt outright rather than asking.
+        NSLocalNetworkUsageDescription: >-
+          Spotify β uses your local network to find and stay in sync with the Spotify β app on
+          your computer.
+        NSBonjourServices:
+          - _vvdemus._tcp
     settings:
       base:
         # Comes from Config/Signing.xcconfig, so the id this build answers to is a local
@@ -95,6 +109,92 @@ targets:
               exit 1
               ;;
           esac
+  # The Mac half of the two-peer setup. It compiles the *same* sources as the iOS app rather
+  # than importing a shared package: everything in this codebase is `internal`, so extracting
+  # a module would mean marking several hundred declarations `public` and reworking
+  # `@testable import VVDemus` across the test suite, to buy nothing a second target doesn't
+  # already give. The cost is compiling the shared files twice.
+  #
+  # Only two view files are genuinely iOS-shaped, and both are the tab bar: `RootView` is a
+  # `TabView` using iOS-26-only API (`tabBarMinimizeBehavior`, `tabViewBottomAccessory`), and
+  # `MiniPlayerBar` reads `tabViewBottomAccessoryPlacement` to decide its own layout. The Mac
+  # replaces exactly those two, in `MacApp/`, and shares every screen below them.
+  VVDemusMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: VVDemus
+        excludes:
+          - "Info.plist"
+          - "Vendor/**"
+          # The two tab-bar files. See the note above the target.
+          - "Views/RootView.swift"
+          - "Views/Components/MiniPlayerBar.swift"
+          # iOS-only, and reached only from files already excluded here: the app entry point,
+          # memory-warning logging, and the silent-audio trick that keeps a backgrounded phone
+          # from being suspended. A Mac app is not suspended out from under its server.
+          - "App/VVDemusApp.swift"
+          - "App/MemoryDiagnostics.swift"
+          - "Player/BackgroundKeepAlive.swift"
+          # The catalog's AppIcon is sized for iOS. A Mac icon is its own piece of work;
+          # including this unchanged only produces missing-size warnings.
+          - "Resources/Assets.xcassets"
+          - "Resources/silence.m4a"
+      - path: MacApp
+    dependencies:
+      - package: Swifter
+    info:
+      path: Generated/Info-Mac.plist
+      properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # Both, unlike iOS which needs only the display name: on macOS the menu bar and the
+        # About panel read CFBundleName, while Finder reads CFBundleDisplayName. Setting one
+        # leaves the app called "VVDemusMac" in the other.
+        CFBundleName: Spotify β
+        CFBundleDisplayName: Spotify β
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        # Discovery for the phone↔Mac pairing. Advertising alone would not need this, but
+        # browsing does, and macOS will silently find nothing without it.
+        NSLocalNetworkUsageDescription: >-
+          Spotify β uses your local network to find and stay in sync with the Spotify β app on
+          your phone.
+        NSBonjourServices:
+          - _vvdemus._tcp
+    settings:
+      base:
+        # A distinct id from the phone's: these are two apps, installed on two machines, and
+        # the Mac has its own container. Derived from the same local value so it moves with
+        # whatever prefix this machine signs under.
+        PRODUCT_BUNDLE_IDENTIFIER: $(VVDEMUS_BUNDLE_ID).mac
+        # The bundle really is called this — `CFBundleName` alone was not enough. macOS names
+        # an app in the Dock, in Finder and in Force Quit by its *bundle filename*, so with the
+        # product left at the target name the app was "VVDemusMac" everywhere it mattered and
+        # "Spotify β" only in the menu bar. The scheme is still VVDemusMac; only the product
+        # changes, so `xcodebuild -scheme VVDemusMac` is unaffected.
+        PRODUCT_NAME: Spotify β
+        # Deliberately not ad-hoc (`CODE_SIGN_IDENTITY = -`). macOS keys the local-network
+        # permission to the code signature, and ad-hoc signing produces a new one on every
+        # build — which means re-prompting, or a silently dropped grant, after each rebuild.
+        # A development certificate keeps one stable identity across builds.
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "Apple Development"
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "2"
+        SWIFT_VERSION: "5.0"
+        ENABLE_PREVIEWS: YES
+        # The same artwork the phone uses, resized to the sizes macOS asks for — see
+        # MacApp/Assets.xcassets. It is a separate catalog from the iOS one only because the
+        # icon needs `"idiom": "mac"` entries; the image is identical.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        # No entitlements are used (CryptoKit and Network.framework need none), so the app
+        # needs no provisioning profile and does not expire the way the free-team iOS build
+        # does. The sandbox is off for the same reason it would otherwise have to be
+        # configured: this is a personal, locally-signed build, not a distributed one.
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: NO
   VVDemusTests:
     type: bundle.unit-test
     platform: iOS
@@ -115,6 +215,28 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/VVDemus.app/VVDemus"
         BUNDLE_LOADER: "$(TEST_HOST)"
+  # Drives the real app through every screen and photographs each one.
+  #
+  # Separate from `VVDemusTests` because it is a different kind of thing: it needs a booted
+  # simulator, it takes tens of seconds, and its output is pictures for a person (or a reviewing
+  # agent) to look at rather than assertions. It has its own scheme so it never joins the
+  # everyday suite.
+  VVDemusUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.1"
+    sources:
+      - path: VVDemusUITests
+    dependencies:
+      - target: VVDemus
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(VVDEMUS_BUNDLE_ID).uitests
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: VVDemus
 schemes:
   VVDemus:
     build:
@@ -139,6 +261,25 @@ schemes:
             # Downloads a real track from YouTube. Same reasoning as the rest of this list:
             # real bytes, real dependency on YouTube being up.
             - DownloadIntegrationTests
+    archive:
+      config: Release
+  # `xcodebuild test -scheme VVDemus-Screens` — walks the app and attaches a screenshot of every
+  # screen. Kept off the `VVDemus` scheme so a normal test run stays fast and headless.
+  VVDemus-Screens:
+    build:
+      targets:
+        VVDemus: all
+        VVDemusUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - name: VVDemusUITests
+  VVDemusMac:
+    build:
+      targets:
+        VVDemusMac: all
+    run:
+      config: Debug
     archive:
       config: Release
   # Measures real bytes over the wire — run deliberately, not on every build.

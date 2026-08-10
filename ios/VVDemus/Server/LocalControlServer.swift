@@ -1,6 +1,10 @@
 import Foundation
 import Swifter
+#if os(iOS)
+// Only for the background-task grace window, which has no macOS counterpart — a Mac app is
+// not suspended out from under its own server.
 import UIKit
+#endif
 
 /// Manually synchronized (via the caller's semaphore) box for bridging an async result
 /// back across a thread boundary — safe despite `@unchecked Sendable` because only one
@@ -43,7 +47,10 @@ final class LocalControlServer: ObservableObject {
     /// New on every launch — see `StateSnapshot.serverInstanceId`.
     private let instanceId = UUID().uuidString
 
-    private let server = HttpServer()
+    // Not `private`: the peer routes live in PeerRoutes.swift, and `private` is file-scoped.
+    // They are a separate file because their trust model is the opposite of the routes here —
+    // see the note at the top of that one.
+    let server = HttpServer()
     /// Swifter only fires its `disconnected` callback once a *blocking* per-connection
     /// socket read throws — which may never happen if a browser tab is killed, a laptop
     /// sleeps, or WiFi drops without a clean TCP close. Left unchecked, this (and the
@@ -119,12 +126,14 @@ final class LocalControlServer: ObservableObject {
     /// as genuinely gone. The client pings every 15s.
     static let castHeartbeatTimeout: TimeInterval = 20
     private var broadcastTimer: Timer?
+    #if os(iOS)
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     /// Injected so the expiration bookkeeping can be tested: the simulator hands out real
     /// identifiers but will not expire one on demand, which is the only moment the bug this
     /// replaces (ending whichever id happened to be current, rather than its own) could
     /// show itself.
     var backgroundTasks: BackgroundTaskVending = UIApplication.shared
+    #endif
     /// Resolves a replacement URL for a stream the casting browser reports as dead.
     ///
     /// The cached URL is dropped first. Without that the "fresh" resolve hands back the very
@@ -189,6 +198,9 @@ final class LocalControlServer: ObservableObject {
 
     // MARK: - Background survival
 
+    // The whole section is iOS-only. macOS does not suspend a running app, so there is no
+    // grace window to buy and nothing for the Mac to call.
+    #if os(iOS)
     /// iOS only keeps a backgrounded process alive on the `audio` background mode while
     /// audio is genuinely playing (see `BackgroundKeepAlive`) — this background task just
     /// buys a further, one-time ~30s grace window on top of that for whichever of the two
@@ -239,6 +251,7 @@ final class LocalControlServer: ObservableObject {
         backgroundTasks.endBackgroundTask(backgroundTask)
         backgroundTask = .invalid
     }
+    #endif
 
     // MARK: - Lifecycle
 
@@ -293,6 +306,7 @@ final class LocalControlServer: ObservableObject {
 
     private func installGuards() {
         let guardPort = self.guardPort
+        let webRemoteEnabled = self.webRemoteEnabled
         server.middleware = [
             { request in
                 let port = guardPort.value
@@ -300,6 +314,17 @@ final class LocalControlServer: ObservableObject {
                 if let length = request.headers["content-length"].flatMap(Int.init),
                    length > Self.maximumRequestBodyBytes {
                     return .raw(413, "Payload Too Large", [:], nil)
+                }
+                // The web remote is a toggle; the peer link is not.
+                //
+                // These used to be the same switch, which is what made pairing look completely
+                // broken: with "VVDemus Connect" off the server never started at all, so the
+                // phone and the Mac could neither advertise to nor answer each other — even
+                // though nothing about pairing involves a browser. The server now always runs
+                // and this is what the toggle actually controls: everything except the routes
+                // the paired device uses.
+                if !webRemoteEnabled.value, !Self.isPeerPath(request.path) {
+                    return .raw(404, "Not Found", [:], nil)
                 }
                 guard Self.isAllowedHost(request.headers["host"], port: port) else {
                     return .raw(403, "Forbidden", [:], nil)
@@ -337,8 +362,52 @@ final class LocalControlServer: ObservableObject {
         }
     }
 
+    // There is no second liveness account for the paired device any more. It existed because the
+    // `.computer` output was built for a browser tab and judged by its WebSocket — so a paired
+    // app, which holds no socket, had the sound taken back off it a few seconds into every pause,
+    // and needed an 8s grace window fed by its own progress reports to survive. The session now
+    // moves whole instead of splitting the queue from the speaker, so nothing but a browser ever
+    // holds the `.computer` output and `castLiveness` is once again the only account there is.
+
+    /// Whether the browser-facing half of the server is served. Read from the Swifter worker
+    /// threads, so it is a box rather than a plain property.
+    let webRemoteEnabled = LockedValue<Bool>(true)
+
+    /// Paths that belong to the paired device rather than to a browser, and so are served
+    /// regardless of the web-remote toggle.
+    static func isPeerPath(_ path: String) -> Bool {
+        path.hasPrefix("/api/peer/") || path.hasPrefix("/api/pair/") || path == "/api/sync"
+    }
+
+    /// Keeps `webRemoteEnabled` in step with the user's toggle.
+    func setWebRemoteEnabled(_ enabled: Bool) {
+        webRemoteEnabled.value = enabled
+    }
+
+    /// How many ports above the preferred one to try before giving up.
+    ///
+    /// 51825 being taken used to be fatal, and the common way to hit it is not a stray process
+    /// — it is two copies of this app on one machine. The iOS Simulator shares the Mac's network
+    /// stack, so a simulator running the phone build and the Mac app running beside it are
+    /// competing for the same socket, and whichever starts second gets nothing. Bonjour
+    /// advertises whatever port was actually bound, so the peer still finds it.
+    static let portSearchRange: UInt16 = 8
+
     func start() {
         guard !isRunning else { return }
+        let preferred = port
+        for candidate in preferred...(preferred + Self.portSearchRange) {
+            port = candidate
+            attemptStart()
+            if isRunning { return }
+        }
+        // Every candidate failed. Report against the port that was actually asked for, since
+        // that is the one worth telling the user about.
+        port = preferred
+        startupError = "Couldn't start on port \(preferred) (or the \(Self.portSearchRange) ports above it). Another app may be using them."
+    }
+
+    private func attemptStart() {
         // Routes and guards are installed once, in `init`; only the port the guards enforce
         // can still change between runs.
         guardPort.value = port
@@ -371,8 +440,8 @@ final class LocalControlServer: ObservableObject {
         } catch {
             isRunning = false
             // Surfaced rather than swallowed: the Library toggle stayed on with no address
-            // and no explanation, which looks identical to "still starting up". The usual
-            // cause is port 51825 already being held by a previous instance.
+            // and no explanation, which looks identical to "still starting up". `start()`
+            // replaces this with a final message once every candidate port has been tried.
             startupError = "Couldn't start on port \(port). Another app may be using it."
             NSLog("[LocalControlServer] failed to start on port %d: %@", port, error.localizedDescription)
         }
@@ -414,6 +483,7 @@ final class LocalControlServer: ObservableObject {
 
     private func registerRoutes() {
         routeRegistrations += 1
+        registerPeerRoutes()
         server["/"] = { [weak self] _ in self?.staticFile("index", "html") ?? .notFound }
         server["/app.js"] = { [weak self] _ in self?.staticFile("app", "js", contentType: "application/javascript") ?? .notFound }
         server["/style.css"] = { [weak self] _ in self?.staticFile("style", "css", contentType: "text/css") ?? .notFound }
@@ -538,6 +608,16 @@ final class LocalControlServer: ObservableObject {
             // about eight seconds later. Better to reject it outright.
             guard body.device != .computer || (body.clientId?.isEmpty == false) else {
                 return .badRequest(.text("clientId is required to cast to a computer"))
+            }
+            // A browser cannot move the output of a session this phone does not hold. The queue
+            // lives on the paired device, so casting here would leave the tab waiting for a
+            // stream URL that only the owner can resolve — silence, with the tab believing it is
+            // the cast device. Answered rather than ignored so the remote rolls its optimistic
+            // switch back and says why.
+            guard !self.onMain({ PeerPlayback.shared.isMirroring }) else {
+                return .raw(409, "Conflict", [:], { writer in
+                    try? writer.write(Array("Playback is on the paired device — hand it back to this phone first.".utf8))
+                })
             }
             self.onMain {
                 // Recorded before the switch so the very next broadcast already names the
@@ -1008,7 +1088,9 @@ final class LocalControlServer: ObservableObject {
         PlayerService.shared.externalStream
     }
 
-    private func stateSnapshot() -> StateSnapshot {
+    // Not `private`: the peer routes live in PeerRoutes.swift and serve this same snapshot to
+    // the paired device, which mirrors it.
+    func stateSnapshot() -> StateSnapshot {
         let player = PlayerService.shared
         let external = currentExternalStream()
         return StateSnapshot(
@@ -1032,7 +1114,10 @@ final class LocalControlServer: ObservableObject {
             nextTrack: player.activeDevice == .computer ? player.upNextTrack : nil,
             nextStreamUrl: player.activeDevice == .computer ? player.upNextStream?.url : nil,
             serverInstanceId: instanceId,
-            librarySignature: Self.librarySignature()
+            librarySignature: Self.librarySignature(),
+            sessionOwnerId: SessionOwnership.shared.current.ownerPeerId,
+            sessionClaim: SessionOwnership.shared.current.claim,
+            contextSeed: player.currentContextSeed
         )
     }
 
@@ -1147,6 +1232,13 @@ final class LocalControlServer: ObservableObject {
             lastSeenTrackLoadEpoch = nil
             return
         }
+        // Everything below is about a browser tab, and a browser tab is now the only thing that
+        // can be the `.computer` output. The paired device used to need an exemption here: it
+        // holds no WebSocket, so these checks concluded it had vanished and took the sound back
+        // off it a few seconds into every pause. It no longer takes the output at all — the
+        // session moves whole — so the exemption, and the second liveness account that propped
+        // it up, are both gone.
+        //
         // A newly started track means the browser has nothing loaded to report on yet;
         // restart the silence clock rather than counting that gap against it.
         let trackLoadEpoch = PlayerService.shared.trackLoadEpoch
@@ -1169,7 +1261,9 @@ final class LocalControlServer: ObservableObject {
         }
     }
 
-    private func livenessInput(now: Date) -> CastLivenessInput {
+    /// Internal so a test can ask what the fallback decision *would* be, without waiting out the
+    /// windows involved on the 1 Hz timer. Same reason `creditedPolls` is observable.
+    func livenessInput(now: Date) -> CastLivenessInput {
         CastLivenessInput(
             isPlaying: PlayerService.shared.isPlaying,
             sinceReport: lastComputerReportAt.map { now.timeIntervalSince($0) },
@@ -1238,6 +1332,7 @@ final class LocalControlServer: ObservableObject {
     }
 
     private func fallBackToPhone() {
+        PairLog.error("taking the output back to this phone — nothing is holding it (\(Self.castLiveness(livenessInput(now: Date()))))")
         lastCastClientId = castClientId
         autoFallbackAt = Date()
         // Not `setActiveDevice(.iphone)`: this is the phone guessing the browser is gone,
@@ -1374,14 +1469,14 @@ final class LocalControlServer: ObservableObject {
     }
 
     /// See `staticFile` for why this is `.ok(.data(...))` and not `.raw`.
-    private func jsonResponse<T: Encodable>(_ value: T) -> HttpResponse {
+    func jsonResponse<T: Encodable>(_ value: T) -> HttpResponse {
         guard let data = try? JSONEncoder().encode(value) else { return .internalServerError }
         return .ok(.data(data, contentType: "application/json"))
     }
 
     /// Bridges a synchronous Swifter request-handler thread into MainActor-isolated
     /// code, which almost all of the app's state (PlayerService, stores) lives on.
-    private func onMain<T>(_ work: @escaping @MainActor () -> T) -> T {
+    func onMain<T>(_ work: @escaping @MainActor () -> T) -> T {
         if Thread.isMainThread {
             return MainActor.assumeIsolated(work)
         }
@@ -1615,6 +1710,7 @@ final class UpstreamCall<Input, Output>: @unchecked Sendable {
     }
 }
 
+#if os(iOS)
 /// The slice of `UIApplication`'s background-task API this server uses, so the identifier
 /// bookkeeping can be exercised without a real background task — the simulator hands out
 /// real identifiers but will not expire one on demand, and expiry is the only moment the
@@ -1629,6 +1725,7 @@ protocol BackgroundTaskVending: AnyObject {
 }
 
 extension UIApplication: BackgroundTaskVending {}
+#endif
 
 /// A value read from Swifter's connection threads and written from the main actor.
 final class LockedValue<T>: @unchecked Sendable {

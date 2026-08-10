@@ -42,6 +42,7 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(.pressableCard)
+                    .cardHover()
                     .padding(.horizontal, Theme.Metrics.gutter)
                     .padding(.top, Theme.Space.sm)
 
@@ -61,6 +62,7 @@ struct HomeView: View {
                                     )
                                 }
                                 .buttonStyle(.pressableCard)
+                                .cardHover()
                                 .contextMenu { removeRadioButton(station) }
                             }
                         }
@@ -77,6 +79,7 @@ struct HomeView: View {
                                     )
                                 }
                                 .buttonStyle(.pressableCard)
+                                .cardHover()
                             }
                         }
                     }
@@ -85,7 +88,12 @@ struct HomeView: View {
                         ProgressView()
                             .frame(maxWidth: .infinity, minHeight: 200)
                     } else if let errorMessage, sections.isEmpty {
+                        // Given the room the shelves would have taken, like the branches either
+                        // side of it. Left to size itself the whole failed-feed message sat
+                        // jammed under the daylist card with 39% of the screen empty beneath it,
+                        // which reads as a page that stopped rendering rather than as a state.
                         ErrorRow(message: errorMessage) { Task { await load() } }
+                            .frame(maxWidth: .infinity, minHeight: 440)
                     } else if hasNothingToShow {
                         ContentUnavailableView(
                             "Nothing Here Yet",
@@ -104,15 +112,37 @@ struct HomeView: View {
             }
             .background(Theme.background)
             .navigationTitle(greeting)
-            .navigationBarTitleDisplayMode(.large)
+            .prominentNavigationTitle()
             .toolbar {
                 if !network.isConnected {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .trailingActions) {
                         Label("Offline", systemImage: "wifi.slash")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(Theme.warning)
                     }
                 }
+                // Desktop only. On the phone the paired device is the computer, which you are
+                // usually sitting at and can see for yourself; the reverse is not true, and
+                // "is my phone reachable" is exactly what you want to know before sending a
+                // download to it or handing playback over.
+                #if os(macOS)
+                ToolbarItem(placement: .trailingActions) {
+                    PhoneStatusIndicator()
+                }
+                // `.refreshable` is the only way to force the feed to rebuild, and it is a
+                // pull-to-refresh gesture — which a Mac has no way to perform. Without this the
+                // desktop's only recourse for a stale Home was to quit and relaunch.
+                ToolbarItem(placement: .trailingActions) {
+                    Button {
+                        Task { await load(forceRefresh: true) }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isLoading)
+                    .keyboardShortcut("r", modifiers: .command)
+                    .help("Refresh")
+                }
+                #endif
             }
             .navigationDestination(for: LibraryDestination.self) { destination in
                 destination.destination(player: player)
@@ -131,16 +161,26 @@ struct HomeView: View {
         if !liked.tracks.isEmpty { items.append(.likedSongs) }
         items.append(contentsOf: radioHistory.stations.prefix(6).map(ShortcutItem.radio))
         items.append(contentsOf: playlists.playlists.prefix(6).map(ShortcutItem.playlist))
-        // An odd count leaves a half-width hole at the end of the 2-column grid, so trim to
-        // an even one — except for a lone shortcut, which would otherwise vanish from Home.
+        // On a phone — two columns — an odd count leaves a half-width hole at the end, so trim
+        // to an even one, except for a lone shortcut, which would otherwise vanish from Home.
+        // A wider window fits more columns and a ragged last row there is ordinary; this is
+        // the phone case, which is the one that looked broken.
         let capped = Array(items.prefix(8))
         guard capped.count > 1 else { return capped }
         return Array(capped.prefix(capped.count - capped.count % 2))
     }
 
+    /// The widest minimum that still leaves two columns on the narrowest supported phone: 375pt
+    /// less the gutters is 343, so two columns come out 165 wide. Anything larger and those
+    /// phones drop to a single full-width tile.
+    private static let shortcutColumnMinimum: CGFloat = 160
+
     private var shortcutGrid: some View {
         LazyVGrid(
-            columns: [GridItem(.flexible(), spacing: Theme.Space.md), GridItem(.flexible())],
+            // `.adaptive`, not two `.flexible()` columns: a fixed pair is a phone measurement,
+            // and on a Mac it stretched two tiles of 56pt artwork across the whole window
+            // however wide it was pulled. This holds the tile size and adds columns instead.
+            columns: [GridItem(.adaptive(minimum: Self.shortcutColumnMinimum), spacing: Theme.Space.md)],
             spacing: Theme.Space.md
         ) {
             ForEach(shortcuts) { item in
@@ -158,17 +198,20 @@ struct HomeView: View {
                 ShortcutRow(title: "Liked Songs", imageURL: nil, systemImageFallback: "heart.fill")
             }
             .buttonStyle(.pressableCard)
+            .cardHover()
         case .radio(let station):
             NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
                 ShortcutRow(title: station.title, imageURL: station.seedTrack.thumbnailUrl, systemImageFallback: "dot.radiowaves.left.and.right")
             }
             .buttonStyle(.pressableCard)
+            .cardHover()
             .contextMenu { removeRadioButton(station) }
         case .playlist(let playlist):
             NavigationLink(value: LibraryDestination.playlist(playlist.id)) {
                 ShortcutRow(title: playlist.name, imageURL: playlist.tracks.first?.thumbnailUrl, systemImageFallback: "music.note.list")
             }
             .buttonStyle(.pressableCard)
+            .cardHover()
         }
     }
 
@@ -216,5 +259,39 @@ struct HomeView: View {
             }
         }
         isLoading = false
+    }
+}
+
+#if os(macOS)
+/// A pointer's answer to `.pressableCard`.
+///
+/// Press feedback only begins once the mouse is already down, so a cursor could sweep the whole
+/// landing screen without one thing acknowledging it — the surest sign of a touch UI that was
+/// ported rather than adapted, and why the cards here read as decoration instead of links.
+///
+/// Brightness rather than a lift or a shadow: these cards sit inside the shelves' horizontal
+/// `ScrollView`, which clips anything that grows past their frame, so a hovered card would have
+/// had its top and bottom shaved off.
+private struct CardHoverHighlight: ViewModifier {
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .brightness(isHovering ? 0.08 : 0)
+            .animation(.easeOut(duration: 0.15), value: isHovering)
+            .onHover { isHovering = $0 }
+    }
+}
+#endif
+
+private extension View {
+    /// Nothing on iOS, which has no pointer to answer.
+    @ViewBuilder
+    func cardHover() -> some View {
+        #if os(macOS)
+        modifier(CardHoverHighlight())
+        #else
+        self
+        #endif
     }
 }

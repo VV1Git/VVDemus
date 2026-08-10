@@ -36,6 +36,12 @@ protocol PlaybackEngine: AnyObject {
 
     func rebuild()
     func replaceItem(url: URL, forwardBufferDuration: TimeInterval)
+    /// Lets go of the current item entirely, leaving the engine with nothing loaded.
+    ///
+    /// Distinct from `pause()`: a paused engine still holds a decoded item, still reports a
+    /// duration, and still resumes on the next `play()`. Handing the session to the paired device
+    /// has to leave nothing behind for a stray press to restart.
+    func detach()
     func play()
     func pause()
     func seek(to seconds: Double)
@@ -254,6 +260,18 @@ final class AVPlaybackEngine: PlaybackEngine {
         itemStatusObservation = nil
     }
 
+    func detach() {
+        removeItemObservers()
+        // Bumped for the same reason `replaceItem` bumps it: a late KVO or notification callback
+        // from the item being dropped must not be mistaken for news about whatever comes next.
+        attachGeneration += 1
+        activeResourceLoader?.shutdown()
+        activeResourceLoader = nil
+        player.pause()
+        // `forwardPlaybackEndTime` lives on the item, so dropping the item takes it with it.
+        player.replaceCurrentItem(with: nil)
+    }
+
     func play() { player.play() }
     func pause() { player.pause() }
 
@@ -293,6 +311,19 @@ protocol AudioSessionControlling: AnyObject {
     func deactivate(notifyingOthers: Bool)
 }
 
+#if os(macOS)
+/// macOS has no `AVAudioSession` — an app does not negotiate for the output route, it just
+/// plays. Nothing to activate, nothing to deactivate, and nothing to configure differently
+/// while casting. Kept under the same name so `PlayerService` wires itself up identically on
+/// both platforms.
+@MainActor
+final class SystemAudioSession: AudioSessionControlling {
+    static let shared = SystemAudioSession()
+
+    func activate(casting: Bool) {}
+    func deactivate(notifyingOthers: Bool) {}
+}
+#else
 @MainActor
 final class SystemAudioSession: AudioSessionControlling {
     static let shared = SystemAudioSession()
@@ -321,6 +352,7 @@ final class SystemAudioSession: AudioSessionControlling {
         )
     }
 }
+#endif
 
 // MARK: - Remote commands (lock screen, Control Center, AirPods gestures)
 
@@ -495,6 +527,35 @@ protocol DownloadLocating: AnyObject {
 }
 
 extension DownloadManager: DownloadLocating {}
+
+// MARK: - The device that owns the session
+
+/// How `PlayerService` reaches the paired device, without knowing anything about pairing.
+///
+/// Every transport method starts by offering its intent here. When this device is mirroring, the
+/// intent is sent to the device that owns the session and nothing happens locally; otherwise it
+/// returns false and the method runs as it always has. One funnel rather than routing at each of
+/// the twenty-eight call sites in the views — and the only arrangement that also covers the lock
+/// screen, whose commands enter through the very same methods.
+///
+/// A protocol with a no-op default so `PlayerService` still builds and tests in isolation, exactly
+/// like `PlaybackSideEffects`. The live implementation is `PeerPlayback`.
+@MainActor
+protocol SessionOwning: AnyObject {
+    /// True when the intent was sent to the paired device, and so must not also happen here.
+    func relay(_ intent: PlayerService.PlaybackIntent) -> Bool
+    /// Playback just started on this device under its own steam, so it owns the session now.
+    func claimSession()
+}
+
+/// The unpaired case, and the one every test gets unless it asks for otherwise: nothing is
+/// relayed anywhere and every method runs locally.
+@MainActor
+final class NoSessionOwner: SessionOwning {
+    static let shared = NoSessionOwner()
+    func relay(_ intent: PlayerService.PlaybackIntent) -> Bool { false }
+    func claimSession() {}
+}
 
 // MARK: - History / stats side effects
 

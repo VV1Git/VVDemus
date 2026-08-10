@@ -4,6 +4,21 @@ struct NowPlayingView: View {
     @ObservedObject var player: PlayerService
     @ObservedObject private var liked = LikedSongsStore.shared
     @ObservedObject private var colorLoader = ArtworkColorLoader.shared
+    /// The session on screen, which is this device's own or the paired device's depending on
+    /// who owns it. Read for everything shown, never called for anything done — the buttons
+    /// below all go to `player`, which relays to the owner itself (`SessionOwning`), so no
+    /// control on this screen has to know which device it is driving.
+    @ObservedObject private var peer = PeerPlayback.shared
+    @ObservedObject private var pairedStore = PairedPeerStore.shared
+
+    /// Whether there is another device to send playback to.
+    ///
+    /// Decides the shape of the controls, not just their contents: with nothing paired the device
+    /// picker draws nothing at all, and a row containing only a right-aligned queue button leaves
+    /// a band of dead space the height of a hit target under the volume slider. On the far more
+    /// common unpaired phone the queue button belongs back in the transport row, which has the
+    /// width for it precisely because the picker is not there to take 44pt of it.
+    private var hasPairedDevice: Bool { pairedStore.peer != nil }
     @Environment(\.dismiss) private var dismiss
     @State private var showQueue = false
     /// How far the artwork has been dragged sideways, so it follows the finger before
@@ -50,7 +65,7 @@ struct NowPlayingView: View {
             }
     }
 
-    private var artworkColor: Color { colorLoader.color(for: player.currentTrack) }
+    private var artworkColor: Color { colorLoader.color(for: peer.displayedTrack) }
 
     var body: some View {
         ZStack {
@@ -67,8 +82,8 @@ struct NowPlayingView: View {
             // Loading is driven from here rather than from inside the gradient's argument:
             // reading a colour is pure, fetching one is not, and this body re-evaluates
             // twice a second while playing.
-            .task(id: player.currentTrack?.thumbnailUrl) {
-                await colorLoader.prepare(for: player.currentTrack)
+            .task(id: peer.displayedTrack?.thumbnailUrl) {
+                await colorLoader.prepare(for: peer.displayedTrack)
             }
 
             // One flexible gap, above the artwork. With the old pair of Spacers the artwork
@@ -117,7 +132,7 @@ struct NowPlayingView: View {
             Theme.ArtSize.heroMax
         )
         return RemoteImage(
-            url: player.currentTrack?.thumbnailUrl,
+            url: peer.displayedTrack?.thumbnailUrl,
             size: max(side, 0),
             cornerRadius: Theme.Radius.artHero
         )
@@ -138,6 +153,7 @@ struct NowPlayingView: View {
             progressSection
             transportControls
             volumeSection
+            if hasPairedDevice { secondaryControls }
         }
         // The panel supplies its own inner inset. The screen gutter is applied once, on the
         // outer stack, and stops at the glass edge.
@@ -164,10 +180,17 @@ struct NowPlayingView: View {
             Spacer()
 
             VStack(spacing: Theme.Metrics.labelSpacing) {
-                Text("NOW PLAYING")
+                // The screen's own caption carries the device indication rather than a badge
+                // of its own: the line already sits above the artwork saying what this screen
+                // is, and while the session lives on the paired device that answer is simply
+                // longer. Accent when it isn't this device, matching the equalizer bars and
+                // the active row — nothing else here says the sound is somewhere else.
+                let owner = peer.owningDeviceName
+                Text(owner.map { "PLAYING ON \($0.uppercased())" } ?? "NOW PLAYING")
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                if let contextTitle = player.queueContextTitle {
+                    .foregroundStyle(owner == nil ? Color.secondary : Theme.accent)
+                    .lineLimit(1)
+                if let contextTitle = peer.displayedContextTitle {
                     Text(contextTitle.uppercased())
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -180,7 +203,7 @@ struct NowPlayingView: View {
             // Balances the leading chevron so the title stack stays centered, and carries the
             // actions every list row offers — Now Playing used to offer none of them. The
             // empty slot is only for the moment before a track exists.
-            if let track = player.currentTrack {
+            if let track = peer.displayedTrack {
                 NowPlayingActionsMenu(track: track, player: player)
             } else {
                 Color.clear
@@ -192,16 +215,16 @@ struct NowPlayingView: View {
     private var titleRow: some View {
         HStack(alignment: .top, spacing: Theme.Space.md) {
             VStack(alignment: .leading, spacing: Theme.Metrics.labelSpacing) {
-                Text(player.currentTrack?.title ?? "")
+                Text(peer.displayedTrack?.title ?? "")
                     .font(.nowPlayingTitle)
                     .lineLimit(2)
-                Text(player.currentTrack?.artist ?? "")
+                Text(peer.displayedTrack?.artist ?? "")
                     .font(.rowSubtitle)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: Theme.Space.md)
-            if let track = player.currentTrack {
+            if let track = peer.displayedTrack {
                 Button { liked.toggle(track) } label: {
                     Image(systemName: liked.isLiked(track) ? "heart.fill" : "heart")
                         .font(.title3)
@@ -217,41 +240,40 @@ struct NowPlayingView: View {
 
     /// A fixed slot whether or not there is a message, so one appearing can't shove the
     /// artwork and the controls around mid-playback.
+    ///
+    /// `minHeight`, not `height`: 32pt is exactly two `.footnote` lines at the default text
+    /// size and fewer at every size above it, so the hard cap clipped the second line — and
+    /// often the first — for anyone who had turned type up. The slot still reserves its 32pt
+    /// when empty, which is all the reservation was ever for.
     private var errorSlot: some View {
-        Group {
-            if let errorMessage = player.errorMessage {
-                // Warning, not red: none of these are destructive, they're "this needs you".
-                Text(errorMessage)
-                    .font(.footnote)
-                    .foregroundStyle(Theme.warning)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    // Dismissable. Only a track load cleared this, and the two
-                    // device-switch failures ("Couldn't hand off…", "Couldn't resume…")
-                    // don't load anything — so their message sat under the artwork
-                    // indefinitely with no way to get rid of it.
-                    .contentShape(Rectangle())
-                    .onTapGesture { player.errorMessage = nil }
-                    .accessibilityHint("Tap to dismiss")
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: Theme.Space.xxl)
+        PlaybackErrorBar(player: player)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: Theme.Space.xxl)
     }
 
     /// Scrubbing is held locally until the drag ends.
     ///
     /// Binding `value:` straight to `seek(to:)` issued a seek on every touch delta — dozens
     /// a second — while the player's own periodic observer wrote `progress` back from the
-    /// pre-seek position in between, so the thumb fought the finger and jumped around.
+    /// pre-seek position in between, so the thumb fought the finger and jumped around. The
+    /// same latch does double duty for the mirror, where the position arriving once a second
+    /// from the owner would otherwise drag the thumb backwards mid-drag.
     private var progressSection: some View {
         VStack(spacing: Theme.Space.xs) {
             Slider(
                 value: Binding(
-                    get: { scrubPosition ?? player.progress },
+                    get: {
+                        if let scrubPosition { return scrubPosition }
+                        // Clamped into the range the Slider was actually given. Before a
+                        // duration is known the range collapses to 0...1 while `progress` is
+                        // whatever the last track left behind, and a value outside its own
+                        // bounds draws the thumb pinned off the end of the track.
+                        let duration = peer.displayedDuration
+                        return duration > 0 ? min(max(peer.displayedProgress, 0), duration) : 0
+                    },
                     set: { scrubPosition = $0 }
                 ),
-                in: 0...max(player.duration, 1),
+                in: 0...max(peer.displayedDuration, 1),
                 onEditingChanged: { editing in
                     guard !editing else { return }
                     if let target = scrubPosition { player.seek(to: target) }
@@ -259,13 +281,17 @@ struct NowPlayingView: View {
                 }
             )
             .tint(Theme.accent)
+            // There is nothing to seek within until a duration arrives; dragging then only
+            // issued a seek in seconds-of-one into a track that hadn't loaded. Matches
+            // `MacNowPlayingBar`, which has always clamped and disabled.
+            .disabled(peer.displayedDuration <= 0)
             .accessibilityLabel("Playback position")
-            .accessibilityValue(format(scrubPosition ?? player.progress))
+            .accessibilityValue(format(scrubPosition ?? peer.displayedProgress))
 
             HStack {
-                Text(format(scrubPosition ?? player.progress))
+                Text(format(scrubPosition ?? peer.displayedProgress))
                 Spacer()
-                Text(format(player.duration))
+                Text(format(peer.displayedDuration))
             }
             // Monospaced digits, or the elapsed time jitters sideways every second.
             .font(.caption.monospacedDigit())
@@ -283,10 +309,13 @@ struct NowPlayingView: View {
     private var volumeSection: some View {
         HStack(spacing: Theme.Space.md) {
             Image(systemName: "speaker.fill")
-            Slider(value: Binding(get: { player.volume }, set: { player.setVolume($0) }), in: 0...1)
-                .tint(Theme.accent)
-                .accessibilityLabel("Volume")
-                .accessibilityValue("\(Int((player.volume * 100).rounded())) percent")
+            Slider(
+                value: Binding(get: { peer.displayedVolume }, set: { player.setVolume($0) }),
+                in: 0...1
+            )
+            .tint(Theme.accent)
+            .accessibilityLabel("Volume")
+            .accessibilityValue("\(Int((peer.displayedVolume * 100).rounded())) percent")
             Image(systemName: "speaker.wave.3.fill")
         }
         .font(.caption)
@@ -300,12 +329,12 @@ struct NowPlayingView: View {
                     .font(.title3)
                     // The tint alone says "on". The old 4pt dot underneath lifted the glyph
                     // off the optical line of the queue glyph opposite it.
-                    .foregroundStyle(player.isShuffling ? Theme.accent : .primary)
+                    .foregroundStyle(peer.displayedIsShuffling ? Theme.accent : .primary)
                     .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.pressable)
-            .accessibilityLabel(player.isShuffling ? "Shuffle on" : "Shuffle off")
+            .accessibilityLabel(peer.displayedIsShuffling ? "Shuffle on" : "Shuffle off")
 
             Spacer(minLength: Theme.Space.sm)
 
@@ -323,10 +352,10 @@ struct NowPlayingView: View {
             Button { player.togglePlayPause() } label: {
                 ZStack {
                     Circle().fill(Color.white).frame(width: 64, height: 64)
-                    if player.isLoading {
+                    if peer.displayedIsLoading {
                         ProgressView().tint(.black)
                     } else {
-                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        Image(systemName: peer.displayedIsPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 26))
                             .foregroundStyle(.black)
                     }
@@ -334,7 +363,7 @@ struct NowPlayingView: View {
             }
             // The default 0.92 shrink is too much movement on a target this size.
             .buttonStyle(.pressableCard)
-            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(peer.displayedIsPlaying ? "Pause" : "Play")
 
             Spacer(minLength: Theme.Space.sm)
 
@@ -349,14 +378,46 @@ struct NowPlayingView: View {
 
             Spacer(minLength: Theme.Space.sm)
 
-            Button { showQueue = true } label: {
-                Image(systemName: "list.bullet")
-                    .font(.title3)
-                    .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.pressable)
-            .accessibilityLabel("Queue")
+            // Always the fifth control, whether or not a device is paired. It is what balances
+            // shuffle on the other side of the play button — with four controls the white circle
+            // sits 45pt right of the centreline the artwork, the scrubber and the panel all
+            // share, and it is the largest, brightest thing on the screen, so the whole layout
+            // reads as crooked. Five controls also still fit: 240pt plus four 8pt gaps against
+            // the ~311pt a 375pt phone offers inside the gutter and the panel's inset.
+            queueButton
+        }
+    }
+
+    private var queueButton: some View {
+        Button { showQueue = true } label: {
+            Image(systemName: "list.bullet")
+                .font(.title3)
+                .frame(width: Theme.Metrics.hitTarget, height: Theme.Metrics.hitTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.pressable)
+        .accessibilityLabel("Queue")
+    }
+
+    /// The device picker, on its own line under the transport — bottom-left, where Spotify puts
+    /// it.
+    ///
+    /// It used to sit in the transport row and does not fit there: every control in that row is an
+    /// exact fixed frame, nothing can compress, and six of them came to 284pt plus spacers against
+    /// the ~311pt a 375pt phone offers inside the gutter and the panel's inset. It overran the
+    /// glass on an SE and a 13 mini, taking the queue button off the edge with it.
+    ///
+    /// Only the picker moved down, though. Taking the queue button with it left the transport row
+    /// with four controls and no counterweight to shuffle, which pushed the white play circle
+    /// 45pt off the centreline everything else on the screen shares; and with nothing paired the
+    /// picker draws nothing at all, so the row became 294×44pt of blank glass with one button
+    /// stranded in the corner. A row that holds one thing, and hides itself when it has nothing
+    /// to hold, avoids both.
+    private var secondaryControls: some View {
+        HStack(spacing: Theme.Space.sm) {
+            DevicePicker(opensUpward: true)
+
+            Spacer(minLength: 0)
         }
     }
 
@@ -364,6 +425,39 @@ struct NowPlayingView: View {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let total = Int(seconds)
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// Playback's one visible failure surface: a stream that wouldn't resolve, a handoff the
+/// other device refused.
+///
+/// A view of its own rather than a computed property on `NowPlayingView`, because
+/// `NowPlayingView` is only ever presented from `RootView` — and project.yml leaves `RootView`
+/// out of the Mac target. That made `player.errorMessage` unreachable on the Mac: a stream that
+/// failed there set the message and nothing anywhere drew it, so the music simply stopped with
+/// no explanation. This is the piece a Mac now-playing surface can mount to fix that.
+///
+/// Draws nothing at all when there is no message — reserving room for one is the caller's
+/// decision, and only the full-screen player needs it.
+struct PlaybackErrorBar: View {
+    @ObservedObject var player: PlayerService
+
+    var body: some View {
+        if let errorMessage = player.errorMessage {
+            // Warning, not red: none of these are destructive, they're "this needs you".
+            Text(errorMessage)
+                .font(.footnote)
+                .foregroundStyle(Theme.warning)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                // Dismissable. Only a track load cleared this, and the two device-switch
+                // failures ("Couldn't hand off…", "Couldn't resume…") don't load anything —
+                // so their message sat under the artwork indefinitely with no way to get rid
+                // of it.
+                .contentShape(Rectangle())
+                .onTapGesture { player.errorMessage = nil }
+                .accessibilityHint("Tap to dismiss")
+        }
     }
 }
 

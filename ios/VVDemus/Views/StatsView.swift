@@ -8,7 +8,9 @@ struct StatsView: View {
     enum StatsRange: String, CaseIterable, Identifiable {
         case week = "Week"
         case month = "Month"
-        case threeMonths = "3 Mo"
+        // Spelled out like its three neighbours. Each segment is ~92pt wide and "3 Months" fits
+        // with room to spare, so the abbreviation bought nothing and cost the row its consistency.
+        case threeMonths = "3 Months"
         case year = "Year"
 
         var id: String { rawValue }
@@ -85,7 +87,15 @@ struct StatsView: View {
     }
 
     var body: some View {
-        ScrollView {
+        // A header row above the scroll view rather than `.safeAreaInset(edge: .top)`.
+        //
+        // The inset is measured from the scroll content, so every time the numbers changed size
+        // — switching range, history loading in — the inset was recomputed and the whole page
+        // jumped. As a sibling in a VStack its height is its own business and nothing below it
+        // moves.
+        VStack(spacing: 0) {
+            rangePicker
+            ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.xl) {
                 if eventsInRange.isEmpty {
                     ContentUnavailableView(
@@ -93,7 +103,11 @@ struct StatsView: View {
                         systemImage: "chart.bar",
                         description: Text("Play something and this range will fill up.")
                     )
-                    .padding(.top, Theme.Space.xxl)
+                    // Given the height the sections would have taken, so it centres the way the
+                    // identical empty states on Liked Songs and Downloads do. A top padding
+                    // pinned it under the range picker with ~450pt of black beneath, which reads
+                    // as a screen that failed to finish rather than as a state.
+                    .frame(maxWidth: .infinity, minHeight: 420)
                 } else {
                     summaryRow
 
@@ -124,10 +138,11 @@ struct StatsView: View {
             .padding(.horizontal, Theme.Metrics.gutter)
             .padding(.vertical, Theme.Space.lg)
         }
+            .background(Theme.background)
+        }
         .background(Theme.background)
-        .safeAreaInset(edge: .top) { rangePicker }
         .navigationTitle("Your Stats")
-        .navigationBarTitleDisplayMode(.inline)
+        .compactNavigationTitle()
     }
 
     /// Pinned rather than scrolled: it is the only control on the screen, and it used to
@@ -141,7 +156,11 @@ struct StatsView: View {
         .pickerStyle(.segmented)
         .padding(.horizontal, Theme.Metrics.gutter)
         .padding(.vertical, Theme.Space.sm)
-        .background(.bar)
+        // No material here. `.bar` blurs whatever passes beneath it, and nothing does: this is a
+        // sibling above the `ScrollView`, not an overlay on it. All it produced was an opaque
+        // strip ending in a hard, unblended edge against the black below — while the same nav
+        // area on Liked Songs and Downloads, reached from the same list, is plain. The outer
+        // stack's `Theme.background` already paints this region.
     }
 
     private func section<Content: View>(
@@ -215,12 +234,16 @@ struct StatsView: View {
         .trackActions(track: song.track, player: player)
     }
 
+    /// `minWidth`, not `width`: `.meta` is `.caption`, so at accessibility text sizes even a
+    /// two-digit rank outgrows the 24pt column and a hard frame clipped it to "1…". The column
+    /// still measures 24 at every normal size, which is what keeps the hairlines below lined up
+    /// with the text they're inset to.
     private func rankLabel(_ rank: Int) -> some View {
         Text("\(rank)")
             .font(.meta)
             .monospacedDigit()
             .foregroundStyle(.secondary)
-            .frame(width: Self.rankWidth, alignment: .leading)
+            .frame(minWidth: Self.rankWidth, alignment: .leading)
     }
 
     /// One wording for both tables — artists said "3 plays" while songs three lines below said

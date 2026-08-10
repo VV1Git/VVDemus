@@ -1,0 +1,13 @@
+# Bundle ids that cleanup-stray-apps.sh must never remove.
+#
+# The sweep's rule is "not declared by this project", which is not the same as "junk" — this Mac
+# has other real projects on it, and their apps are installed on the same simulators. Deleting one
+# of those would destroy someone's work, so anything with a source tree behind it belongs here.
+#
+# This project's own ids are NOT listed: they are read from ios/Config/Signing.local.xcconfig at
+# run time, because VVDEMUS_BUNDLE_ID is deliberately per-machine (see ios/SETUP.md).
+#
+# One bundle id per line. Everything after a # is ignored.
+
+com.anonymous.MyApp     # ~/Documents/MyApp
+VV1.MusicApp            # ~/Documents/codingstuff/MusicApp

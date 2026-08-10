@@ -12,6 +12,17 @@ ios/build/
 **/xcuserdata/
 *.xcuserstate
 
+# Build output for the vendored Swifter package. Xcode creates these inside the package when it
+# resolves and builds it; the sources next to them are vendored and tracked, the output is not.
+# Both spellings appear: SwiftPM writes `.build`, Xcode's own build system writes `build`.
+ios/VVDemus/Vendor/Swifter/.build/
+ios/VVDemus/Vendor/Swifter/build/
+
+# Throwaway git worktrees created for agent runs. They are checkouts of this repo, so tracking
+# them would commit a copy of the tree into the tree. The rest of `.claude/` is real project
+# configuration — `cleanup-keep.txt` is meant to be edited, see CLAUDE.md — and stays tracked.
+.claude/worktrees/
+
 # This machine's signing team and bundle id. The committed Signing.xcconfig holds a
 # placeholder team and a deliberately invalid bundle id, and optionally includes this; see
 # the comments in it.

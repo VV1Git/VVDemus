@@ -8,7 +8,10 @@ import PackageDescription
 
 let package = Package(
     name: "Swifter",
-    platforms: [.iOS(.v17)],
+    // macOS is here so the Mac app can embed the same server the phone runs — both peers
+    // serve the same routes and the same WebUI. A floor, not a target: the apps themselves
+    // deploy far later than this, and the library is POSIX sockets and Foundation.
+    platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "Swifter", targets: ["Swifter"])
     ],

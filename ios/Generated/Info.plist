@@ -20,6 +20,12 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_vvdemus._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Spotify β uses your local network to find and stay in sync with the Spotify β app on your computer.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

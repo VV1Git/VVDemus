@@ -41,6 +41,17 @@ struct TrackShelf: View {
     let title: String
     let tracks: [Track]
     @ObservedObject var player: PlayerService
+    @ObservedObject private var peer = PeerPlayback.shared
+
+    /// Marks the card the session is on, wherever that session lives.
+    ///
+    /// `player.currentTrack` is only the right answer on the device that owns the session; the
+    /// mirroring one has a deliberately empty player, so testing it meant no card on Home was
+    /// ever marked as playing there. `displayedTrack` resolves to this device's own player when
+    /// it owns the session, so it is the whole test — the same rule the list rows use.
+    private func isCurrent(_ track: Track) -> Bool {
+        peer.displayedTrack?.id == track.id
+    }
 
     var body: some View {
         HomeShelf(title: title) {
@@ -50,7 +61,7 @@ struct TrackShelf: View {
                 Button {
                     player.play(track: track, context: tracks, contextTitle: title)
                 } label: {
-                    TrackCard(track: track, isActive: player.currentTrack?.id == track.id)
+                    TrackCard(track: track, isActive: isCurrent(track))
                 }
                 .buttonStyle(.pressableCard)
                 .trackActions(track: track, player: player)

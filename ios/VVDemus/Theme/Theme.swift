@@ -1,5 +1,8 @@
 import SwiftUI
+#if os(iOS)
+// Only for `Haptics` at the bottom of this file — everything above is SwiftUI.
 import UIKit
+#endif
 
 enum Theme {
     // MARK: - Palette
@@ -16,9 +19,6 @@ enum Theme {
     /// Hand-drawn `Divider`s only. Never `.listRowSeparatorTint` — the system separator
     /// is already correct in dark mode, and tinting it only makes it worse.
     static let separator = Color(white: 0.24)
-    /// Prefer `.secondary`; legal only for text drawn directly over artwork, where the
-    /// system's dynamic secondary colour can't know what it is sitting on.
-    static let textSecondary = Color(white: 0.62)
 
     // MARK: - Spacing
 
@@ -53,9 +53,14 @@ enum Theme {
 
     // MARK: - Artwork sizes
 
-    /// These six values are the complete set.
+    /// These seven values are the complete set.
     enum ArtSize {
-        static let mini: CGFloat = 44         // mini player accessory only
+        static let mini: CGFloat = 44         // compact bars: the Mac transport bar, the resume bar
+        /// The iOS tab-bar accessory, whose interior is 46pt. At `mini` the expanded mini player
+        /// asked for 6 + 44 + 6 + a 2pt progress hairline = 58pt inside it, so the artwork was
+        /// pressed against the top rim of the glass pill with ~1pt of clearance and the hairline
+        /// was pushed outside the capsule entirely. 4 + 36 + 4 + 2 is exactly 46.
+        static let accessory: CGFloat = 36
         static let row: CGFloat = 48          // EVERY list row, EVERY screen
         static let tile: CGFloat = 56         // Home 2-column shortcut grid tile only
         static let daylist: CGFloat = 64      // DaylistCard
@@ -68,7 +73,6 @@ enum Theme {
     enum Metrics {
         static let gutter: CGFloat = Space.lg           // one content inset app-wide
         static let rowVertical: CGFloat = 6             // 48 + 6 + 6 = 60pt row
-        static let rowHeight: CGFloat = 60
         static let hitTarget: CGFloat = 44
         /// VISUAL width of a trailing row control; its height stays `hitTarget`.
         static let trailingControl: CGFloat = 32
@@ -100,6 +104,17 @@ extension Font {
     static let miniSubtitle = Font.caption
     static let meta = Font.caption                              // stats, counters, timestamps
     static let controlLabel = Font.footnote.weight(.semibold)   // small text buttons
+    /// A glyph in a row's trailing controls — the like heart, and anything that sits beside the
+    /// download ring. Sized to match that ring's 20pt frame: unset, the heart rendered about 30%
+    /// smaller than the ring next to it, so the download read as the heavier control on every
+    /// row in the app.
+    static let trailingGlyph = Font.title3
+    /// The six digits on the pairing screen. Built on a text style rather than the fixed
+    /// `.system(size: 44)` it replaced, which was the one number on that screen that did not
+    /// grow with Dynamic Type — exactly backwards for a code someone has to read off one
+    /// device and type into another. Monospaced so the digits sit on a fixed grid and the
+    /// string doesn't shuffle sideways when the code rolls over every 30 seconds.
+    static let pairingCode = Font.largeTitle.weight(.semibold).monospaced()
 }
 
 // MARK: - Button styles
@@ -173,23 +188,28 @@ extension ButtonStyle where Self == RowButtonStyle {
 
 /// Haptics for actions triggered by a swipe rather than a tap: with no button to watch
 /// depress, a small tap through the case is the only confirmation the gesture registered.
+/// A Mac has no Taptic Engine, so this does nothing there. The style parameter went with the
+/// port rather than being given a platform-independent type of its own: every one of the call
+/// sites took the `.light` default, so it was an unused generalization whose only concrete
+/// type was `UIImpactFeedbackGenerator.FeedbackStyle`.
 enum Haptics {
-    /// Generators are cached and re-`prepare()`d after every use. An unprepared generator
+    #if os(iOS)
+    /// The generator is cached and re-`prepare()`d after every use. An unprepared generator
     /// has to spin the Taptic Engine up first, so the very first swipe's tap used to land
     /// after its animation had already resolved.
-    private static var generators: [UIImpactFeedbackGenerator.FeedbackStyle: UIImpactFeedbackGenerator] = [:]
+    private static var generator: UIImpactFeedbackGenerator?
 
-    private static func generator(for style: UIImpactFeedbackGenerator.FeedbackStyle) -> UIImpactFeedbackGenerator {
-        if let existing = generators[style] { return existing }
-        let generator = UIImpactFeedbackGenerator(style: style)
-        generator.prepare()
-        generators[style] = generator
-        return generator
-    }
-
-    static func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
-        let generator = generator(for: style)
+    static func impact() {
+        let generator = generator ?? {
+            let made = UIImpactFeedbackGenerator(style: .light)
+            made.prepare()
+            Self.generator = made
+            return made
+        }()
         generator.impactOccurred()
         generator.prepare()
     }
+    #else
+    static func impact() {}
+    #endif
 }

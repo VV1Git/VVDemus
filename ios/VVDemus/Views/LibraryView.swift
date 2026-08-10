@@ -58,6 +58,16 @@ struct LibraryView: View {
                                 }
                             }
                             .trackRowMetrics()
+                            // And the same removal as a long press, because both gestures
+                            // below want a finger: a mouse cannot swipe, and this screen has
+                            // no Edit button, so on the Mac a saved radio was here for good.
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    withAnimation { radioHistory.delete(station) }
+                                } label: {
+                                    Label("Remove Radio", systemImage: "trash")
+                                }
+                            }
                         }
                         // Swipe-to-delete and Edit-mode delete, the same two gestures the
                         // playlist section below already answers to.
@@ -88,6 +98,15 @@ struct LibraryView: View {
                                 }
                             }
                             .trackRowMetrics()
+                            // Mouse-reachable deletion, as above. Detail view's ellipsis menu
+                            // offers the same thing, but only after opening the playlist.
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    withAnimation { playlists.delete(playlist) }
+                                } label: {
+                                    Label("Delete Playlist", systemImage: "trash")
+                                }
+                            }
                         }
                         .onDelete { offsets in
                             offsets.map { playlists.playlists[$0] }.forEach(playlists.delete)
@@ -102,7 +121,7 @@ struct LibraryView: View {
             }
             .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .trailingActions) {
                     Button {
                         path.append(LibraryDestination.settings)
                     } label: {

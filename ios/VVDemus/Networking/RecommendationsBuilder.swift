@@ -162,6 +162,34 @@ final class HomeFeedStore: ObservableObject {
         let generatedAt: Date
     }
 
+    // MARK: - Sync
+
+    /// Home's shelves, synced whole for the same reason as the daylist: they are built in one
+    /// pass from the listening history, and the useful outcome is both devices showing the same
+    /// Quick Picks rather than each waiting to rebuild its own.
+    func syncRecord() -> GeneratedRecord? {
+        guard let generatedAt,
+              let data = try? JSONEncoder().encode(Snapshot(sections: sections, generatedAt: generatedAt))
+        else { return nil }
+        return GeneratedRecord(
+            id: key,
+            payload: data,
+            generatedAt: generatedAt,
+            stamp: EditStamp(editedAt: generatedAt, editedBy: PeerIdentityBox.currentPeerId)
+        )
+    }
+
+    @discardableResult
+    func applySynced(_ record: GeneratedRecord) -> Bool {
+        guard record.id == key else { return false }
+        if let generatedAt, record.generatedAt <= generatedAt { return false }
+        guard let snapshot = try? JSONDecoder().decode(Snapshot.self, from: record.payload) else { return false }
+        sections = snapshot.sections
+        generatedAt = snapshot.generatedAt
+        UserDefaults.standard.set(record.payload, forKey: key)
+        return true
+    }
+
     private func load() {
         guard let snapshot = DefaultsSnapshot.load(Snapshot.self, forKey: key) else { return }
         sections = snapshot.sections

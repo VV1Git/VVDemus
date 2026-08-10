@@ -1,5 +1,4 @@
 import Foundation
-import UIKit
 
 /// Downloads a track's resolved audio to disk for offline playback later. Delegate runs
 /// on the main queue so download callbacks can touch @Published state directly without
@@ -320,6 +319,43 @@ final class DownloadManager: NSObject, ObservableObject {
         return batchRecords.first { $0.videoIds.contains(where: ids.contains) }
     }
 
+    /// The collection-level job covering `tracks`, or nil when nothing collection-level is
+    /// running over them.
+    ///
+    /// A job is a *batch* — what `downloadAll` mints — and single-tap downloads deliberately have
+    /// none. Returning nil for those is the whole point: a detail hero used to raise its
+    /// whole-collection strip for any active entry among its tracks, so downloading three songs
+    /// out of a fifty-song playlist drew a bar over all fifty and offered a Stop that would have
+    /// taken the other forty-seven with it.
+    func downloadJob(for tracks: [Track]) -> CollectionDownloadJob? {
+        let ids = tracks.map(\.videoId)
+        // Scored by how much of *this* collection each batch owns rather than taken from the
+        // first live entry found: batches overlap. An album downloaded from its own screen shares
+        // a song with every playlist that song is in, and a first-hit match hung that album's job
+        // under the playlist's header for the sake of one track.
+        var members: [UUID: Int] = [:]
+        for id in ids {
+            guard let batchId = active[id]?.batchId else { continue }
+            members[batchId, default: 0] += 1
+        }
+        guard !members.isEmpty else { return nil }
+        var best: (batch: DownloadBatch, count: Int)?
+        for record in batchRecords {
+            guard let count = members[record.id] else { continue }
+            // `batchRecords` is most-recent-first, so a strict `>` resolves a tie to the job the
+            // user started last — the one they are most likely to be watching.
+            if count > (best?.count ?? 0) { best = (record, count) }
+        }
+        guard let batch = best?.batch else { return nil }
+        let scope = Set(ids)
+        let videoIds = batch.videoIds.filter(scope.contains)
+        guard !videoIds.isEmpty else { return nil }
+        return CollectionDownloadJob(
+            videoIds: videoIds,
+            progress: collectionProgress(forVideoIds: videoIds)
+        )
+    }
+
     func localFileURL(for track: Track) -> URL? {
         guard downloadedTracks.contains(where: { $0.id == track.id }) else { return nil }
         return localFileURL(forVideoId: track.videoId)
@@ -408,6 +444,13 @@ final class DownloadManager: NSObject, ObservableObject {
     /// way — and so there is one place that knows a failed resolve has to leave the entry in a
     /// state `download()` will restart from.
     private func startTransfer(for track: Track) async {
+        // The entry can be gone before this Task gets its turn: `download` schedules it and
+        // returns, and tapping the row's ring cancels synchronously. Resolving anyway handed a
+        // transfer to the background session *after* `cancelTasks` had already walked it, so
+        // nothing was left to cancel it — the whole file arrived minutes later and was dropped
+        // on the floor by a delegate that could no longer find a track for it. The bulk path
+        // guards this before calling; the single-tap path had nowhere to.
+        guard active[track.videoId] != nil else { return }
         do {
             let stream = try await APIClient.shared.stream(videoId: track.videoId)
             guard let remoteURL = URL(string: stream.url) else { throw APIError.invalidURL }
@@ -458,7 +501,7 @@ final class DownloadManager: NSObject, ObservableObject {
                   // body used to be written verbatim under the artwork key, and every later
                   // reader — including the lock screen — took the poisoned disk entry and
                   // failed, forever.
-                  UIImage(data: data) != nil else { return }
+                  ImageData.isDecodable(data) else { return }
             await DiskImageCache.shared.store(data, for: key)
         }
     }
@@ -476,7 +519,14 @@ final class DownloadManager: NSObject, ObservableObject {
     /// on its way through instead of piling onto it.
     func downloadAll(_ tracks: [Track], title: String, artworkURL: String? = nil) {
         let queued = tracks.filter { !isDownloaded($0) && !isDownloading($0) }
-        guard !queued.isEmpty else { return }
+        // Transfers the user had already started by hand join the job rather than running beside
+        // it. Disjoint from `queued` by construction — `isDownloading` is false for a retained
+        // failure, which belongs in the retry path instead. Without this, Download All over a
+        // collection whose rows had been tapped individually minted a batch that owned none of
+        // the live transfers, and over one where *every* row had been tapped minted no batch at
+        // all: the header's button sat on a plain arrow that did nothing.
+        let adopted = tracks.filter { isDownloading($0) && active[$0.videoId]?.batchId == nil }
+        guard !queued.isEmpty || !adopted.isEmpty else { return }
 
         let batch = DownloadBatch(
             id: UUID(), title: title, artworkURL: artworkURL,
@@ -498,6 +548,10 @@ final class DownloadManager: NSObject, ObservableObject {
             prewarmArtwork(for: track)
         }
         pendingDownloads = pending
+        // Re-parented in place, not re-inserted: `insert` deliberately carries nothing over from
+        // the entry it replaces, so re-adding a transfer that is already 60% through would reset
+        // its ring to zero and leave the buffered bytes to arrive against a fresh entry.
+        for track in adopted { active[track.videoId]?.batchId = batch.id }
 
         Task {
             for track in queued {
@@ -560,6 +614,14 @@ final class DownloadManager: NSObject, ObservableObject {
     /// comparisons spread over forty async callbacks that interleave with the drain loop.
     func cancelAll(_ tracks: [Track]) {
         cancelIds(Set(tracks.map(\.videoId)))
+    }
+
+    /// Stops a named set of downloads. What a detail hero's Stop control represents is the part
+    /// of a batch that is on this screen, which is neither `cancelBatch` (too wide — a batch can
+    /// reach tracks this collection doesn't have) nor `cancelAll(_:)` (also too wide — it would
+    /// take single-tap downloads sharing the collection with it).
+    func cancelAll(videoIds: [String]) {
+        cancelIds(Set(videoIds))
     }
 
     func cancelBatch(_ id: UUID) {

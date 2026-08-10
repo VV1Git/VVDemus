@@ -17,6 +17,9 @@ final class RadioCacheStore: ObservableObject {
     /// session, so revisiting the same radio screen repeatedly doesn't re-download its
     /// 50-track mix every time.
     private var lastFetched: [String: Date] = [:]
+    /// When each station's mix was actually stored. Unlike `lastFetched` this *is* persisted:
+    /// it is what decides whose copy wins when the two devices sync.
+    private var storedAt: [String: Date] = [:]
 
     /// Fired whenever a radio's track list changes (from either the phone's own refresh
     /// or one requested over the local control server) — lets LocalControlServer push the
@@ -46,12 +49,10 @@ final class RadioCacheStore: ObservableObject {
         let changed = cache[seedVideoId] != tracks
         cache[seedVideoId] = tracks
         lastFetched[seedVideoId] = Date()
+        storedAt[seedVideoId] = Date()
         order.removeAll { $0 == seedVideoId }
         order.append(seedVideoId)
-        while order.count > limit {
-            let oldest = order.removeFirst()
-            cache.removeValue(forKey: oldest)
-        }
+        trimToLimit()
         save()
         // Only announce a real change — an identical refetch used to make every connected
         // browser rebuild the radio screen for nothing.
@@ -73,19 +74,72 @@ final class RadioCacheStore: ObservableObject {
         store(tracks, for: seedVideoId)
     }
 
+    // MARK: - Sync
+
+    /// One record per cached station.
+    ///
+    /// `radio_history_v2` syncs *which* stations exist; this is what is actually in them.
+    /// Without it a station arriving from the phone opens empty on the Mac and costs a fresh
+    /// InnerTube round trip to fill — and YouTube returns a different mix each call, so the two
+    /// devices would then be looking at different songs under the same station name.
+    func syncRecords() -> [GeneratedRecord] {
+        cache.compactMap { seedVideoId, tracks in
+            guard let data = try? JSONEncoder().encode(tracks) else { return nil }
+            let when = storedAt[seedVideoId] ?? .distantPast
+            return GeneratedRecord(
+                id: Self.recordPrefix + seedVideoId,
+                payload: data,
+                generatedAt: when,
+                stamp: EditStamp(editedAt: when, editedBy: PeerIdentityBox.currentPeerId)
+            )
+        }
+    }
+
+    @discardableResult
+    func applySynced(_ record: GeneratedRecord) -> Bool {
+        guard record.id.hasPrefix(Self.recordPrefix) else { return false }
+        let seedVideoId = String(record.id.dropFirst(Self.recordPrefix.count))
+        if let existing = storedAt[seedVideoId], record.generatedAt <= existing { return false }
+        guard let tracks = try? JSONDecoder().decode([Track].self, from: record.payload),
+              !tracks.isEmpty else { return false }
+        let changed = cache[seedVideoId] != tracks
+        cache[seedVideoId] = tracks
+        storedAt[seedVideoId] = record.generatedAt
+        order.removeAll { $0 == seedVideoId }
+        order.append(seedVideoId)
+        trimToLimit()
+        save()
+        if changed { onUpdate?(seedVideoId, tracks) }
+        return changed
+    }
+
+    private static let recordPrefix = "radio_tracks:"
+
+    private func trimToLimit() {
+        while order.count > limit {
+            let oldest = order.removeFirst()
+            cache.removeValue(forKey: oldest)
+            storedAt.removeValue(forKey: oldest)
+        }
+    }
+
     private struct Snapshot: Codable {
         let cache: [String: [Track]]
         let order: [String]
+        /// When each station's mix was fetched. Previously in-memory only; it has to persist
+        /// now because it is what decides whose copy is newer at merge time.
+        var storedAt: [String: Date]?
     }
 
     private func load() {
         guard let snapshot = DefaultsSnapshot.load(Snapshot.self, forKey: key) else { return }
         cache = snapshot.cache
         order = snapshot.order
+        storedAt = snapshot.storedAt ?? [:]
     }
 
     private func save() {
-        let snapshot = Snapshot(cache: cache, order: order)
+        let snapshot = Snapshot(cache: cache, order: order, storedAt: storedAt)
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         UserDefaults.standard.set(data, forKey: key)
     }

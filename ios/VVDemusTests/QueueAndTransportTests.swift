@@ -95,6 +95,89 @@ final class QueueAndTransportTests: XCTestCase {
         XCTAssertEqual(harness.player.manualQueue.map(\.videoId), ["q3", "q1", "q2"])
     }
 
+    /// What a drag in the desktop's queue panel owes the user: the song already playing must not
+    /// so much as flinch, and the next `advance()` must take whichever row the panel now shows at
+    /// the top. `currentTrack` is held apart from both queues and no index follows it, so this is
+    /// structurally true rather than carefully maintained — which is exactly why it is worth
+    /// pinning now that the desktop exercises it on every drag.
+    func testReorderingLeavesTheTrackAlreadyPlayingAlone() async {
+        await harness.startPlaying(Fixtures.track("a"))
+        for id in ["q1", "q2", "q3"] { harness.player.addToQueue(Fixtures.track(id)) }
+
+        harness.player.moveInManualQueue(from: IndexSet(integer: 2), to: 0)
+
+        XCTAssertEqual(harness.player.currentTrack?.videoId, "a",
+                       "A reorder edits what is ahead, never what is playing")
+
+        harness.player.advance()
+        await harness.settle { self.harness.player.currentTrack?.videoId == "q3" }
+        XCTAssertEqual(harness.player.currentTrack?.videoId, "q3",
+                       "The queue has to play in the order the panel shows")
+    }
+
+    /// The arithmetic behind the panel's Move Down, which is the half of the reorder that a
+    /// keyboard and VoiceOver can reach. `toOffset` is a *pre-removal* index, so moving down by
+    /// one is `index + 2` — `index + 1` is where the row already sits once it has been lifted out,
+    /// and asking for it moves nothing.
+    func testMovingARowDownByOneNeedsThePreRemovalOffset() async {
+        await harness.startPlaying(Fixtures.track("a"))
+        for id in ["q1", "q2", "q3"] { harness.player.addToQueue(Fixtures.track(id)) }
+
+        harness.player.moveInManualQueue(from: IndexSet(integer: 0), to: 2)
+
+        XCTAssertEqual(harness.player.manualQueue.map(\.videoId), ["q2", "q1", "q3"])
+    }
+
+    /// A reorder made while shuffling used to be written into the shuffled queue only, and
+    /// `toggleShuffle` restores the real order wholesale — so switching shuffle off threw the
+    /// edit away without a trace. The two lists are different permutations of the same tracks, so
+    /// what carries across is not an index but "this song plays in front of that one".
+    ///
+    /// Written against whatever order the shuffle actually produced, since it is random by
+    /// design: the rows are found by id, and the assertion is about adjacency rather than about
+    /// positions.
+    func testAReorderMadeWhileShufflingSurvivesShuffleBeingTurnedOff() async throws {
+        let list = Fixtures.tracks(["a", "b", "c", "d", "e"])
+        await harness.startPlaying(list[0], context: list)
+        harness.player.toggleShuffle()
+        XCTAssertTrue(harness.player.isShuffling)
+
+        // Drag the last row of the shuffled queue in front of the first.
+        let shuffled = harness.player.contextQueue.map(\.videoId)
+        let moved = try XCTUnwrap(shuffled.last)
+        let anchor = try XCTUnwrap(shuffled.first)
+        harness.player.moveInContextQueue(from: IndexSet(integer: shuffled.count - 1), to: 0)
+        XCTAssertEqual(harness.player.contextQueue.first?.videoId, moved, "Precondition: the drag landed")
+
+        harness.player.toggleShuffle()
+
+        let restored = harness.player.contextQueue.map(\.videoId)
+        XCTAssertEqual(Set(restored), Set(shuffled), "Unshuffling must not lose or duplicate a track")
+        let movedIndex = try XCTUnwrap(restored.firstIndex(of: moved))
+        let anchorIndex = try XCTUnwrap(restored.firstIndex(of: anchor))
+        XCTAssertEqual(movedIndex + 1, anchorIndex,
+                       "\"\(moved) before \(anchor)\" is the whole of what the drag said, and it has to hold in the real order too")
+    }
+
+    /// Letting go of a row without moving it is a no-op in the shuffled list, but it still names
+    /// the row it was released in front of — and that pairing is a real constraint in the other
+    /// order. Ungated, picking a row up and putting it straight back rearranged the unshuffled
+    /// queue behind the user's back, and turning shuffle off then revealed an order they never
+    /// asked for.
+    func testDroppingARowBackWhereItStartedLeavesTheRealOrderAlone() async {
+        let list = Fixtures.tracks(["a", "b", "c", "d", "e"])
+        await harness.startPlaying(list[0], context: list)
+        let real = harness.player.contextQueue.map(\.videoId)
+        harness.player.toggleShuffle()
+
+        // `toOffset` of the row's own offset moves nothing, and neither does the one after it.
+        harness.player.moveInContextQueue(from: IndexSet(integer: 1), to: 1)
+        harness.player.moveInContextQueue(from: IndexSet(integer: 1), to: 2)
+
+        harness.player.toggleShuffle()
+        XCTAssertEqual(harness.player.contextQueue.map(\.videoId), real)
+    }
+
     // MARK: - Skipping around
 
     func testSkipToDropsEverythingBeforeIt() async {

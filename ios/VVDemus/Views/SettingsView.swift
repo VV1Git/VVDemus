@@ -8,6 +8,10 @@ struct SettingsView: View {
     @AppStorage(LocalControlServer.defaultsKey) private var connectEnabled = true
     @ObservedObject private var controlServer = LocalControlServer.shared
     @ObservedObject private var byteCounter = NetworkByteCounter.shared
+    /// Observed, not read through `.shared` at render time: the row below is the only place
+    /// this screen shows the pairing, and without the subscription it kept saying "Not set up"
+    /// after coming back from `PairingView` having just paired.
+    @ObservedObject private var pairedStore = PairedPeerStore.shared
     @State private var imageCacheBytes: Int64 = 0
 
     var body: some View {
@@ -64,17 +68,32 @@ struct SettingsView: View {
             }
 
             Section {
+                NavigationLink {
+                    PairingView()
+                } label: {
+                    LabeledContent("Paired Device") {
+                        Text(pairedStore.peer?.name ?? "Not set up")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section {
                 Toggle(
                     "VVDemus Connect",
                     isOn: $connectEnabled
                 )
                 // `.onChange` rather than a side effect inside a Binding setter, which
                 // mutates an ObservableObject this view observes while it is rendering.
+                //
+                // Turning this off no longer stops the server — it stops serving the browser.
+                // The paired device's routes stay up, because pairing and sync have nothing to
+                // do with a browser and used to break entirely when this was switched off.
                 .onChange(of: connectEnabled) { _, enabled in
-                    enabled ? controlServer.start() : controlServer.stop()
+                    controlServer.setWebRemoteEnabled(enabled)
                 }
 
-                if controlServer.isRunning {
+                if connectEnabled, controlServer.isRunning {
                     LabeledContent("Open on your computer") {
                         Text(verbatim: controlServer.localAddress.map { "http://\($0):\(controlServer.port)" } ?? "Finding address…")
                             .font(.system(.footnote, design: .monospaced))
@@ -91,10 +110,10 @@ struct SettingsView: View {
                         .foregroundStyle(Theme.warning)
                 }
             } footer: {
-                Text("Lets a browser on the same WiFi network see what's playing and control it — or play it through the computer's own speakers instead. No account or pairing needed, so only turn this on when you're on a network you trust.")
+                Text("Lets a browser on the same WiFi network see what's playing and control it — or play it through the computer's own speakers instead. A browser needs no code, so only turn this on when you're on a network you trust. Your paired device is unaffected: it authenticates, and stays connected either way.")
             }
         }
-        .listStyle(.insetGrouped)
+        .settingsListStyle()
         .navigationTitle("Settings")
     }
 

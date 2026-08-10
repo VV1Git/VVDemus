@@ -1,7 +1,6 @@
 import AVFoundation
 import Combine
 import MediaPlayer
-import UIKit
 
 @MainActor
 final class PlayerService: ObservableObject {
@@ -80,7 +79,13 @@ final class PlayerService: ObservableObject {
 
     private func bumpPlaybackEpoch() {
         playbackEpoch &+= 1
+        lastPlaybackChangeAt = Date()
     }
+
+    /// When playback last changed here. Carried in the handoff checkpoint so the "continue
+    /// from…" offer can tell a device that stopped a minute ago from one that stopped just now.
+    /// Every intent change bumps the epoch, so this is the one place it needs stamping.
+    private(set) var lastPlaybackChangeAt = Date()
 
     /// Bumped only when a track is (re)loaded from the top — unlike `playbackEpoch`, which
     /// also moves on seeks and play/pause. The browser keys its `<audio>` reload on this as
@@ -99,18 +104,56 @@ final class PlayerService: ObservableObject {
         case seek(Double)
     }
 
+    /// Everything a user can ask of playback, in the shape the paired device receives it.
+    ///
+    /// Deliberately absolute where it can be: `setPlaying(Bool)` rather than a toggle, and
+    /// `next(from:)` naming the track that was on screen when the button was pressed. A command
+    /// crossing a network can arrive twice, or arrive after the owner has already moved on, and
+    /// an absolute instruction is a no-op in both cases where a relative one skips a song or
+    /// flips playback back on.
+    /// `Equatable` so a test can say which intent it expected rather than matching on a string.
+    enum PlaybackIntent: Equatable {
+        case play(Track, context: [Track], contextTitle: String?, contextSeed: Track?)
+        /// What the lock screen's separate Play and Pause buttons send.
+        case setPlaying(Bool)
+        /// What one button that does both sends. Kept distinct all the way to `SessionOwning`
+        /// rather than resolved here: on a mirror this device's own `isPlaying` is false because
+        /// its player is empty, so negating it here would send "play" every time. Only the relay
+        /// knows what is actually on screen, so only the relay can turn this into an absolute
+        /// instruction — which it does before anything goes on the wire.
+        case togglePlaying
+        case next(from: String?)
+        case previous
+        case seek(Double)
+        case toggleShuffle
+        case skipTo(videoId: String)
+        case removeFromQueue(videoId: String)
+        case addToQueue(Track)
+        case playNext(Track)
+        case setVolume(Double)
+        /// Dragging a row to a new position. Carries the track as well as the indices: the
+        /// owner's queue advances at every track boundary, so a position captured when the row
+        /// rendered can be one out by the time the request lands — the same staleness the
+        /// `expecting:` parameter guards against locally.
+        case moveInQueue(QueueOrigin, from: Int, to: Int, track: Track?)
+    }
+
     var autoplayEnabled = true
 
     /// contextQueue in its real (unshuffled) order — the source of truth restored when
     /// shuffle is turned off, and reshuffled fresh each time it's turned back on.
     private var orderedContextQueue: [Track] = []
+    /// The track the current context was generated from, when it is a radio. Carried in the
+    /// handoff checkpoint — and in the state snapshot — so the station survives moving between
+    /// devices, and so a mirror can take it over if the device playing it disappears.
+    private(set) var currentContextSeed: Track?
 
     /// Which of the two queues a track was taken from. Needed so `previous()` can put the
     /// track it's leaving back where it came from: it used to push everything onto
     /// `contextQueue`, so stepping back over a track the user had explicitly queued
     /// quietly demoted it out of the manual queue, and the next `advance()` played
     /// whatever else was in the manual queue instead of retracing the path.
-    enum QueueOrigin {
+    enum QueueOrigin: String, Equatable {
         case manual
         case context
     }
@@ -141,7 +184,25 @@ final class PlayerService: ObservableObject {
     private let sideEffects: PlaybackSideEffects
     private let radios: RadioFetching
     private let notifications: NotificationCenter
+    private let sessionOwner: SessionOwning
+    private let mirror: MirroredNowPlayingSource
     private let defaults: UserDefaults
+
+    /// Offers an intent to the device that owns the session, and reports whether it went there.
+    ///
+    /// Every transport method opens with this. When it returns true the method must return
+    /// immediately and change nothing: this device is a mirror, its queue is empty, and acting
+    /// locally would start a second session rather than drive the one on screen.
+    private func relayed(_ intent: PlaybackIntent) -> Bool {
+        guard sessionOwner.relay(intent) else { return false }
+        // The press has gone to the owner and nothing here will change until its reply lands, so
+        // the lock screen is repainted from what the mirror already believes — which includes the
+        // optimistic play state `PeerPlayback` holds for exactly that second. Without it, pausing
+        // the Mac from the phone's lock screen leaves a pause button over a running clock until
+        // the next poll comes back, which reads as the press having been swallowed.
+        updateNowPlayingInfo()
+        return true
+    }
 
     private var loadTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
@@ -215,7 +276,9 @@ final class PlayerService: ObservableObject {
             downloads: DownloadManager.shared,
             sideEffects: LivePlaybackSideEffects.shared,
             radios: APIRadioFetcher.shared,
-            notifications: .default
+            notifications: .default,
+            sessionOwner: PeerPlayback.shared,
+            mirror: PeerMirroredNowPlaying.shared
         )
     }
 
@@ -229,6 +292,12 @@ final class PlayerService: ObservableObject {
         sideEffects: PlaybackSideEffects,
         radios: RadioFetching,
         notifications: NotificationCenter,
+        /// Defaulted so every existing test keeps building and keeps acting locally — see
+        /// `NoSessionOwner`.
+        sessionOwner: SessionOwning = NoSessionOwner.shared,
+        /// Where the Now Playing slot is filled from while the *other* device owns the session.
+        /// Defaulted to the empty one for the same reason `sessionOwner` is.
+        mirror: MirroredNowPlayingSource = NoMirroredNowPlaying.shared,
         /// Injectable so a test's volume levels don't land in — or read out of — the real
         /// app's defaults. Everything else `PlayerService` persists already goes through a
         /// store it can be handed a fake of; two scalars didn't warrant a whole store.
@@ -243,12 +312,25 @@ final class PlayerService: ObservableObject {
         self.sideEffects = sideEffects
         self.radios = radios
         self.notifications = notifications
+        self.sessionOwner = sessionOwner
+        self.mirror = mirror
         self.defaults = defaults
 
         loadVolumes()
         configureEngineCallbacks()
+        configureMirrorCallback()
         configureRemoteCommandCenter()
         observeAudioSession()
+    }
+
+    /// The mirror's poll is the only thing that ticks on a device that owns nothing.
+    ///
+    /// `updateNowPlayingInfo` is otherwise reached from the periodic time observer, and that
+    /// observer belongs to an engine which — on a mirror — has been detached and has no item to
+    /// report time for. Left to itself the lock screen would show whatever was last published
+    /// before the session was handed over, frozen, for as long as the Mac played.
+    private func configureMirrorCallback() {
+        mirror.onChange = { [weak self] in self?.updateNowPlayingInfo() }
     }
 
     private func configureEngineCallbacks() {
@@ -430,34 +512,34 @@ final class PlayerService: ObservableObject {
         // `AVPlayer` reports its state asynchronously — `.pause` did nothing at all and
         // returned `.success`, so iOS was satisfied and the music carried on.
         commandCenter.setHandler(for: .play) { [weak self] _ in
-            guard let self, self.currentTrack != nil else { return .noSuchContent }
+            guard let self, self.hasSomethingToControl else { return .noSuchContent }
             self.setPlayback(playing: true)
             return .success
         }
         commandCenter.setHandler(for: .pause) { [weak self] _ in
-            guard let self, self.currentTrack != nil else { return .noSuchContent }
+            guard let self, self.hasSomethingToControl else { return .noSuchContent }
             self.setPlayback(playing: false)
             return .success
         }
         commandCenter.setHandler(for: .togglePlayPause) { [weak self] _ in
-            guard let self, self.currentTrack != nil else { return .noSuchContent }
+            guard let self, self.hasSomethingToControl else { return .noSuchContent }
             self.togglePlayPause()
             return .success
         }
         commandCenter.setHandler(for: .nextTrack) { [weak self] _ in
             // Returning `.success` with nothing loaded made a double-tap on an idle set of
             // AirPods look handled, so the system never fell back to anything else.
-            guard let self, self.currentTrack != nil else { return .noSuchContent }
+            guard let self, self.hasSomethingToControl else { return .noSuchContent }
             self.advance()
             return .success
         }
         commandCenter.setHandler(for: .previousTrack) { [weak self] _ in
-            guard let self, self.currentTrack != nil else { return .noSuchContent }
+            guard let self, self.hasSomethingToControl else { return .noSuchContent }
             self.previous()
             return .success
         }
         commandCenter.setHandler(for: .changePlaybackPosition) { [weak self] position in
-            guard let self, let position, self.currentTrack != nil else { return .commandFailed }
+            guard let self, let position, self.hasSomethingToControl else { return .commandFailed }
             self.seek(to: position)
             return .success
         }
@@ -467,11 +549,46 @@ final class PlayerService: ObservableObject {
         commandCenter.disableUnhandledCommands()
     }
 
+    /// Whether a transport press has anything to land on — a track of this device's own, or the
+    /// owner's track this device is mirroring.
+    ///
+    /// A mirror has no `currentTrack` by design, so guarding these handlers on that alone answers
+    /// every lock-screen button and every AirPods gesture with `.noSuchContent` for as long as the
+    /// paired device is the one playing — a phone showing the Mac's song above controls that
+    /// refuse to do anything about it. Nothing else in the handlers needs widening:
+    /// `setPlayback`, `advance`, `previous`, `seek` and `togglePlayPause` all open with
+    /// `relayed(…)`, so they reach the owner by themselves.
+    private var hasSomethingToControl: Bool {
+        currentTrack != nil || mirror.nowPlaying != nil
+    }
+
+    /// Fills the Now Playing slot from whichever session this device is showing.
+    ///
+    /// The mirrored branch is not a second implementation of the lock screen: it lands in the same
+    /// `NowPlayingPublishing` collaborator, through the same artwork cache, so there is exactly one
+    /// thing that can be holding the slot at any moment. Consulted only when there is no local
+    /// track, which is also what keeps the ordinary playing case free of any peer bookkeeping.
     private func updateNowPlayingInfo() {
-        guard let track = currentTrack else {
+        if let track = currentTrack {
+            publishNowPlaying(
+                track: track,
+                duration: duration > 0 ? duration : nil,
+                elapsed: progress,
+                rate: isPlaying ? 1.0 : 0.0
+            )
+        } else if let mirrored = mirror.nowPlaying {
+            publishNowPlaying(
+                track: mirrored.track,
+                duration: mirrored.duration,
+                elapsed: mirrored.elapsed,
+                rate: mirrored.isPlaying ? 1.0 : 0.0
+            )
+        } else {
             nowPlaying.clear()
-            return
         }
+    }
+
+    private func publishNowPlaying(track: Track, duration: Double?, elapsed: Double, rate: Double) {
         let artwork = artworkCache[track.id]
         if artwork == nil { loadArtwork(for: track) }
         nowPlaying.publish(
@@ -479,9 +596,9 @@ final class PlayerService: ObservableObject {
                 title: track.title,
                 artist: track.artist,
                 album: track.album,
-                duration: duration > 0 ? duration : nil,
-                elapsed: progress,
-                rate: isPlaying ? 1.0 : 0.0
+                duration: duration,
+                elapsed: elapsed,
+                rate: rate
             ),
             artwork: artwork
         )
@@ -512,13 +629,17 @@ final class PlayerService: ObservableObject {
             }
             guard !Task.isCancelled else { return }
             if self.artworkTrackId == track.id { self.artworkTrackId = nil }
-            guard let data, let image = UIImage(data: data) else {
+            guard let data, let image = PlatformImage(data: data) else {
                 self.failedArtworkIds.insert(track.id)
                 return
             }
             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
             self.cacheArtwork(artwork, for: track.id)
-            if self.currentTrack?.id == track.id {
+            // The mirrored track counts as still being the one on screen. Without it the artwork
+            // for the Mac's song would sit in the cache unused until the peer's next *change* —
+            // a paused mirror republishes nothing, so a track paused before its image arrived
+            // would show none for the length of the pause.
+            if self.currentTrack?.id == track.id || self.mirror.nowPlaying?.track.id == track.id {
                 self.updateNowPlayingInfo()
             }
         }
@@ -528,7 +649,7 @@ final class PlayerService: ObservableObject {
     /// Playing, Mix headers), so lock-screen artwork and on-screen artwork for the same
     /// track share one disk cache entry instead of each fetching their own copy.
     nonisolated static func artworkCacheKey(for thumbnailUrl: String) -> String {
-        let targetPixels = RemoteImage.targetPixelSize(for: 300, displayScale: UIScreen.main.scale)
+        let targetPixels = RemoteImage.targetPixelSize(for: 300, displayScale: PlatformScreen.scale)
         return RemoteImage.resizedThumbnailUrl(thumbnailUrl, targetPixels: targetPixels)
     }
 
@@ -544,6 +665,11 @@ final class PlayerService: ObservableObject {
 
     // MARK: - Interruptions and route changes
 
+    // `AVAudioSession` is iOS-only, and so is every event it reports: a Mac has no phone call
+    // to interrupt playback, no AirPods-pulled-from-ears route change, and no media-services
+    // daemon to restart. The Mac takes the no-op at the bottom of this section so `init` need
+    // not know the difference.
+    #if os(iOS)
     private func observeAudioSession() {
         notifications.addObserver(
             forName: AVAudioSession.interruptionNotification,
@@ -651,6 +777,9 @@ final class PlayerService: ObservableObject {
             reconcileIsPlayingWithEngine()
         }
     }
+    #else
+    private func observeAudioSession() {}
+    #endif
 
     /// Rare, but it does happen (and reliably under memory pressure on older phones): the
     /// media daemon restarts and every AVFoundation object the app holds becomes inert.
@@ -744,7 +873,18 @@ final class PlayerService: ObservableObject {
     /// happened via the Play button on a radio's own screen, so tapping a song inside a
     /// radio, or starting one from the web remote, left no trace of the station at all.
     func play(track: Track, context: [Track] = [], contextTitle: String? = nil, contextSeed: Track? = nil) {
+        // Sent to the owner rather than played here, exactly as pressing a track in the web
+        // remote posts `/api/play` to the phone. Two apps that both start playing are two
+        // sessions, and the point of the pairing is that there is one.
+        if relayed(.play(track, context: context, contextTitle: contextTitle, contextSeed: contextSeed)) { return }
+        // Starting something here is the clearest possible statement that this device is in
+        // charge — the same rule as before, now recorded rather than inferred.
+        sessionOwner.claimSession()
         if let contextSeed { sideEffects.recordRadioSeed(contextSeed) }
+        // Remembered so a handoff can carry *which radio* is playing. A radio is identified by
+        // its seed, and without it the other device receives the queue as a loose list of songs
+        // with no station behind it.
+        currentContextSeed = contextSeed
         manualQueue = []
         isShuffling = false
         if let index = context.firstIndex(where: { $0.id == track.id }) {
@@ -757,12 +897,131 @@ final class PlayerService: ObservableObject {
         load(track)
     }
 
+    // MARK: - Handing playback between paired devices
+
+    /// Everything the other device needs to carry on from here.
+    ///
+    /// The unshuffled order travels alongside the shuffled one on purpose: without it, turning
+    /// shuffle off after a handoff could not restore the real running order, because the
+    /// receiving device would never have seen it.
+    func nowPlayingCheckpoint() -> NowPlayingCheckpoint {
+        NowPlayingCheckpoint(
+            peerId: PeerIdentity.shared.peerId,
+            isDesktop: PeerIdentity.shared.isDesktop,
+            // When playback last *changed*, not when this was read. Stamping it here made
+            // `NowPlayingCheckpoint.preferred` compare "now" against "now" — both checkpoints are
+            // built within a round trip of each other — so its tiebreak decided nothing and the
+            // resume offer was a coin flip.
+            updatedAt: lastPlaybackChangeAt,
+            currentTrack: currentTrack,
+            progress: progress,
+            isPlaying: isPlaying,
+            manualQueue: manualQueue,
+            contextQueue: contextQueue,
+            orderedContextQueue: orderedContextQueue,
+            isShuffling: isShuffling,
+            queueContextTitle: queueContextTitle,
+            contextSeed: currentContextSeed
+        )
+    }
+
+    /// Takes over from `checkpoint` — used both by an explicit handoff and by the
+    /// "continue from…" prompt.
+    func adopt(checkpoint: NowPlayingCheckpoint, autoplay: Bool) {
+        guard let track = checkpoint.currentTrack else { return }
+        if let seed = checkpoint.contextSeed { sideEffects.recordRadioSeed(seed) }
+        currentContextSeed = checkpoint.contextSeed
+        manualQueue = checkpoint.manualQueue
+        orderedContextQueue = checkpoint.orderedContextQueue
+        contextQueue = checkpoint.contextQueue
+        isShuffling = checkpoint.isShuffling
+        queueContextTitle = checkpoint.queueContextTitle
+
+        load(track, autoplay: autoplay)
+        // *After* `load`, deliberately. `beginLoad` resets `progress` to 0, and the load task
+        // reads `progress` when it finally attaches the item — which happens after this returns,
+        // since resolving the stream URL is asynchronous. Setting it here is therefore what the
+        // attach picks up as its resume point; setting it before would be wiped.
+        progress = max(0, checkpoint.progress)
+    }
+
+    /// Gives the session up entirely, because the paired device has taken it over.
+    ///
+    /// Not a pause, and that distinction is the whole bug this fixes. A paused device still holds
+    /// a track and a queue, and two devices that both hold one is precisely the state in which
+    /// neither can be told it is mirroring — so handing playback over used to be a one-way trip
+    /// that left the two permanently unable to drive each other.
+    ///
+    /// Called only once the receiver has confirmed it is playing, so a failed handoff cannot
+    /// leave the music nowhere at all.
+    func releaseSession() {
+        // Before the track is forgotten. Stats are otherwise credited when one track replaces
+        // another, and the track handed to the other device is never replaced here — so the
+        // seconds listened to before the handoff would simply vanish.
+        recordListeningStats()
+        PairLog.info("releasing the session: \(currentTrack?.title ?? "nothing") at \(String(format: "%.1f", progress))s")
+        bumpPlaybackEpoch()
+        loadTask?.cancel()
+        loadTask = nil
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        stallRecoveryTask?.cancel()
+        stallRecoveryTask = nil
+        // Detached, not paused: a paused engine still holds the item and still resumes on the
+        // next `play()`, which is exactly what must not happen on a device that has handed over.
+        engine.detach()
+        attachedURL = nil
+        currentTrack = nil
+        manualQueue = []
+        contextQueue = []
+        orderedContextQueue = []
+        backStack = []
+        queueContextTitle = nil
+        currentContextSeed = nil
+        upNextTrack = nil
+        upNextStream = nil
+        externalStream = nil
+        progress = 0
+        duration = 0
+        isPlaying = false
+        wantsPlayback = false
+        isLoading = false
+        isStoppedAtEndOfQueue = false
+        isResumingAfterDeviceSwitch = false
+        pendingPlayIntent = nil
+        // The output comes home too. Handing the session over while a browser was casting used to
+        // leave this device parked on `.computer` with an empty player — so the browser went on
+        // playing a track nothing here still owned, and whenever the session came back it was
+        // routed to the browser rather than to this device's own speaker.
+        //
+        // Assigned rather than going through `setActiveDevice`, which would try to reattach the
+        // outgoing track to bring it home; there is deliberately nothing left to bring.
+        if activeDevice != .iphone {
+            activeDevice = .iphone
+            volume = deviceVolumes[.iphone] ?? 1
+            engine.volume = volume
+            session.activate(casting: false)
+        }
+        // Republished rather than cleared. Nothing is playing *here*, and the slot must stop
+        // offering transport for a track this device no longer has — but by the time the poll
+        // that hands the session over reaches this, the mirror already knows what the other
+        // device is playing, so the right end state is the owner's track and not an empty slot.
+        // Clearing here and letting the next poll fill it back in is the version that fights
+        // itself: a blank lock screen for up to a second, once per handoff, and a permanent
+        // flicker for anything that releases and re-mirrors repeatedly.
+        //
+        // Falls back to `clear()` on its own when there is no mirrored session either, which is
+        // every case that isn't a handoff.
+        updateNowPlayingInfo()
+    }
+
     // MARK: - Shuffle
 
     /// Toggling on shuffles the remaining context queue fresh (so re-enabling after
     /// disabling produces a new order, not the last shuffle); toggling off restores the
     /// real order. Manually queued tracks are never shuffled — the user chose that order.
     func toggleShuffle() {
+        if relayed(.toggleShuffle) { return }
         isShuffling.toggle()
         contextQueue = isShuffling ? orderedContextQueue.shuffled() : orderedContextQueue
         prefetchUpNext()
@@ -775,6 +1034,7 @@ final class PlayerService: ObservableObject {
     /// track queued explicitly could get played once from the manual queue and then
     /// played *again* later when the context queue reached its own untouched copy.
     func addToQueue(_ track: Track) {
+        if relayed(.addToQueue(track)) { return }
         contextQueue.removeAll { $0.id == track.id }
         orderedContextQueue.removeAll { $0.id == track.id }
         // Already queued by hand — queuing it again is a no-op rather than a second copy.
@@ -785,6 +1045,7 @@ final class PlayerService: ObservableObject {
     }
 
     func playNext(_ track: Track) {
+        if relayed(.playNext(track)) { return }
         manualQueue.removeAll { $0.id == track.id }
         contextQueue.removeAll { $0.id == track.id }
         orderedContextQueue.removeAll { $0.id == track.id }
@@ -801,6 +1062,10 @@ final class PlayerService: ObservableObject {
     /// boundary and released after it deleted a *different* track. The expected track is
     /// passed alongside the index so a stale position falls back to matching by identity.
     func removeFromManualQueue(at index: Int, expecting track: Track? = nil) {
+        // Addressed by id across the wire, never by position: the two devices' queues are the
+        // same list but a row's index is captured when it renders, and the owner is the only one
+        // whose indices are still true by the time the request lands.
+        if let track, relayed(.removeFromQueue(videoId: track.videoId)) { return }
         guard let resolved = Self.resolveIndex(index, expecting: track, in: manualQueue) else { return }
         manualQueue.remove(at: resolved)
         prefetchUpNext()
@@ -813,6 +1078,7 @@ final class PlayerService: ObservableObject {
     }
 
     func removeFromContextQueue(at index: Int, expecting track: Track? = nil) {
+        if let track, relayed(.removeFromQueue(videoId: track.videoId)) { return }
         guard let index = Self.resolveIndex(index, expecting: track, in: contextQueue) else { return }
         let removed = contextQueue.remove(at: index)
         // Mirror the removal in the unshuffled order, one copy only.
@@ -829,7 +1095,19 @@ final class PlayerService: ObservableObject {
     /// videoId, and the `removeAll`-across-all-three-queues this used to do meant removing
     /// one such row silently took every other copy with it. Manual queue first, then
     /// context, matching the order the two are displayed in.
+    /// Finds a track the other device named by id.
+    ///
+    /// Commands from the paired device carry a `videoId` rather than a whole `Track`: the peer
+    /// is mirroring this device's queue, so the authoritative copy of every field is already
+    /// here, and echoing it back only invites the two to disagree.
+    func queuedTrack(videoId: String) -> Track? {
+        if let track = manualQueue.first(where: { $0.videoId == videoId }) { return track }
+        if let track = contextQueue.first(where: { $0.videoId == videoId }) { return track }
+        return currentTrack?.videoId == videoId ? currentTrack : nil
+    }
+
     func removeFromQueue(_ track: Track) {
+        if relayed(.removeFromQueue(videoId: track.videoId)) { return }
         if let index = manualQueue.firstIndex(where: { $0.id == track.id }) {
             removeFromManualQueue(at: index)
         } else if let index = contextQueue.firstIndex(where: { $0.id == track.id }) {
@@ -838,14 +1116,54 @@ final class PlayerService: ObservableObject {
     }
 
     func moveInManualQueue(from source: IndexSet, to destination: Int) {
+        if let first = source.first,
+           relayed(.moveInQueue(.manual, from: first, to: destination,
+                                track: manualQueue.indices.contains(first) ? manualQueue[first] : nil)) { return }
         manualQueue.move(fromOffsets: source, toOffset: destination)
         prefetchUpNext()
     }
 
     func moveInContextQueue(from source: IndexSet, to destination: Int) {
+        if let first = source.first,
+           relayed(.moveInQueue(.context, from: first, to: destination,
+                                track: contextQueue.indices.contains(first) ? contextQueue[first] : nil)) { return }
+        // Read before the move, because both name rows in the list the drag was measured
+        // against: `destination` is a pre-removal offset, so the row standing there is the one
+        // the drop lands in front of.
+        let moved = source.first.flatMap { contextQueue.indices.contains($0) ? contextQueue[$0] : nil }
+        let anchor: QueueMove.Anchor = contextQueue.indices.contains(destination)
+            ? .before(contextQueue[destination].videoId)
+            : .end
+        let before = contextQueue.map(\.videoId)
+
         contextQueue.move(fromOffsets: source, toOffset: destination)
-        if !isShuffling {
+        guard isShuffling else {
+            // Not shuffling, so the two lists are the same list and this is the whole of it.
             orderedContextQueue = contextQueue
+            prefetchUpNext()
+            return
+        }
+        // The same move, re-resolved against the real order. This used to be skipped entirely
+        // while shuffling — the reorder went into `contextQueue` only, and `toggleShuffle`
+        // restores `orderedContextQueue` wholesale, so switching shuffle off silently threw the
+        // edit away. The two lists are different permutations of the same tracks, so an index
+        // cannot carry across; what carries is "this song plays in front of that one", which is
+        // the whole of what the drag said.
+        //
+        // Gated on the shuffled list actually changing. Dropping a row back onto itself moves
+        // nothing here — `toOffset` of the row's own offset, or the one after it, is a no-op —
+        // but it still names the row it was let go in front of, and that pairing *is* a real
+        // constraint in the other order. Ungated, releasing a row without moving it rearranged
+        // the unshuffled queue behind the user's back.
+        guard contextQueue.map(\.videoId) != before else {
+            prefetchUpNext()
+            return
+        }
+        let decision = QueueMove.reorder(
+            orderedContextQueue.map(\.videoId), moving: moved?.videoId, to: anchor
+        )
+        if let source = decision.source {
+            orderedContextQueue.move(fromOffsets: IndexSet(integer: source), toOffset: decision.destination)
         }
         prefetchUpNext()
     }
@@ -859,6 +1177,7 @@ final class PlayerService: ObservableObject {
     /// variants below; this one exists for the web remote, whose skip route sends a track
     /// and nothing else.
     func skipTo(_ track: Track) {
+        if relayed(.skipTo(videoId: track.videoId)) { return }
         if let index = manualQueue.firstIndex(where: { $0.id == track.id }) {
             skipToManualQueueEntry(at: index)
         } else if let index = contextQueue.firstIndex(where: { $0.id == track.id }) {
@@ -870,6 +1189,7 @@ final class PlayerService: ObservableObject {
     /// `advance()` pops the front of the queue at every track boundary, so a row's captured
     /// position can be one out by the time it's tapped.
     func skipToManualQueueEntry(at index: Int, expecting track: Track? = nil) {
+        if let track, relayed(.skipTo(videoId: track.videoId)) { return }
         guard let index = Self.resolveIndex(index, expecting: track, in: manualQueue) else { return }
         let target = manualQueue[index]
         manualQueue.removeFirst(index + 1)
@@ -877,6 +1197,7 @@ final class PlayerService: ObservableObject {
     }
 
     func skipToContextQueueEntry(at index: Int, expecting track: Track? = nil) {
+        if let track, relayed(.skipTo(videoId: track.videoId)) { return }
         guard let index = Self.resolveIndex(index, expecting: track, in: contextQueue) else { return }
         let target = contextQueue[index]
         let consumed = Array(contextQueue.prefix(index + 1))
@@ -887,6 +1208,7 @@ final class PlayerService: ObservableObject {
     // MARK: - Transport
 
     func togglePlayPause() {
+        if relayed(.togglePlaying) { return }
         guard currentTrack != nil else { return }
         setPlayback(playing: !isPlaying)
     }
@@ -901,6 +1223,7 @@ final class PlayerService: ObservableObject {
     /// happened and iOS was told the command had succeeded, so it had no reason to try
     /// anything else.
     func setPlayback(playing shouldPlay: Bool) {
+        if relayed(.setPlaying(shouldPlay)) { return }
         guard currentTrack != nil else { return }
         guard shouldPlay != isPlaying else { return restatePlaybackToEngine(shouldPlay) }
         // See `isStoppedAtEndOfQueue`: starting again from the end of a finished queue is a
@@ -990,6 +1313,7 @@ final class PlayerService: ObservableObject {
     }
 
     func seek(to seconds: Double) {
+        if relayed(.seek(seconds)) { return }
         // A scrub past the end (or a negative one from a jittery remote) otherwise pushed
         // the player into an unrecoverable position.
         let target = clampToTrack(seconds)
@@ -1071,6 +1395,9 @@ final class PlayerService: ObservableObject {
     /// Sets the level for the device currently producing sound, and remembers it for that
     /// device alone.
     func setVolume(_ newValue: Double) {
+        // The trim belongs to whichever device is making the sound, so on a mirror the slider has
+        // to reach across — left local it would quietly set a level for a player that is empty.
+        if relayed(.setVolume(newValue)) { return }
         let clamped = Self.clampVolume(newValue)
         let device = activeDevice
         deviceVolumes[device] = clamped
@@ -1084,6 +1411,7 @@ final class PlayerService: ObservableObject {
 
     func setActiveDevice(_ device: PlaybackDevice) {
         guard device != activeDevice else { return }
+        PairLog.info("output moving \(activeDevice.rawValue) -> \(device.rawValue): track=\(currentTrack?.title ?? "none") at \(String(format: "%.1f", progress))s playing=\(isPlaying)")
         activeDevice = device
         // Before anything can make a sound on the new device: the slider in both UIs reads
         // this, and it must already say what the incoming device was last left at.
@@ -1127,6 +1455,12 @@ final class PlayerService: ObservableObject {
             // silence back into the first transition after every handoff.
             prefetchUpNext()
             guard let track = currentTrack else { return }
+            // Deliberately always a fresh attach, never a seek-and-play on the item the engine
+            // was left holding. That shortcut would save the re-buffer, but `attachedURL` is the
+            // app's record of what it last handed the engine, not proof the engine still has it:
+            // a media-services reset while casting rebuilds the player and its reattach is gated
+            // to `activeDevice == .iphone`, so the record outlives the item. Seeking into that
+            // plays nothing, silently, with no failure to recover from.
             isResumingAfterDeviceSwitch = true
             loadTask?.cancel()
             loadTask = Task { [weak self] in
@@ -1218,12 +1552,17 @@ final class PlayerService: ObservableObject {
     /// after the user already pressed next on the phone. Unconditional advancing then
     /// skipped a track entirely — and still recorded it as played.
     func advanceIfCurrent(_ from: String?) {
+        if relayed(.next(from: from)) { return }
         guard let from else { return advance() }
         guard currentTrack?.videoId == from else { return }
         advance()
     }
 
     func advance() {
+        // `from` names the track the press was made against so the owner can ignore a next it
+        // has already handled — see `advanceIfCurrent`. On a mirror this device has no current
+        // track, so the relay fills in the one actually on screen.
+        if relayed(.next(from: currentTrack?.videoId)) { return }
         if !manualQueue.isEmpty {
             let next = manualQueue.removeFirst()
             load(next, origin: .manual)
@@ -1294,6 +1633,7 @@ final class PlayerService: ObservableObject {
     /// so a subsequent `advance()` naturally picks it back up rather than jumping ahead
     /// to whatever happened to still be left in the queue.
     func previous() {
+        if relayed(.previous) { return }
         if progress > 3 {
             seek(to: 0)
             return

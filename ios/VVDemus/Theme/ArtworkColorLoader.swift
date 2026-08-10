@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import CoreImage
 
 /// Approximates Spotify's now-playing background: the average color of the current
@@ -58,9 +57,12 @@ final class ArtworkColorLoader: ObservableObject {
             await DiskImageCache.shared.store(fetched, for: request)
             data = fetched
         }
+        // Straight from the bytes rather than via a platform bitmap: `CIImage(image:)` takes
+        // a `UIImage` on the phone and an `NSImage` on the Mac, whereas `CIImage(data:)` is
+        // the same call on both — and the intermediate image was never used for anything
+        // else here.
         guard let data,
-              let uiImage = UIImage(data: data),
-              let ciImage = CIImage(image: uiImage),
+              let ciImage = CIImage(data: data),
               let averaged = averageColor(of: ciImage) else {
             failed.insert(key)
             return
@@ -80,15 +82,32 @@ final class ArtworkColorLoader: ObservableObject {
     /// white text can both survive. Clamping here rather than at the call sites is
     /// deliberate: a pale or washed-out cover makes Now Playing unreadable, and there is no
     /// call site that wants the raw value.
-    private func readable(_ color: UIColor) -> Color? {
-        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
-        guard color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha) else {
-            return nil
+    /// Takes components rather than a platform colour: `UIColor.getHue` reports failure by
+    /// returning false, while `NSColor`'s raises if the receiver isn't in an RGB space. The
+    /// conversion is a dozen lines of arithmetic that cannot fail either way, and these
+    /// components come straight from a `.RGBA8` render, so there is no colour object worth
+    /// constructing in between.
+    private func readable(red: Double, green: Double, blue: Double) -> Color {
+        let highest = max(red, green, blue)
+        let lowest = min(red, green, blue)
+        let delta = highest - lowest
+
+        var hue: Double = 0
+        if delta > 0 {
+            if highest == red {
+                hue = (green - blue) / delta + (green < blue ? 6 : 0)
+            } else if highest == green {
+                hue = (blue - red) / delta + 2
+            } else {
+                hue = (red - green) / delta + 4
+            }
+            hue /= 6
         }
+
         return Color(
-            hue: Double(hue),
-            saturation: Double(min(max(saturation, 0.35), 0.80)),
-            brightness: Double(min(brightness, 0.42))
+            hue: hue,
+            saturation: min(max(highest == 0 ? 0 : delta / highest, 0.35), 0.80),
+            brightness: min(highest, 0.42)
         )
     }
 
@@ -110,11 +129,10 @@ final class ArtworkColorLoader: ObservableObject {
             format: .RGBA8,
             colorSpace: CGColorSpace(name: CGColorSpace.sRGB)
         )
-        return readable(UIColor(
-            red: CGFloat(bitmap[0]) / 255,
-            green: CGFloat(bitmap[1]) / 255,
-            blue: CGFloat(bitmap[2]) / 255,
-            alpha: 1
-        ))
+        return readable(
+            red: Double(bitmap[0]) / 255,
+            green: Double(bitmap[1]) / 255,
+            blue: Double(bitmap[2]) / 255
+        )
     }
 }

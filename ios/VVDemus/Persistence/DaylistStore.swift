@@ -175,6 +175,38 @@ final class DaylistStore: ObservableObject {
 
     // MARK: - Persistence
 
+    // MARK: - Sync
+
+    /// The daylist as one generated artefact.
+    ///
+    /// Whole rather than merged: a day's mix is something the app produced in one go, and half
+    /// of one spliced into half of another is not a thing the user ever had. Newest generation
+    /// simply wins, so both devices show the same mix under the same name.
+    func syncRecord() -> GeneratedRecord? {
+        guard let generatedAt,
+              let data = try? JSONEncoder().encode(Snapshot(title: title, tracks: tracks, generatedAt: generatedAt))
+        else { return nil }
+        return GeneratedRecord(
+            id: key,
+            payload: data,
+            generatedAt: generatedAt,
+            stamp: EditStamp(editedAt: generatedAt, editedBy: PeerIdentityBox.currentPeerId)
+        )
+    }
+
+    @discardableResult
+    func applySynced(_ record: GeneratedRecord) -> Bool {
+        guard record.id == key else { return false }
+        // Strictly newer, so re-receiving the same mix is a no-op and merging stays idempotent.
+        if let generatedAt, record.generatedAt <= generatedAt { return false }
+        guard let snapshot = try? JSONDecoder().decode(Snapshot.self, from: record.payload) else { return false }
+        title = snapshot.title
+        tracks = snapshot.tracks
+        generatedAt = snapshot.generatedAt
+        UserDefaults.standard.set(record.payload, forKey: key)
+        return true
+    }
+
     private func load() {
         guard let snapshot = DefaultsSnapshot.load(Snapshot.self, forKey: key) else { return }
         title = snapshot.title

@@ -36,7 +36,7 @@ struct SearchView: View {
                     }
                 } else {
                     List {
-                        ForEach(results) { track in
+                        ForEach(Array(results.enumerated()), id: \.element.id) { index, track in
                             TrackRow(
                                 track: track,
                                 isActive: player.currentTrack?.id == track.id,
@@ -44,10 +44,16 @@ struct SearchView: View {
                             )
                             .trackRowMetrics()
                             .trackActions(track: track, player: player)
+                            // Every other list using `trackRowMetrics()` has a section header
+                            // above its first track, so row 0's top separator divides two real
+                            // things. Here it hangs under the search field, inset 76pt to the
+                            // title column with nothing to its left to justify the indent — a
+                            // stub line rather than a divider.
+                            .listRowSeparator(index == 0 ? .hidden : .automatic, edges: .top)
                         }
                     }
                     .listStyle(.plain)
-                    .scrollDismissesKeyboard(.immediately)
+                    .dismissesKeyboardOnScroll()
                 }
             }
             .background(Theme.background)
@@ -60,8 +66,18 @@ struct SearchView: View {
                 destination.destination(player: player)
             }
             .environment(\.openRadio) { track in
+                // The Mac has no tab bar: `MacRootView` drives its detail pane from its own
+                // sidebar selection and never reads `selectedTab`. Pushing onto Home's path
+                // there did nothing at the moment you asked for it, and then opened Home on a
+                // radio screen the next time you clicked Home, with nothing to explain it.
+                // This screen owns a stack, so push onto that. The phone keeps switching to
+                // the Home tab, where that path is the one actually on screen.
+                #if os(macOS)
+                path.append(LibraryDestination.radio(track))
+                #else
                 coordinator.homePath.append(LibraryDestination.radio(track))
                 coordinator.selectedTab = .home
+                #endif
             }
         }
         .onChange(of: query) { _, newValue in
@@ -101,7 +117,12 @@ struct SearchView: View {
                                 // search result start their text on the same leading edge —
                                 // the icon column plus the stack spacing is exactly
                                 // `Theme.Metrics.separatorLeading`.
-                                .frame(width: Theme.ArtSize.row, alignment: .leading)
+                                //
+                                // Centred in that column, not pinned to its leading edge. A 19pt
+                                // glyph left-aligned in a 48pt slot sits against the screen edge
+                                // with a 43pt void before the label, where the artwork it stands
+                                // in for fills the slot and leaves a 12pt gap.
+                                .frame(width: Theme.ArtSize.row)
                             Text(term)
                                 .font(.rowTitle)
                                 .foregroundStyle(.primary)
@@ -126,7 +147,7 @@ struct SearchView: View {
             }
         }
         .listStyle(.plain)
-        .scrollDismissesKeyboard(.immediately)
+        .dismissesKeyboardOnScroll()
     }
 
     private func rememberSearch(_ term: String) {
@@ -149,6 +170,16 @@ struct SearchView: View {
     }
 
     private func runSearch(_ text: String) async {
+        // Cleared here rather than at the end, because three of this function's four exits
+        // used to skip that line: the empty-query return below and both cancellation guards.
+        // Delete a slow search's query and you were left with a spinner that never stopped —
+        // the emptied query's run returns before it ever touches `isLoading`, so nothing
+        // downstream would have cleared it either.
+        //
+        // Skipped when cancelled for the same reason the guards exist: the successor search
+        // has already set `isLoading` for itself by the time a cancelled `retry()` run
+        // unwinds, and clearing it here would hide that one's spinner instead.
+        defer { if !Task.isCancelled { isLoading = false } }
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             results = []
@@ -170,7 +201,5 @@ struct SearchView: View {
             results = []
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "Couldn't search right now."
         }
-        guard !Task.isCancelled else { return }
-        isLoading = false
     }
 }
