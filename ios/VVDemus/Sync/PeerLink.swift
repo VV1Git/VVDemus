@@ -218,7 +218,7 @@ final class PeerLink: ObservableObject {
                 )
             )
             guard ack.accepted else {
-                lastError = "The other device didn't take it."
+                reportHandoffFailure("\(pairedPeer?.name ?? "The other device") didn't take it.")
                 if wasPlaying { PlayerService.shared.setPlayback(playing: true) }
                 return
             }
@@ -242,6 +242,7 @@ final class PeerLink: ObservableObject {
             lastError = nil
             PairLog.info("handed off to \(pairedPeer?.name ?? "peer") — session released here")
         } catch {
+            reportHandoffFailure("Couldn't move playback to \(pairedPeer?.name ?? "the other device").")
             lastError = error.localizedDescription
             PairLog.error("handoff failed — \(error.localizedDescription)")
             // The request may have been applied and only the reply lost, in which case the other
@@ -260,4 +261,21 @@ final class PeerLink: ObservableObject {
     /// One at a time. The button is reachable from two places on each device and a double press
     /// would otherwise send a second checkpoint describing a session already given away.
     @Published private(set) var isHandingOff = false
+
+    /// Why the last attempt to move playback failed, for the few seconds after it did.
+    ///
+    /// Separate from `lastError`, which every missed sync round also writes to. A peer asleep or
+    /// elsewhere is the normal case for a LAN link and is deliberately not surfaced — but a
+    /// handoff is a thing the user just *asked for* by name, and it was failing into the same
+    /// silent field. Choosing the other device in the picker and having nothing whatsoever
+    /// happen is indistinguishable from a dead control.
+    @Published private(set) var handoffError: String?
+
+    private func reportHandoffFailure(_ message: String) {
+        handoffError = message
+        Task {
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            if handoffError == message { handoffError = nil }
+        }
+    }
 }

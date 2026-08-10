@@ -781,16 +781,51 @@ final class DownloadManagerProgressTests: XCTestCase {
     /// The bug this scoping exists for: tapping download on a few rows of a long playlist used to
     /// raise the hero's collection bar over every track in it, captioned "Downloading 0 of 50",
     /// with a Stop that would have taken the other forty-seven with it.
-    func testSingleTapDownloadsRaiseNoCollectionJob() {
+    ///
+    /// Fixing that by returning no job at all went too far the other way — the strip vanished
+    /// from single-tap downloads entirely. The job is the tracks that were *asked for*: two taps
+    /// on a fifty-track playlist is a job of two.
+    func testSingleTapDownloadsRaiseAJobOverJustThoseTracks() throws {
         let tracks = makeTracks(50, prefix: "dlloose")
         tapDownload([tracks[3], tracks[7]])
 
-        XCTAssertNil(manager.downloadJob(for: tracks))
-        // The collection aggregate still sees them: it answers the other question — how much of
-        // this collection is on disk — and the rows' own rings come from it.
-        XCTAssertEqual(manager.collectionProgress(for: tracks).active, 2)
+        let job = try XCTUnwrap(manager.downloadJob(for: tracks))
+        XCTAssertEqual(job.progress.total, 2, "Two rows were tapped, not fifty")
+        XCTAssertEqual(job.progress.active, 2)
+        XCTAssertEqual(job.videoIds, [tracks[3].videoId, tracks[7].videoId], "In collection order")
+
+        // The collection aggregate still answers the other question — how much of this
+        // collection is on disk — over all fifty.
+        XCTAssertEqual(manager.collectionProgress(for: tracks).total, 50)
 
         manager.cancelAll(tracks)
+    }
+
+    /// Cancelling one of a pair withdraws it from the request, so the denominator shrinks with
+    /// it rather than stalling at a total that includes a track nobody is fetching.
+    func testCancellingOneLooseDownloadNarrowsTheJobToWhatIsLeft() throws {
+        let tracks = makeTracks(50, prefix: "dloosecancel")
+        tapDownload([tracks[3], tracks[7]])
+
+        manager.cancel(tracks[3])
+        let job = try XCTUnwrap(manager.downloadJob(for: tracks))
+        XCTAssertEqual(job.progress.total, 1)
+        XCTAssertEqual(job.videoIds, [tracks[7].videoId])
+
+        manager.cancel(tracks[7])
+        XCTAssertNil(manager.downloadJob(for: tracks), "Nothing is being fetched, so there is no job")
+    }
+
+    /// The strip must not reach a collection with none of these tracks in it.
+    func testALooseJobIsInvisibleToACollectionThatDoesNotContainIt() {
+        let mine = makeTracks(3, prefix: "dlloosemine")
+        let theirs = makeTracks(3, prefix: "dlloosetheirs")
+        tapDownload([mine[0]])
+
+        XCTAssertNotNil(manager.downloadJob(for: mine))
+        XCTAssertNil(manager.downloadJob(for: theirs))
+
+        manager.cancel(mine[0])
     }
 
     func testDownloadAllRaisesAJobOverTheWholeCollection() throws {

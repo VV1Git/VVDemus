@@ -95,6 +95,12 @@ struct RootView: View {
                 // listening on the Mac showed either nothing or whatever the peer had been
                 // playing whenever the app last started, which could be days ago.
                 Task { await PeerLink.shared.refreshResumeOffer() }
+                // And a sync round, which foregrounding did not trigger. The 60s timer only
+                // ticks while the app is running, so a phone that has been in a pocket comes
+                // back holding whatever it had when it was last open — and stays that way for
+                // up to a minute after you look at it. That minute is exactly when someone
+                // concludes the sync is manual and goes to press the button.
+                Task { await PeerLink.shared.syncNow() }
             default:
                 break
             }

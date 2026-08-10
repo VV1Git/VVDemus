@@ -84,12 +84,15 @@ struct DownloadBatch: Identifiable, Codable, Equatable {
 ///
 /// Deliberately not the same question as `collectionProgress(for:)`, which answers "how much of
 /// this collection is on disk" over every track regardless of how it got there. A detail hero's
-/// progress strip is the readout of a *job* — the thing Download All started — and conflating
-/// the two meant tapping download on three rows of a fifty-song playlist raised a bar captioned
+/// progress strip is the readout of a *job* — what was actually asked for — and conflating the
+/// two meant tapping download on three rows of a fifty-song playlist raised a bar captioned
 /// "Downloading 0 of 50". Nobody asked for fifty, and the three rings that did describe the
-/// request were the only honest thing on the screen. The Downloads screen has always drawn this
-/// line — a batch gets a card, a single-tap download gets its own row — and the hero was the one
-/// place that didn't.
+/// request were the only honest thing on the screen.
+///
+/// A job is a Download All batch when one covers these tracks, and otherwise the tracks the user
+/// tapped individually (`DownloadManager.looseGroup`). It was briefly the batch alone, which
+/// fixed the denominator by removing the strip entirely from single-tap downloads — correct
+/// about fifty, silent about the three.
 struct CollectionDownloadJob: Equatable {
     /// The job's tracks that are also in the collection asking, so a batch started elsewhere
     /// reports only the part of itself that is on this screen. Also the scope of the strip's

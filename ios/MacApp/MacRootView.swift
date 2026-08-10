@@ -22,6 +22,7 @@ struct MacRootView: View {
     @StateObject private var coordinator = NavigationCoordinator()
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
+    @ObservedObject private var link = PeerLink.shared
     @State private var selection: MacSection? = .home
     /// The push stack for whichever leaf screen the sidebar has selected. One path shared by
     /// all of them, held here rather than inside the `detail` branch so it survives that
@@ -32,22 +33,32 @@ struct MacRootView: View {
     /// window has room to show the queue beside the content, and a modal over everything was the
     /// phone's compromise, not the desktop's.
     @State private var showQueue = false
+    /// Measured, not guessed. The bar's height is three stacked children, two of which come and
+    /// go (`PlaybackErrorBar`, `ResumeFromPeerBar`), so a constant would be wrong exactly when an
+    /// error is showing — the moment the content underneath most needs to be readable.
+    @State private var transportHeight: CGFloat = 0
 
     var body: some View {
         NavigationSplitView {
             sidebar
+                .contentMargins(.bottom, transportHeight, for: .scrollContent)
         } detail: {
             // The queue sits beside the content rather than over it, so it can stay open
             // while you keep browsing — the reason it is a panel and not a sheet.
             HStack(spacing: 0) {
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentMargins(.bottom, transportHeight, for: .scrollContent)
                 if showQueue {
                     Divider()
                     MacQueuePanel(isShown: $showQueue)
                         .transition(.move(edge: .trailing))
                 }
             }
+            // The pane's own ground, so a screen that does not paint one — or paints one
+            // sized to its content — shows black rather than the window's default grey.
+            // Individual screens still set it; this is what stops the next one that forgets.
+            .background(Theme.background)
         }
         // Attached to the split view, not returned from `detail:`, which is where these three
         // used to sit as VStack siblings. Two reasons, and only the first is visible today.
@@ -64,9 +75,16 @@ struct MacRootView: View {
         //
         // A `safeAreaInset` rather than a `VStack` wrapped around the split view, so the split
         // view stays the window's root and goes on hoisting its toolbar into the titlebar —
-        // Home's Refresh and `PhoneStatusIndicator` live there — along with the sidebar-collapse
-        // control. An inset is also a real inset: the sidebar's last playlist and a detail
-        // screen's last track now stop above the bar rather than sliding under its material.
+        // Home's Refresh and `PeerStatusIndicator` live there — along with the sidebar-collapse
+        // control.
+        //
+        // What an inset on a split view does *not* do is reach either column's scroll content.
+        // This was previously claimed to work; it does not. Both columns went on scrolling to
+        // the window's bottom edge and the bar sat over them — the last few tracks of a playlist
+        // were unreachable, and in the sidebar it was Settings, the permanently-last row, so it
+        // was covered no matter how far you scrolled. Hence the measured height above and the
+        // `contentMargins` on each column: the inset positions the bar, the margins keep the
+        // content out from under it.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 // The Mac's only surface for `player.errorMessage`. It is rendered on the phone by
@@ -74,9 +92,21 @@ struct MacRootView: View {
                 // excludes — so until this was mounted a stream that failed here stopped the
                 // music and said nothing at all.
                 PlaybackErrorBar(player: player)
+                // Choosing the other device in the picker and having nothing happen reads as a
+                // dead control. It was not dead — the failure was landing in a field nothing on
+                // this platform renders.
+                if let handoffError = link.handoffError {
+                    Text(handoffError)
+                        .font(.footnote)
+                        .foregroundStyle(Theme.warning)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, Theme.Metrics.gutter)
+                        .padding(.vertical, Theme.Space.xs)
+                }
                 ResumeFromPeerBar()
                 MacNowPlayingBar(player: player, showQueue: $showQueue)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transportHeight = $0 }
         }
         .tint(Theme.accent)
         // Every leaf screen pushes onto the same stack, so a radio opened under Liked Songs

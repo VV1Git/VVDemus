@@ -338,7 +338,7 @@ final class DownloadManager: NSObject, ObservableObject {
             guard let batchId = active[id]?.batchId else { continue }
             members[batchId, default: 0] += 1
         }
-        guard !members.isEmpty else { return nil }
+        guard !members.isEmpty else { return looseJob(within: ids) }
         var best: (batch: DownloadBatch, count: Int)?
         for record in batchRecords {
             guard let count = members[record.id] else { continue }
@@ -353,6 +353,20 @@ final class DownloadManager: NSObject, ObservableObject {
         return CollectionDownloadJob(
             videoIds: videoIds,
             progress: collectionProgress(forVideoIds: videoIds)
+        )
+    }
+
+    /// The job for tracks downloaded one at a time — scoped to just those tracks, so a strip over
+    /// two tapped rows of a fifty-track playlist is denominated over the two.
+    ///
+    /// In collection order rather than the set's, so "Downloading 1 of 3" counts through them in
+    /// the order they appear on the screen asking.
+    private func looseJob(within ids: [String]) -> CollectionDownloadJob? {
+        let scoped = ids.filter(looseGroup.contains)
+        guard !scoped.isEmpty else { return nil }
+        return CollectionDownloadJob(
+            videoIds: scoped,
+            progress: collectionProgress(forVideoIds: scoped)
         )
     }
 
@@ -387,6 +401,7 @@ final class DownloadManager: NSObject, ObservableObject {
     /// keep in sync with it.
     func download(_ track: Track) {
         guard !isDownloaded(track), !isDownloading(track) else { return }
+        looseGroup.insert(track.videoId)
         // `.resolving`, not `.queued`: a single tap resolves immediately, and showing a
         // "waiting its turn" state for something with no queue in front of it is a lie.
         insert(track, batchId: nil, state: .resolving)
@@ -412,6 +427,29 @@ final class DownloadManager: NSObject, ObservableObject {
         active[videoId] = nil
         pendingBytes[videoId] = nil
         pruneBatches()
+        drainLooseGroupIfIdle()
+    }
+
+    /// The tracks the user downloaded one at a time, held together as a group for as long as any
+    /// of them is still running.
+    ///
+    /// A batch is minted by `downloadAll` and single taps deliberately have none, which is what
+    /// keeps a three-row request from raising a bar over all fifty tracks of a playlist. But
+    /// "no batch" was read as "nothing to show", so tapping download on three rows raised no
+    /// strip at all — the rings on those rows were the only indication anything was happening.
+    /// This is the missing third answer: not the batch, not the whole collection, but the tracks
+    /// actually asked for.
+    ///
+    /// Retained until the last one finishes rather than dropped as each completes, because the
+    /// group is the denominator. Dropping members as they land would recompute "1 of 2" into
+    /// "0 of 1" the moment the first finished, and the bar would restart instead of advancing.
+    private var looseGroup: Set<String> = []
+
+    /// Empties the group once none of its members is in flight, so the next single tap starts a
+    /// new group rather than joining a spent one.
+    private func drainLooseGroupIfIdle() {
+        guard !looseGroup.isEmpty else { return }
+        if !looseGroup.contains(where: { active[$0] != nil }) { looseGroup.removeAll() }
     }
 
     /// Parks the caller for as long as `RateLimitGate` says requests are refused, re-checking
@@ -552,6 +590,11 @@ final class DownloadManager: NSObject, ObservableObject {
         // the entry it replaces, so re-adding a transfer that is already 60% through would reset
         // its ring to zero and leave the buffered bytes to arrive against a fresh entry.
         for track in adopted { active[track.videoId]?.batchId = batch.id }
+        // Adopted transfers now belong to the batch, so they must leave the loose group — left
+        // in it, the same tracks would answer both questions and the header would have a batch
+        // job and an ad-hoc one to choose between.
+        for track in adopted { looseGroup.remove(track.videoId) }
+        drainLooseGroupIfIdle()
 
         Task {
             for track in queued {
@@ -605,6 +648,10 @@ final class DownloadManager: NSObject, ObservableObject {
     /// the user deleted it and it came back.
     func cancel(_ track: Track) {
         pendingDownloads[track.videoId] = nil
+        // Leaves the group, unlike a completion. A track that finished is still part of what was
+        // asked for and has to stay in the denominator; one the user cancelled was withdrawn from
+        // the request, so "1 of 2" should become "1 of 1" rather than stall at two.
+        looseGroup.remove(track.videoId)
         clearEntry(track.videoId)
         cancelTasks(for: [track.videoId])
     }
@@ -638,6 +685,9 @@ final class DownloadManager: NSObject, ObservableObject {
         }
         pendingDownloads = pending
         pruneBatches()
+        // Withdrawn from the request rather than finished — see `cancel(_:)`.
+        looseGroup.subtract(ids)
+        drainLooseGroupIfIdle()
         // Clearing `active` synchronously above is what stops a still-draining `downloadAll`
         // from resolving the rest, so cancel is instant even though the URLSession side of it
         // only lands on a later callback.

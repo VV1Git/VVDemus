@@ -121,14 +121,15 @@ struct HomeView: View {
                             .foregroundStyle(Theme.warning)
                     }
                 }
-                // Desktop only. On the phone the paired device is the computer, which you are
-                // usually sitting at and can see for yourself; the reverse is not true, and
-                // "is my phone reachable" is exactly what you want to know before sending a
-                // download to it or handing playback over.
-                #if os(macOS)
+                // Both platforms. This was desktop-only on the reasoning that the paired device
+                // is the computer you are already sitting at — but the phone is where you find
+                // out the link is down, because it is the device that gets carried out of range,
+                // and "is the Mac reachable" is the question behind every sync that didn't
+                // happen. Without it the phone's only readout was the Settings screen.
                 ToolbarItem(placement: .trailingActions) {
-                    PhoneStatusIndicator()
+                    PeerStatusIndicator()
                 }
+                #if os(macOS)
                 // `.refreshable` is the only way to force the feed to rebuild, and it is a
                 // pull-to-refresh gesture — which a Mac has no way to perform. Without this the
                 // desktop's only recourse for a stale Home was to quit and relaunch.

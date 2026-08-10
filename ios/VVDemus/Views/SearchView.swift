@@ -56,6 +56,12 @@ struct SearchView: View {
                     .dismissesKeyboardOnScroll()
                 }
             }
+            // Before the background, not after. `ContentUnavailableView` takes its intrinsic
+            // size on macOS rather than filling, so the black was painted as a centred box
+            // with the window's default grey around it — the empty state read as a slab
+            // dropped onto the page. Every other branch here is a List, which fills on its
+            // own, which is why only the empty state showed it.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.background)
             .navigationTitle("Search")
             // On the content, not on the `NavigationStack`: attached to the stack, the
@@ -130,6 +136,12 @@ struct SearchView: View {
                         }
                         .contentShape(Rectangle())
                     }
+                    // Without this the row is a *control*, not a row. macOS gives a `Button` in a
+                    // list the automatic style, which paints a tinted rounded background and
+                    // recolours the whole label to the accent — so the `.primary` title and
+                    // `.secondary` clock above were both overridden and every recent search read
+                    // as a green pill. The phone's borderless default never showed it.
+                    .buttonStyle(.plain)
                     .trackRowMetrics()
                 }
                 .onDelete { offsets in

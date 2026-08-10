@@ -12,15 +12,22 @@ struct StatsView: View {
         // with room to spare, so the abbreviation bought nothing and cost the row its consistency.
         case threeMonths = "3 Months"
         case year = "Year"
+        case allTime = "All Time"
 
         var id: String { rawValue }
 
-        var days: Int {
+        /// Nil for `allTime`, which has no cutoff to compute.
+        ///
+        /// In practice "all time" is bounded anyway: `ListeningStatsStore` prunes at 396 days,
+        /// so this is at most a month more than Year. It is still worth having — that month is
+        /// invisible under Year, and the label stops promising a window the data does not have.
+        var days: Int? {
             switch self {
             case .week: return 7
             case .month: return 30
             case .threeMonths: return 90
             case .year: return 365
+            case .allTime: return nil
             }
         }
     }
@@ -45,7 +52,8 @@ struct StatsView: View {
         rankWidth + Theme.Space.md + Theme.ArtSize.row + Theme.Space.md              // 96
 
     private var since: Date {
-        Calendar.current.date(byAdding: .day, value: -range.days, to: Date()) ?? .distantPast
+        guard let days = range.days else { return .distantPast }
+        return Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? .distantPast
     }
 
     private var eventsInRange: [PlayEvent] {

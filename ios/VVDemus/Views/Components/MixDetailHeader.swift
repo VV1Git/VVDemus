@@ -44,9 +44,14 @@ struct MixDetailHeader: View {
 
     var body: some View {
         // Two different questions, deliberately kept apart. `collection` is "how much of this is
-        // on disk", which is what the checkmark and VoiceOver answer. `job` is "what did Download
-        // All start", which is what the bar and the Stop control *are* — and it is nil while the
-        // only downloads running are rows the user tapped one at a time.
+        // on disk", which is what the checkmark and VoiceOver answer. `job` is "what is being
+        // fetched right now, of the tracks that were actually asked for", which is what the bar
+        // and the Stop control *are*.
+        //
+        // A job is a Download All batch when there is one, and otherwise the rows the user
+        // tapped individually — scoped to those rows either way, never to the collection. That
+        // scoping is the whole point: three taps on a fifty-song playlist draw a bar over the
+        // three, captioned "Downloading 0 of 3", with a Stop that takes only those three.
         //
         // Both resolved once and threaded through, including into the `isComplete` the button
         // reads: each is O(tracks.count), and this body re-evaluates on every progress publish.
