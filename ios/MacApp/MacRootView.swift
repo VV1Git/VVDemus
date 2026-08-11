@@ -47,27 +47,13 @@ struct MacRootView: View {
             HStack(spacing: 0) {
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    // A real inset rather than `contentMargins(.bottom, for: .scrollContent)`,
-                    // which is what this was and which only ever worked on two screens.
+                    // No `safeAreaInset` here any more, and no `contentMargins` before it.
+                    // Each screen carries its own clearance instead — see `TransportClearance`.
                     //
-                    // The sidebar commit that came before this one found that a table-backed
-                    // `List` silently drops that margin, and fixed the sidebar — but recorded
-                    // the belief that the detail column was safe because "its screens are built
-                    // on `ScrollView`". Only Home and Stats are. Library, playlists, radios,
-                    // Liked Songs, Downloads, Search and the daylist are all `List`, so on seven
-                    // of the nine screens here the margin was dropped exactly as it was in the
-                    // sidebar and the last row sat under the transport bar — permanently, since
-                    // scrolling could not move content the container did not know was inset.
-                    //
-                    // A safe-area inset is honoured by both containers, so the two kinds of
-                    // screen stop needing to be right about which one they are.
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        Color.clear
-                            .frame(height: transportHeight)
-                            // The bar paints its own ground and sits over this; a clear spacer
-                            // that still accepted clicks would eat them on the way past.
-                            .allowsHitTesting(false)
-                    }
+                    // The inset that used to sit here reached the *root* of the detail column's
+                    // navigation stack and nothing pushed onto it, so every screen reached from
+                    // the sidebar looked right while every screen navigated into kept its last
+                    // row under the bar. Go to Radio on any track row was the common way in.
                 if showQueue {
                     Divider()
                     MacQueuePanel(isShown: $showQueue)
@@ -104,13 +90,15 @@ struct MacRootView: View {
         // was covered no matter how far you scrolled. Hence the measured height above: the inset
         // positions the bar, and each column keeps its own content out from under it.
         //
-        // The two columns do that differently, and the difference is not cosmetic.
-        // `contentMargins(for: .scrollContent)` holds in the detail column, whose screens are
-        // built on `ScrollView`. It does not hold on the sidebar: a `NavigationSplitView`
-        // sidebar `List` is table-backed on macOS, and the margin was silently dropped there —
-        // Settings went back under the bar and could only be glimpsed by dragging into the
-        // rubber-band past the end. So the sidebar buys its clearance with a real row instead,
-        // which no scroll container can decline to lay out. See `bottomClearance`.
+        // Both columns now do that the same way, after two attempts to do it from out here
+        // each failed on a different screen. `contentMargins(for: .scrollContent)` is silently
+        // dropped by the table-backed sidebar `List` on macOS. `safeAreaInset` survives that,
+        // but only reaches the *root* of a `NavigationStack` — so the detail column was correct
+        // on every screen selected in the sidebar and wrong on every screen pushed onto it.
+        //
+        // So neither is used for clearance any more. Every scrolling screen in the window
+        // carries its own, as a real row or real padding, sized from the height measured below.
+        // See `TransportClearance`.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 // The Mac's only surface for `player.errorMessage`. It is rendered on the phone by
@@ -132,7 +120,11 @@ struct MacRootView: View {
                 ResumeFromPeerBar()
                 MacNowPlayingBar(player: player, showQueue: $showQueue)
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transportHeight = $0 }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                transportHeight = $0
+                // Every scrolling screen in the window reads this to size its own clearance.
+                TransportMetrics.shared.height = $0
+            }
         }
         .tint(Theme.accent)
         // Every leaf screen pushes onto the same stack, so a radio opened under Liked Songs
@@ -221,26 +213,9 @@ struct MacRootView: View {
                 row(.destination(.settings), "Settings", "gearshape.fill")
             }
 
-            bottomClearance
+            TransportClearanceRow()
         }
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-    }
-
-    /// Empty space the height of the transport bar, as the sidebar's last row.
-    ///
-    /// A row rather than a margin because the margin does not survive the sidebar's table-backed
-    /// list — see the note on `safeAreaInset` above. It is stripped of everything that would
-    /// make it read as a row: no insets, no separator, no background, and `selectionDisabled` so
-    /// arrowing down past Settings does not land on a blank selection, or worse, drive `detail`
-    /// to a section that is not one of the cases it handles.
-    private var bottomClearance: some View {
-        Color.clear
-            .frame(height: transportHeight)
-            .listRowInsets(EdgeInsets())
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-            .selectionDisabled()
-            .accessibilityHidden(true)
     }
 
     private func row(_ section: MacSection, _ title: String, _ icon: String) -> some View {

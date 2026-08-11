@@ -146,6 +146,10 @@ struct SettingsView: View {
             Text("Lets a browser on the same WiFi network see what's playing and control it — or play it through the computer's own speakers instead. A browser needs no code, so only turn this on when you're on a network you trust. Your paired device is unaffected: it authenticates, and stays connected either way.")
                 .fixedSize(horizontal: false, vertical: true)
         }
+
+        // Last, and outside every `Section`, so it reads as space below the final group rather
+        // than as an empty row belonging to it.
+        TransportClearanceRow()
     }
 
     private static func formattedBytes(_ bytes: Int64) -> String {

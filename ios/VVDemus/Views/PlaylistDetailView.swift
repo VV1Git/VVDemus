@@ -154,6 +154,8 @@ struct PlaylistDetailView: View {
                     store.moveTrack(in: playlist, from: source, to: destination)
                 }
             }
+
+            TransportClearanceRow()
         }
         .listStyle(.plain)
         .platformEditMode($editMode)

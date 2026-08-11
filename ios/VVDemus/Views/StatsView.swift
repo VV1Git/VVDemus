@@ -145,6 +145,7 @@ struct StatsView: View {
             // R1: the screen's one gutter, declared once on the outermost content container.
             .padding(.horizontal, Theme.Metrics.gutter)
             .padding(.vertical, Theme.Space.lg)
+            .transportClearance()
         }
             .background(Theme.background)
         }

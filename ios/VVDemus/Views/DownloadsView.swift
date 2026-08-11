@@ -64,6 +64,8 @@ struct DownloadsView: View {
                     section("Downloading", cards: liveCards, entries: liveEntries)
                     section("Couldn't Download", cards: failedCards, entries: failedEntries)
                     downloadedSection(hasOtherSections: !cards.isEmpty || !loose.isEmpty)
+
+                    TransportClearanceRow()
                 }
                 .listStyle(.plain)
             }

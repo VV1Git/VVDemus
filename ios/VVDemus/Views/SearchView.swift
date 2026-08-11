@@ -51,6 +51,8 @@ struct SearchView: View {
                             // stub line rather than a divider.
                             .listRowSeparator(index == 0 ? .hidden : .automatic, edges: .top)
                         }
+
+                        TransportClearanceRow()
                     }
                     .listStyle(.plain)
                     .dismissesKeyboardOnScroll()
@@ -163,6 +165,8 @@ struct SearchView: View {
                         .font(.controlLabel)
                 }
             }
+
+            TransportClearanceRow()
         }
         .listStyle(.plain)
         .dismissesKeyboardOnScroll()

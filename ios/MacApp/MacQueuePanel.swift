@@ -99,6 +99,11 @@ struct MacQueuePanel: View {
                         .onMove(perform: move)
                     }
                 }
+
+                // The panel is a sibling of the detail column, not inside it, so it never saw
+                // the clearance the detail column used to get from the split view — its last
+                // queued track sat under the transport bar from the day the panel landed.
+                TransportClearanceRow()
             }
             .listStyle(.inset)
         }

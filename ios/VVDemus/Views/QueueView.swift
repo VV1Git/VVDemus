@@ -70,6 +70,8 @@ struct QueueView: View {
                         )
                     }
                 }
+
+                TransportClearanceRow()
             }
             .listStyle(.plain)
             .platformEditMode($editMode)

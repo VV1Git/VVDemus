@@ -33,6 +33,7 @@ struct PairingView: View {
                 }
             }
             .padding(Theme.Metrics.gutter)
+            .transportClearance()
             .frame(maxWidth: 520, alignment: .leading)
         }
         .frame(maxWidth: .infinity)

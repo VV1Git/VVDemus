@@ -115,6 +115,8 @@ struct LibraryView: View {
                         .onDelete { radioHistory.delete(at: $0) }
                     }
                 }
+
+                TransportClearanceRow()
             }
             .listStyle(.plain)
             .navigationTitle("Your Library")

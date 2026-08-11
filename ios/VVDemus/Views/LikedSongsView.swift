@@ -62,6 +62,8 @@ struct LikedSongsView: View {
                     .trackActions(track: track, player: player)
                 }
             }
+
+            TransportClearanceRow()
         }
         .listStyle(.plain)
         .searchable(text: $searchText, prompt: "Find on this page")

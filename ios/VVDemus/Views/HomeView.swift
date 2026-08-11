@@ -109,6 +109,8 @@ struct HomeView: View {
                 }
                 // Clears the tab bar / mini player glass, so the last shelf can scroll free of it.
                 .padding(.bottom, Theme.Space.xl)
+                // And the Mac's transport bar, which is taller and is not part of any tab bar.
+                .transportClearance()
             }
             .background(Theme.background)
             .navigationTitle(greeting)
