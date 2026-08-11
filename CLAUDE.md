@@ -61,3 +61,20 @@ fails outright while `curl` silently falls back and succeeds.
 Commit to `main`. Do not create a branch first and do not ask whether to branch, unless committing
 to `main` is impossible — in which case say what blocked it and name the branch you used instead.
 Pushing is always a separate step: only push when asked.
+
+## Never drive the app's UI to check a layout
+
+Do not launch the app and click through it — no AppleScript, no System Events, no accessibility
+queries, no screenshots, no UI-test scheme — to find out whether something is laid out correctly.
+It is slow, it needs screen-recording and automation permissions that are not granted here, it
+fights whichever instance is already running (see "Two apps, one fixed port"), and it leaves a
+second copy of the app running for someone else to notice.
+
+Ask for a screenshot instead. A layout bug is one picture and one sentence about how to reach it,
+and the reporter already has both. That is the fastest evidence available and it costs nothing.
+
+What is left to do without the UI is the actual work: read the container each screen is built on,
+find which ones the fix reaches, and prefer clearance that is part of the content — a real row, a
+real padding — over `safeAreaInset` or `contentMargins` on a container further out. Both of those
+have already been found, twice, to be silently dropped before they reach a screen. A layout that
+cannot be declined does not need to be verified by eye.
