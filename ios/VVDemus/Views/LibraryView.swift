@@ -46,35 +46,6 @@ struct LibraryView: View {
                     .trackRowMetrics()
                 }
 
-                if !radioHistory.stations.isEmpty {
-                    Section("Your Radio") {
-                        ForEach(radioHistory.stations) { station in
-                            NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
-                                // Second line so a radio row is the same height as a
-                                // playlist row directly under it.
-                                LibraryRow(title: station.title,
-                                           subtitle: "Radio · \(station.seedTrack.artist)") {
-                                    RemoteImage(url: station.seedTrack.thumbnailUrl, size: Theme.ArtSize.row)
-                                }
-                            }
-                            .trackRowMetrics()
-                            // And the same removal as a long press, because both gestures
-                            // below want a finger: a mouse cannot swipe, and this screen has
-                            // no Edit button, so on the Mac a saved radio was here for good.
-                            .contextMenu {
-                                Button(role: .destructive) {
-                                    withAnimation { radioHistory.delete(station) }
-                                } label: {
-                                    Label("Remove Radio", systemImage: "trash")
-                                }
-                            }
-                        }
-                        // Swipe-to-delete and Edit-mode delete, the same two gestures the
-                        // playlist section below already answers to.
-                        .onDelete { radioHistory.delete(at: $0) }
-                    }
-                }
-
                 Section("Your Playlists") {
                     if playlists.playlists.isEmpty {
                         ContentUnavailableView {
@@ -98,8 +69,10 @@ struct LibraryView: View {
                                 }
                             }
                             .trackRowMetrics()
-                            // Mouse-reachable deletion, as above. Detail view's ellipsis menu
-                            // offers the same thing, but only after opening the playlist.
+                            // The same removal as a long press, because both gestures below want
+                            // a finger: a mouse cannot swipe, and this screen has no Edit button,
+                            // so on the Mac a playlist was here for good. The detail view's
+                            // ellipsis menu offers it too, but only once the playlist is open.
                             .contextMenu {
                                 Button(role: .destructive) {
                                     withAnimation { playlists.delete(playlist) }
@@ -111,6 +84,34 @@ struct LibraryView: View {
                         .onDelete { offsets in
                             offsets.map { playlists.playlists[$0] }.forEach(playlists.delete)
                         }
+                    }
+                }
+
+                if !radioHistory.stations.isEmpty {
+                    Section("Your Radio") {
+                        ForEach(radioHistory.stations) { station in
+                            NavigationLink(value: LibraryDestination.radio(station.seedTrack)) {
+                                // Second line so a radio row is the same height as a
+                                // playlist row, which now sits directly above it.
+                                LibraryRow(title: station.title,
+                                           subtitle: "Radio · \(station.seedTrack.artist)") {
+                                    RemoteImage(url: station.seedTrack.thumbnailUrl, size: Theme.ArtSize.row)
+                                }
+                            }
+                            .trackRowMetrics()
+                            // Mouse-reachable removal, for the reason the playlist section above
+                            // gives: without it a saved radio was here for good on the Mac.
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    withAnimation { radioHistory.delete(station) }
+                                } label: {
+                                    Label("Remove Radio", systemImage: "trash")
+                                }
+                            }
+                        }
+                        // Swipe-to-delete and Edit-mode delete, the same two gestures the
+                        // playlist section above already answers to.
+                        .onDelete { radioHistory.delete(at: $0) }
                     }
                 }
             }

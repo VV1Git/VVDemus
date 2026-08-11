@@ -47,7 +47,27 @@ struct MacRootView: View {
             HStack(spacing: 0) {
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentMargins(.bottom, transportHeight, for: .scrollContent)
+                    // A real inset rather than `contentMargins(.bottom, for: .scrollContent)`,
+                    // which is what this was and which only ever worked on two screens.
+                    //
+                    // The sidebar commit that came before this one found that a table-backed
+                    // `List` silently drops that margin, and fixed the sidebar — but recorded
+                    // the belief that the detail column was safe because "its screens are built
+                    // on `ScrollView`". Only Home and Stats are. Library, playlists, radios,
+                    // Liked Songs, Downloads, Search and the daylist are all `List`, so on seven
+                    // of the nine screens here the margin was dropped exactly as it was in the
+                    // sidebar and the last row sat under the transport bar — permanently, since
+                    // scrolling could not move content the container did not know was inset.
+                    //
+                    // A safe-area inset is honoured by both containers, so the two kinds of
+                    // screen stop needing to be right about which one they are.
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        Color.clear
+                            .frame(height: transportHeight)
+                            // The bar paints its own ground and sits over this; a clear spacer
+                            // that still accepted clicks would eat them on the way past.
+                            .allowsHitTesting(false)
+                    }
                 if showQueue {
                     Divider()
                     MacQueuePanel(isShown: $showQueue)
