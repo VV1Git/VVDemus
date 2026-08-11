@@ -93,6 +93,12 @@ extension Font {
     static let rowTitle = Font.body                             // 17 regular
     static let rowSubtitle = Font.subheadline                   // 15
     static let shelfHeader = Font.title3.weight(.semibold)      // ScrollView shelves only
+    /// The verdict line at the top of a sheet's result screen — currently the Spotify
+    /// import's "Imported …" / "Nothing was imported". Deliberately a separate role from
+    /// `shelfHeader` despite resolving to the same font: that one is documented as belonging
+    /// to shelves, so borrowing it here would mean a later change to shelf typography
+    /// silently restyled a modal that has nothing to do with shelves.
+    static let sheetHeadline = Font.title3.weight(.semibold)
     /// Every card title on Home — the daylist card, the 2-column grid tiles and the shelf
     /// cards. They stack vertically on one screen, so they get one size between them.
     static let cardTitle = Font.subheadline.weight(.semibold)   // 15 semibold

@@ -6,6 +6,7 @@ struct LibraryView: View {
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @ObservedObject private var daylist = DaylistStore.shared
     @State private var showNewPlaylist = false
+    @State private var showSpotifyImport = false
     @State private var newPlaylistName = ""
     @State private var path = NavigationPath()
 
@@ -130,10 +131,22 @@ struct LibraryView: View {
                             .labelStyle(.iconOnly)
                     }
 
-                    Button {
-                        showNewPlaylist = true
+                    // Still a bare "+" glyph, now with two ways to fill a playlist behind it.
+                    // `.iconOnly` belongs on the menu's own label and nowhere inside it: the
+                    // items need their text, or the menu is two unlabelled icons.
+                    Menu {
+                        Button {
+                            showNewPlaylist = true
+                        } label: {
+                            Label("New Playlist", systemImage: "plus")
+                        }
+                        Button {
+                            showSpotifyImport = true
+                        } label: {
+                            Label("Import from Spotify…", systemImage: "square.and.arrow.down")
+                        }
                     } label: {
-                        Label("New Playlist", systemImage: "plus")
+                        Label("Add", systemImage: "plus")
                             .labelStyle(.iconOnly)
                     }
                 }
@@ -146,6 +159,12 @@ struct LibraryView: View {
                     if !name.isEmpty { playlists.create(name: name) }
                     newPlaylistName = ""
                 }
+            }
+            // Attached to the `List`, beside the alert, rather than to the toolbar content:
+            // toolbar items are hoisted into the navigation bar and do not reliably inherit the
+            // environment written onto the list below them (see the note in `QueueView`).
+            .sheet(isPresented: $showSpotifyImport) {
+                SpotifyImportSheet()
             }
         }
     }
