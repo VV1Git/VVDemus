@@ -111,6 +111,8 @@ struct SettingsView: View {
             }
         }
 
+        DataTransferSection()
+
         Section {
             Toggle(
                 "VVDemus Connect",

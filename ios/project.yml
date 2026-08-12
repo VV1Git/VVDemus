@@ -66,6 +66,18 @@ targets:
           your computer.
         NSBonjourServices:
           - _vvdemus._tcp
+        # The backup file's own type, so the import picker can offer backups instead of
+        # greying out everything except "all JSON". Exported rather than imported because
+        # this app is the one that defines `com.vvdemus.backup`; a file conforming to
+        # `public.json` as well means Quick Look and every text editor will still open one.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.vvdemus.backup
+            UTTypeDescription: VVDemus Backup
+            UTTypeConformsTo:
+              - public.json
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - vvdem
     settings:
       base:
         # Comes from Config/Signing.xcconfig, so the id this build answers to is a local
@@ -162,6 +174,18 @@ targets:
           your phone.
         NSBonjourServices:
           - _vvdemus._tcp
+        # The backup file's own type, so the import picker can offer backups instead of
+        # greying out everything except "all JSON". Exported rather than imported because
+        # this app is the one that defines `com.vvdemus.backup`; a file conforming to
+        # `public.json` as well means Quick Look and every text editor will still open one.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.vvdemus.backup
+            UTTypeDescription: VVDemus Backup
+            UTTypeConformsTo:
+              - public.json
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - vvdem
     settings:
       base:
         # A distinct id from the phone's: these are two apps, installed on two machines, and

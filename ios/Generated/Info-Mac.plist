@@ -28,5 +28,25 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Spotify β uses your local network to find and stay in sync with the Spotify β app on your phone.</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>VVDemus Backup</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.vvdemus.backup</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>vvdem</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

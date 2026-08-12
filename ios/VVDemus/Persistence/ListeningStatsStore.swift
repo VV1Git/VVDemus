@@ -41,19 +41,47 @@ final class ListeningStatsStore: ObservableObject {
     /// The newest thing in the log, which is what the peer is asked to send from.
     var newestEventAt: Date? { events.map(\.playedAt).max() }
 
+    /// What makes two `PlayEvent`s the same play: a video id and the whole second it happened in.
+    ///
+    /// The second matters. This used to key on the exact `Date`, and every way an event leaves
+    /// this device rounds that off: the peer wire (`PeerClient.encoder`) and the backup file
+    /// (`BackupCodec`) both encode with `.iso8601`, which is second-resolution, while the local
+    /// log is written by a default `JSONEncoder` and keeps the full fraction `record()`'s
+    /// `Date()` gave it. An event held here as `…000.523` therefore came back as `…000.0`, missed
+    /// the dedupe set, and was appended as a second copy of itself.
+    ///
+    /// Peer sync never showed it, because the requester asks for events after
+    /// `newestEventAt` and its own truncated echoes sort below that cursor, so they are filtered
+    /// out before they reach this function. A backup file is the entire log with no cursor at all
+    /// — `SyncEngine.snapshot(eventsSince: nil)` — so importing a file this device exported, or
+    /// one exported by a paired Mac that already holds this device's plays in truncated form,
+    /// duplicated every event in a single pass. `prune()` is age-based and would never have taken
+    /// them back out: the Stats screen's play counts and every top-artist weighting derived from
+    /// them would have been permanently doubled.
+    ///
+    /// Collapsing to the second cannot fuse two genuinely distinct plays: `record()` ignores
+    /// anything under five seconds, so two events for the same track are always further apart
+    /// than that. `.rounded(.down)` rather than nearest because ISO-8601 encoding floors — a
+    /// `…000.9` event is written as `…:20Z`, not `…:21Z`.
+    nonisolated static func dedupeKey(videoId: String, playedAt: Date) -> String {
+        "\(videoId)|\(playedAt.timeIntervalSince1970.rounded(.down))"
+    }
+
     /// Folds in the paired device's plays.
     ///
     /// The easiest store to merge, and the reason the rest of Home converges for free: events
     /// are immutable and append-only, so a union is the whole algorithm. Deduped on
-    /// `(videoId, playedAt)` because a round can legitimately re-send events already held —
-    /// the cursor is a lower bound, not an exact watermark.
+    /// `dedupeKey` because a round can legitimately re-send events already held — the cursor is a
+    /// lower bound, not an exact watermark. An incoming duplicate is dropped rather than
+    /// replacing what is already here, so the local copy keeps the sub-second precision a
+    /// round trip through a file or the wire would have cost it.
     @discardableResult
     func merge(_ incoming: [PlayEvent]) -> Int {
         guard !incoming.isEmpty else { return 0 }
-        var seen = Set(events.map { "\($0.track.videoId)|\($0.playedAt.timeIntervalSince1970)" })
+        var seen = Set(events.map { Self.dedupeKey(videoId: $0.track.videoId, playedAt: $0.playedAt) })
         var added = 0
         for event in incoming {
-            let key = "\(event.track.videoId)|\(event.playedAt.timeIntervalSince1970)"
+            let key = Self.dedupeKey(videoId: event.track.videoId, playedAt: event.playedAt)
             guard seen.insert(key).inserted else { continue }
             events.append(event)
             added += 1
