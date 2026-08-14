@@ -1,11 +1,10 @@
 import Foundation
 
 /// Rough network usage counter, split by what the request was for — lets Data Saver's
-/// real effect be measured instead of assumed. Two real sources of cellular use can't be
-/// captured this way and are stated as a limitation rather than silently omitted:
-/// AVPlayer manages its own networking for live (non-downloaded) streaming with no
-/// delegate hook short of a custom `AVAssetResourceLoader`, which this app doesn't use —
-/// for that, compare cellular usage in iOS Settings before/after a change instead.
+/// real effect be measured instead of assumed. Streaming playback *is* counted: it goes
+/// through `StreamingResourceLoader`, a custom `AVAssetResourceLoader` that exists partly
+/// for this reason. Bytes AVFoundation fetches on its own (the fallback path when a URL
+/// can't be remapped) still can't be seen from here.
 @MainActor
 final class NetworkByteCounter: ObservableObject {
     static let shared = NetworkByteCounter()

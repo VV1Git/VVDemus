@@ -37,8 +37,13 @@ final class PlaybackSmokeTest: XCTestCase {
 
         XCTAssertFalse(
             InnerTubeClient.lastStreamWasMuxedFallback,
-            "Fell back to muxed video — audio-only resolution is broken again. Check the "
-            + "visitor token first: a missing credential looks exactly like a blocked client."
+            "Fell back to muxed video — audio-only resolution is broken again. Two causes "
+            + "look identical from here, and neither is a blocked client:\n"
+            + "  1. A missing/refused visitor token (see VisitorDataProvider).\n"
+            + "  2. Audio-only resolved but is capped to its first 1 MiB, so it would stop "
+            + "a minute into every song and the muxed format is the only one that plays.\n"
+            + "Run ThrottleCapDiagnostics *on a device* to tell them apart — expect this "
+            + "assertion to fail there whenever the device is capped, which is correct."
         )
         XCTAssertTrue(
             stream.mimeType.hasPrefix("audio/"),

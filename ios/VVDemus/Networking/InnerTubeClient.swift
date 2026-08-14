@@ -200,6 +200,12 @@ enum InnerTubeClient {
             // video nobody watches — and with no trace of it happening, the only symptom
             // is a data bill. If this line shows up for every track, the audio-only client
             // has stopped working and that is the thing to fix.
+            //
+            // A `CappedStreamURL` here means audio-only resolved but would have stopped a
+            // minute into every song, so the heavier format is the only one that plays.
+            // Measured on an iPhone where every audio-only client was capped while the same
+            // code on a Mac, from the same public IP, was not — so this cannot be decided
+            // once and hard-coded, it has to be checked per resolve.
             NSLog("[InnerTubeClient] audio-only unavailable (%@) — falling back to muxed video at ~3-4x the data",
                   error.localizedDescription)
             lastStreamWasMuxedFallback = true
@@ -282,6 +288,15 @@ enum InnerTubeClient {
     /// 416 past the end, and complete tracks fetched in sequential ranges exactly matching
     /// `contentLength`. `VVDemusTests/PlayerClientProbe` re-checks gate 1 and
     /// `StreamUrlRangeTests` gate 2 — run both before ever adding a client here.
+    ///
+    /// **Gate 2 is not a property of the client alone.** On one iPhone every client that
+    /// resolved — ANDROID_VR 1.65.10, ANDROID_VR 1.68.36 and IOS alike — served exactly
+    /// 1 MiB and then 403'd, while the same code on a Mac from the same public IP served
+    /// whole files. Re-resolving does not help: a fresh URL is refused at the same offset.
+    /// So the gate is checked at runtime on every resolve (`servesWholeResource`) and the
+    /// muxed fallback carries whatever fails it. `VVDemusTests/ThrottleCapDiagnostics`
+    /// measures the cap per client — run it on the *device*, not the simulator, because
+    /// the simulator borrows the Mac's networking and never sees this.
     static let audioOnlyClients: [PlayerClient] = [
         PlayerClient(
             name: "ANDROID_VR",
@@ -315,6 +330,46 @@ enum InnerTubeClient {
     struct TokenRefusal: LocalizedError {
         let reason: String
         var errorDescription: String? { reason }
+    }
+
+    /// The URL resolved, and then refused to serve the track past its first megabyte.
+    ///
+    /// This is the **second gate** described on `audioOnlyClients`, finally checked at
+    /// runtime instead of only by a test. It is a distinct error because the response is
+    /// specific: nothing about the credential or the video is wrong, so retrying or
+    /// re-resolving is pointless (a freshly resolved URL is refused at the very same
+    /// offset) — the only way to hear the whole song is the muxed format.
+    struct CappedStreamURL: LocalizedError {
+        let servedBytes: Int64
+        var errorDescription: String? { "stream URL serves only its first \(servedBytes) bytes" }
+    }
+
+    /// Below this, a track fits inside the cap and plays to the end even on a capped URL,
+    /// so there is nothing to check and no reason to spend a request checking it.
+    static let cappedURLProbeThreshold: Int64 = 1 << 20
+
+    /// Whether a resolved URL is worth verifying before playing it.
+    ///
+    /// An unknown length can't be verified — the probe needs a byte offset to aim at — so
+    /// it goes ahead unchecked rather than being condemned on a guess.
+    static func shouldVerifyServesWholeResource(contentLength: Int64?) -> Bool {
+        guard let contentLength else { return false }
+        return contentLength > cappedURLProbeThreshold
+    }
+
+    /// Asks for the last two bytes of the resource. A capped URL answers 403 there while
+    /// still serving its opening megabyte perfectly, which is exactly why this cannot be
+    /// detected by checking that playback starts.
+    static func servesWholeResource(urlString: String, contentLength: Int64) async -> Bool {
+        guard let url = URL(string: urlString), contentLength >= 2 else { return true }
+        var request = URLRequest(url: url)
+        request.setValue("bytes=\(contentLength - 2)-\(contentLength - 1)", forHTTPHeaderField: "Range")
+        guard let (_, response) = try? await NetworkSessions.api.data(for: request),
+              let http = response as? HTTPURLResponse else {
+            // Unreachable rather than refused: don't condemn the URL for a flaky moment.
+            return true
+        }
+        return (200..<300).contains(http.statusCode)
     }
 
     static func isTokenRefusal(status: String?, reason: String) -> Bool {
@@ -390,12 +445,31 @@ enum InnerTubeClient {
             throw APIError.server("No audio-only format available")
         }
         let mime = chosen["mimeType"].string ?? "audio/mp4"
+
+        // Gate 2: it resolved, but will it serve the whole song? On some devices every
+        // audio-only client hands back a URL capped to its first 1 MiB — about 65 seconds
+        // of itag 140 — which plays perfectly and then dies mid-track with a 403. Checked
+        // here rather than discovered by the user a minute into a song.
+        let contentLength = chosen["contentLength"].string.flatMap(Int64.init)
+        if shouldVerifyServesWholeResource(contentLength: contentLength), let contentLength,
+           await !servesWholeResource(urlString: urlString, contentLength: contentLength) {
+            throw CappedStreamURL(servedBytes: cappedURLProbeThreshold)
+        }
+
         lastStreamWasMuxedFallback = false
         return StreamInfo(videoId: videoId, url: urlString, expiresAt: expiry(for: urlString), mimeType: mime)
     }
 
     /// itag 18: a legacy muxed 360p video + AAC audio file. Works reliably (no PO-token
-    /// gate) but costs roughly 3-4x the data of audio-only for the video you never see.
+    /// gate) but costs extra data for the video you never see.
+    ///
+    /// How much extra depends entirely on the upload, and it is no longer only an
+    /// emergency path — a device whose audio-only URLs are capped takes it for every
+    /// track, so the real figure is worth knowing. Measured on "Get Lucky (Official
+    /// Audio)", a static-image upload whose video track compresses to nearly nothing:
+    /// itag 18 is 4,445,542 bytes against itag 140's 4,025,466 — about **1.1x**, and the
+    /// same 248.7s of audio. A genuine music video is where the 3-4x figure comes from.
+    /// Both formats carry the full track; the fallback never shortens a song.
     private static func muxedStream(videoId: String) async throws -> StreamInfo {
         let body: [String: Any] = [
             "context": [

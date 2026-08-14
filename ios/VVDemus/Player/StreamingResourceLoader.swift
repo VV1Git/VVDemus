@@ -12,13 +12,44 @@ import AVFoundation
 /// before making the real request. Data streams back to AVFoundation incrementally as it
 /// arrives (not buffered and delivered all at once) so playback can start before the whole
 /// file downloads, matching how AVFoundation's own default loading behaves.
+///
+/// One loading request becomes a *sequence* of HTTP range requests, each capped at
+/// `maximumChunkSize` — see there for why asking for the range AVFoundation actually names
+/// is what broke playback on the phone.
 final class StreamingResourceLoader: NSObject, AVAssetResourceLoaderDelegate, URLSessionDataDelegate {
     static let scheme = "vvdemus-stream"
 
+    /// One AVFoundation loading request, and how far through its byte range we have got.
+    ///
+    /// A loading request is satisfied by a *sequence* of HTTP requests rather than one, so
+    /// the progress through it has to live somewhere across callbacks — see
+    /// `maximumChunkSize` for why it is split up at all.
+    private final class LoadingContext {
+        let loadingRequest: AVAssetResourceLoadingRequest
+        /// The next byte to ask the server for.
+        var nextOffset: Int64
+        /// The last byte this request needs, inclusive. `nil` while the resource size is
+        /// still unknown — AVFoundation asks for "everything to the end" before anything
+        /// has revealed how long "the end" is.
+        var finalOffset: Int64?
+        /// The inclusive end of the chunk currently in flight, so a short response can be
+        /// recognized as the end of the resource when `finalOffset` is unknown.
+        var requestedChunkEnd: Int64 = 0
+        var task: URLSessionDataTask?
+        var hasFilledContentInformation = false
+        var hasDeliveredData = false
+
+        init(loadingRequest: AVAssetResourceLoadingRequest, nextOffset: Int64, finalOffset: Int64?) {
+            self.loadingRequest = loadingRequest
+            self.nextOffset = nextOffset
+            self.finalOffset = finalOffset
+        }
+    }
+
     private let realScheme: String
     private var session: URLSession!
-    private var tasksByRequest: [ObjectIdentifier: (task: URLSessionDataTask, loadingRequest: AVAssetResourceLoadingRequest)] = [:]
-    private var requestsByTask: [Int: ObjectIdentifier] = [:]
+    private var contextsByRequest: [ObjectIdentifier: LoadingContext] = [:]
+    private var requestKeysByTask: [Int: ObjectIdentifier] = [:]
     /// Total size of the resource, learned from the first `Content-Range`, used to keep
     /// later chunks from running past the end.
     private var knownContentLength: Int64?
@@ -77,62 +108,73 @@ final class StreamingResourceLoader: NSObject, AVAssetResourceLoaderDelegate, UR
         return components.url
     }
 
-    /// Ranges are **closed** but not artificially chunked.
+    /// How much one HTTP request may ask for.
     ///
-    /// An earlier version capped every request at 1 MB, because the audio-only URLs the app
-    /// briefly used refused anything larger. Those URLs are gone (they were throttled and
-    /// couldn't serve a whole track), and capping is actively risky here: a data request is
-    /// only partially satisfied, and whether AVFoundation re-requests the remainder is an
-    /// assumption rather than a contract — get it wrong and playback truncates mid-track.
-    /// The muxed URLs actually in use serve any range, so ask for what was asked for.
-    static let fallbackSpan: Int64 = 64 << 20 // 64 MB — larger than any track
+    /// googlevideo refuses a large range on a throttled URL — the whole-file
+    /// `bytes=0-<size-1>` that iOS's AVFoundation provokes comes back **403** — while the
+    /// same URL serves modest ranges perfectly. That is the entire "Couldn't play … Check
+    /// your connection and try again" bug: the resolved URL is fine, the network is fine,
+    /// and the very first data request is refused before a byte of audio arrives.
+    ///
+    /// It reproduced only on a real phone. The simulator shares the Mac's network path,
+    /// where the same URLs are not throttled and the whole-file range returns 206 — so the
+    /// smoke tests passed on the simulator and on the Mac app while every undownloaded
+    /// track failed on the phone. `VVDemusTests/StreamUrlRangeTests` samples 256 KB
+    /// windows, which is why it never caught it either.
+    ///
+    /// 512 KB is deliberately well under the ~1 MB where throttled URLs start refusing
+    /// (see the `audioOnlyClients` note in `InnerTubeClient` for the same cap observed on
+    /// the IOS player client), and is still only ~8 requests for a typical 4 MB track.
+    static let maximumChunkSize: Int64 = 512 << 10
 
-    /// The `Range` header for a loading request — always present, always **closed**, and
-    /// never larger than `maximumChunkSize`.
+    /// The stretch of bytes a loading request needs: where it starts, and the last byte it
+    /// wants (inclusive), or `nil` for "to the end" while the length is still unknown.
     ///
-    /// Three separate things were wrong here, and each one alone is a 403 from googlevideo:
-    ///
-    /// 1. The content-information probe AVFoundation issues first arrives with no
-    ///    `dataRequest`, and used to produce no `Range` header at all.
-    /// 2. "All data to the end of the resource" produced an open-ended `bytes=N-`.
-    /// 3. A closed range covering the whole file — the obvious reading of "all data" once
-    ///    the total size is known — is larger than the server will serve.
-    ///
-    /// The asset therefore failed to open before a single byte of audio arrived, which
-    /// surfaced as "Couldn't play … Check your connection and try again". The old muxed
-    /// itag-18 URLs tolerated all three forms, which is why this only appeared once
-    /// playback moved to the audio-only formats.
-    static func rangeHeader(
+    /// Kept as a pure function over primitives because `AVAssetResourceLoadingDataRequest`
+    /// cannot be constructed in a test.
+    static func extent(
         requestedOffset: Int64,
         requestedLength: Int,
         requestsAllToEnd: Bool,
         knownLength: Int64?
-    ) -> String {
+    ) -> (start: Int64, finalOffset: Int64?) {
         let start = max(0, requestedOffset)
+        if requestsAllToEnd {
+            // Only as far as the resource actually goes. A range that overshoots the end is
+            // refused outright rather than truncated (`bytes=0-<size>` → 403).
+            return (start, knownLength.flatMap { $0 > 0 ? $0 - 1 : nil })
+        }
         // No length asked for: this is the content-information probe. Two bytes is enough
         // for the server to report the full size in `Content-Range`.
-        if !requestsAllToEnd && requestedLength <= 0 {
-            return "bytes=\(start)-\(start + 1)"
-        }
-        let wanted = requestsAllToEnd ? fallbackSpan : Int64(requestedLength)
-        var end = start + wanted - 1
-        // Never ask past the last byte. A range that overshoots the end of the resource is
-        // refused outright rather than truncated (`bytes=0-<size>` → 403), which is what
-        // made the requests near the end of a track fail once chunking was in place.
+        guard requestedLength > 0 else { return (start, start + 1) }
+        var final = start + Int64(requestedLength) - 1
         if let knownLength, knownLength > 0 {
-            end = min(end, knownLength - 1)
+            final = min(final, knownLength - 1)
         }
-        return "bytes=\(start)-\(max(end, start))"
+        return (start, max(final, start))
     }
 
-    static func rangeHeader(for dataRequest: AVAssetResourceLoadingDataRequest?, knownLength: Int64?) -> String {
-        guard let dataRequest else { return "bytes=0-1" }
-        return rangeHeader(
+    static func extent(
+        for dataRequest: AVAssetResourceLoadingDataRequest?,
+        knownLength: Int64?
+    ) -> (start: Int64, finalOffset: Int64?) {
+        guard let dataRequest else { return (0, 1) }
+        return extent(
             requestedOffset: dataRequest.requestedOffset,
             requestedLength: dataRequest.requestedLength,
             requestsAllToEnd: dataRequest.requestsAllDataToEndOfResource,
             knownLength: knownLength
         )
+    }
+
+    /// The **closed** `Range` header for one chunk: never larger than `maximumChunkSize`,
+    /// never past what the loading request needs, never past the end of the resource.
+    static func rangeHeader(start: Int64, finalOffset: Int64?, knownLength: Int64?) -> String {
+        let start = max(0, start)
+        var end = start + maximumChunkSize - 1
+        if let finalOffset { end = min(end, finalOffset) }
+        if let knownLength, knownLength > 0 { end = min(end, knownLength - 1) }
+        return "bytes=\(start)-\(max(end, start))"
     }
 
     private func realRequestURL(from loadingURL: URL) -> URL? {
@@ -145,32 +187,77 @@ final class StreamingResourceLoader: NSObject, AVAssetResourceLoaderDelegate, UR
 
     func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
         guard !isShutDown else { return false }
-        guard let loadingURL = loadingRequest.request.url, let url = realRequestURL(from: loadingURL) else { return false }
-        var request = URLRequest(url: url)
-        request.setValue(
-            Self.rangeHeader(for: loadingRequest.dataRequest, knownLength: knownContentLength),
-            forHTTPHeaderField: "Range"
+        guard let loadingURL = loadingRequest.request.url, realRequestURL(from: loadingURL) != nil else { return false }
+        let planned = Self.extent(for: loadingRequest.dataRequest, knownLength: knownContentLength)
+        let context = LoadingContext(
+            loadingRequest: loadingRequest,
+            nextOffset: planned.start,
+            finalOffset: planned.finalOffset
         )
-        let task = session.dataTask(with: request)
-        let key = ObjectIdentifier(loadingRequest)
-        tasksByRequest[key] = (task, loadingRequest)
-        requestsByTask[task.taskIdentifier] = key
-        task.resume()
+        contextsByRequest[ObjectIdentifier(loadingRequest)] = context
+        startNextChunk(for: context)
         return true
+    }
+
+    /// Asks for the next `maximumChunkSize` bytes of `context`'s range. The loading request
+    /// is only finished once its whole extent has been served, so AVFoundation never has to
+    /// re-request a remainder — the old capped version finished early instead, which handed
+    /// back a truncated range as though it were whole.
+    private func startNextChunk(for context: LoadingContext) {
+        // Torn down between chunks: end the request rather than leaving it unanswered.
+        // `finishLoading()` here would claim a half-served range was complete.
+        guard !isShutDown else {
+            finish(context, with: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+            return
+        }
+        guard let loadingURL = context.loadingRequest.request.url,
+              let url = realRequestURL(from: loadingURL) else {
+            finish(context, with: NSError(domain: "StreamingResourceLoader", code: -1))
+            return
+        }
+        var request = URLRequest(url: url)
+        let header = Self.rangeHeader(
+            start: context.nextOffset,
+            finalOffset: context.finalOffset,
+            knownLength: knownContentLength
+        )
+        request.setValue(header, forHTTPHeaderField: "Range")
+        context.requestedChunkEnd = Self.chunkEnd(from: header) ?? context.nextOffset
+        let task = session.dataTask(with: request)
+        context.task = task
+        requestKeysByTask[task.taskIdentifier] = ObjectIdentifier(context.loadingRequest)
+        task.resume()
+    }
+
+    /// Ends a loading request and forgets it. `error == nil` means the whole extent was served.
+    private func finish(_ context: LoadingContext, with error: Error?) {
+        if let task = context.task { requestKeysByTask.removeValue(forKey: task.taskIdentifier) }
+        contextsByRequest.removeValue(forKey: ObjectIdentifier(context.loadingRequest))
+        if let error {
+            context.loadingRequest.finishLoading(with: error)
+        } else {
+            context.loadingRequest.finishLoading()
+        }
+    }
+
+    private static func chunkEnd(from header: String) -> Int64? {
+        header.split(separator: "-").last.flatMap { Int64($0) }
     }
 
     func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
         let key = ObjectIdentifier(loadingRequest)
-        if let entry = tasksByRequest.removeValue(forKey: key) {
-            requestsByTask.removeValue(forKey: entry.task.taskIdentifier)
-            entry.task.cancel()
+        if let context = contextsByRequest.removeValue(forKey: key) {
+            if let task = context.task {
+                requestKeysByTask.removeValue(forKey: task.taskIdentifier)
+                task.cancel()
+            }
         }
     }
 
     // MARK: - URLSessionDataDelegate
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        guard let key = requestsByTask[dataTask.taskIdentifier], let entry = tasksByRequest[key] else {
+        guard let key = requestKeysByTask[dataTask.taskIdentifier], let context = contextsByRequest[key] else {
             completionHandler(.allow)
             return
         }
@@ -179,18 +266,29 @@ final class StreamingResourceLoader: NSObject, AVAssetResourceLoaderDelegate, UR
             return
         }
         guard (200..<300).contains(http.statusCode) else {
+            // A range past the end after data has already been served is the end of the
+            // resource, not a failure — it is how a resource of unknown length terminates.
+            if http.statusCode == 416, context.hasDeliveredData {
+                finish(context, with: nil)
+                completionHandler(.cancel)
+                return
+            }
             NSLog("[StreamingResourceLoader] request failed with HTTP %ld (range=%@, known=%@)",
                   http.statusCode,
                   dataTask.originalRequest?.value(forHTTPHeaderField: "Range") ?? "none",
                   knownContentLength.map(String.init) ?? "unknown")
-            requestsByTask.removeValue(forKey: dataTask.taskIdentifier)
-            tasksByRequest.removeValue(forKey: key)
-            entry.loadingRequest.finishLoading(with: NSError(domain: "StreamingResourceLoader", code: http.statusCode))
+            finish(context, with: NSError(domain: "StreamingResourceLoader", code: http.statusCode))
             completionHandler(.cancel)
             return
         }
-        if let total = Self.totalLength(from: http) { knownContentLength = total }
-        if let info = entry.loadingRequest.contentInformationRequest {
+        if let total = Self.totalLength(from: http) {
+            knownContentLength = total
+            // The size was unknown when this request was planned ("everything to the end"),
+            // so now it is known, pin down where the end actually is.
+            if context.finalOffset == nil, total > 0 { context.finalOffset = total - 1 }
+        }
+        if let info = context.loadingRequest.contentInformationRequest, !context.hasFilledContentInformation {
+            context.hasFilledContentInformation = true
             if let mimeType = http.mimeType {
                 info.contentType = StreamingResourceLoader.contentType(forMimeType: mimeType)
             }
@@ -207,13 +305,15 @@ final class StreamingResourceLoader: NSObject, AVAssetResourceLoaderDelegate, UR
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let key = requestsByTask[dataTask.taskIdentifier], let entry = tasksByRequest[key] else { return }
-        entry.loadingRequest.dataRequest?.respond(with: data)
+        guard let key = requestKeysByTask[dataTask.taskIdentifier], let context = contextsByRequest[key] else { return }
+        context.loadingRequest.dataRequest?.respond(with: data)
+        context.hasDeliveredData = true
+        context.nextOffset += Int64(data.count)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let key = requestsByTask.removeValue(forKey: task.taskIdentifier),
-              let entry = tasksByRequest.removeValue(forKey: key) else { return }
+        guard let key = requestKeysByTask.removeValue(forKey: task.taskIdentifier),
+              let context = contextsByRequest[key] else { return }
         if let error {
             // Cancellation included. `finishLoading()` means "this range completed", so
             // reporting a cancelled task that way handed AVFoundation a truncated range as
@@ -221,10 +321,23 @@ final class StreamingResourceLoader: NSObject, AVAssetResourceLoaderDelegate, UR
             if (error as NSError).code != NSURLErrorCancelled {
                 NSLog("[StreamingResourceLoader] request error: %@", error.localizedDescription)
             }
-            entry.loadingRequest.finishLoading(with: error)
-        } else {
-            entry.loadingRequest.finishLoading()
+            finish(context, with: error)
+            return
         }
+        // One chunk of the range is done; the loading request is not, until every byte it
+        // asked for has been handed over.
+        if let final = context.finalOffset {
+            guard context.nextOffset > final else {
+                startNextChunk(for: context)
+                return
+            }
+        } else if context.nextOffset > context.requestedChunkEnd {
+            // Length still unknown and the server served the whole chunk, so there is
+            // probably more. A short chunk means the resource ended.
+            startNextChunk(for: context)
+            return
+        }
+        finish(context, with: nil)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
