@@ -282,6 +282,9 @@ schemes:
             - PlaybackSmokeTest
             - StreamUrlRangeTests
             - ResourceLoaderUrlIntegrityTests
+            # Measures how many bytes a resolved URL really serves. Network, and only
+            # meaningful on a device — see the note in the file.
+            - ThrottleCapDiagnostics
             # Downloads a real track from YouTube. Same reasoning as the rest of this list:
             # real bytes, real dependency on YouTube being up.
             - DownloadIntegrationTests
