@@ -13,6 +13,7 @@ enum SyncEngine {
         if let daylist = DaylistStore.shared.syncRecord() { generated.append(daylist) }
         if let feed = HomeFeedStore.shared.syncRecord() { generated.append(feed) }
         generated.append(contentsOf: RadioCacheStore.shared.syncRecords())
+        generated.append(contentsOf: AlbumCacheStore.shared.syncRecords())
 
         let events = eventsSince
             .map { ListeningStatsStore.shared.events(since: $0) }
@@ -23,6 +24,7 @@ enum SyncEngine {
             likes: LikedSongsStore.shared.records,
             playlists: PlaylistStore.shared.records,
             radios: RadioHistoryStore.shared.records,
+            albums: AlbumHistoryStore.shared.records,
             generated: generated,
             recentSearches: RecentSearchStore.shared.searches,
             events: events,
@@ -43,6 +45,7 @@ enum SyncEngine {
         summary.likes = LikedSongsStore.shared.merge(payload.likes)
         summary.playlists = PlaylistStore.shared.merge(payload.playlists)
         summary.radios = RadioHistoryStore.shared.merge(payload.radios)
+        summary.albums = AlbumHistoryStore.shared.merge(payload.openedAlbums)
         summary.searches = RecentSearchStore.merge(payload.recentSearches) ? 1 : 0
 
         for record in payload.generated {
@@ -51,6 +54,8 @@ enum SyncEngine {
                 applied = DaylistStore.shared.applySynced(record)
             } else if record.id == "home_feed_v3" {
                 applied = HomeFeedStore.shared.applySynced(record)
+            } else if record.id.hasPrefix(AlbumCacheStore.recordPrefix) {
+                applied = AlbumCacheStore.shared.applySynced(record)
             } else {
                 applied = RadioCacheStore.shared.applySynced(record)
             }
@@ -77,12 +82,13 @@ struct SyncSummary: Equatable {
     var likes = 0
     var playlists = 0
     var radios = 0
+    var albums = 0
     var plays = 0
     var generated = 0
     var searches = 0
 
     var isEmpty: Bool {
-        likes + playlists + radios + plays + generated + searches == 0
+        likes + playlists + radios + albums + plays + generated + searches == 0
     }
 
     /// Human phrasing for the Settings row — "3 liked songs, 1 playlist, 42 plays".
@@ -95,6 +101,7 @@ struct SyncSummary: Equatable {
         add(likes, "liked song", "liked songs")
         add(playlists, "playlist", "playlists")
         add(radios, "radio", "radios")
+        add(albums, "album", "albums")
         add(plays, "play", "plays")
         add(generated, "mix", "mixes")
         add(searches, "search list", "search lists")

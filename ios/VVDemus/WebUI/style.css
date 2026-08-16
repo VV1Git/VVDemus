@@ -621,6 +621,23 @@ svg { display: block; }
 .row-actions button:hover { color: #fff; background: rgba(255,255,255,0.08); }
 .row-actions button.liked { color: var(--accent); }
 
+/* An album row in the search list. Same geometry as a track row — the chevron in place of
+   the like and queue buttons is the whole of the difference, and it is what says this row
+   navigates rather than plays. Dimmer than the row's text, like the system indicators it
+   stands in for: it points somewhere, it isn't the subject. */
+.row-chevron {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.row-chevron svg { width: 16px; height: 16px; }
+
+.album-row:hover .row-chevron { color: #fff; opacity: 1; }
+
 .empty-hint {
   color: var(--text-secondary);
   font-size: 14px;

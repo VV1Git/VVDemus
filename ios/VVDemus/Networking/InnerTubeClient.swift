@@ -17,6 +17,11 @@ enum InnerTubeClient {
     /// InnerTube "params" blob selecting the Songs filter — reverse-engineered value,
     /// stable in practice (it's what music.youtube.com itself sends for this filter).
     private static let songsFilterParams = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
+    /// The same blob for the Albums filter. It differs from the Songs one in a single byte
+    /// (`\x08` → `\x18`, the filter's enum value), which is why the two look so alike.
+    /// Returns singles and EPs as well as full albums — YouTube files all three here, and
+    /// each carries its own label in the row, which `Album.kind` keeps.
+    private static let albumsFilterParams = "EgWKAQIYAWoMEA4QChADEAQQCRAF"
 
     static let dataSaverDefaultsKey = "data_saver_enabled"
 
@@ -92,6 +97,132 @@ enum InnerTubeClient {
             }
         }
         return tracks
+    }
+
+    /// The Albums half of a search, run alongside `search(query:limit:)`.
+    ///
+    /// A second request rather than one unfiltered search: dropping the Songs filter does
+    /// return albums *and* songs in YouTube's own relevance order, but it also collapses the
+    /// Songs shelf from 25 results to about four, which is a large regression in the thing
+    /// search is mostly for. Two filtered requests keep the song depth and cost one extra
+    /// round trip — issued concurrently, so it costs no extra latency.
+    static func searchAlbums(query: String, limit: Int = 4) async throws -> [Album] {
+        let body: [String: Any] = [
+            "context": [
+                "client": ["clientName": "WEB_REMIX", "clientVersion": clientVersion],
+                "user": [String: Any](),
+            ],
+            "query": query,
+            "params": albumsFilterParams,
+        ]
+        let json = try await post(
+            url: "https://music.youtube.com/youtubei/v1/search?alt=json&prettyPrint=false&key=\(webRemixAPIKey)",
+            userAgent: webUserAgent,
+            origin: "https://music.youtube.com",
+            body: body
+        )
+
+        let shelves = json["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"].array ?? []
+        var albums: [Album] = []
+        var seen = Set<String>()
+        for shelf in shelves {
+            let items = shelf["musicShelfRenderer"]["contents"].array ?? []
+            for item in items {
+                guard let album = parseAlbumSearchItem(item["musicResponsiveListItemRenderer"]),
+                      seen.insert(album.browseId).inserted else { continue }
+                albums.append(album)
+                if albums.count >= limit { return albums }
+            }
+        }
+        return albums
+    }
+
+    /// One release's track list, plus whatever the album page knows that search didn't.
+    ///
+    /// Fetched from `browse` rather than from the release's `OLAK5uy_…` playlist through
+    /// `next`. Both endpoints return every track, but `next` returns the *upload* title and
+    /// byline — "Daft Punk - One More Time (Official Video)", "613M views" — where browse
+    /// returns "One More Time" and leaves the artist implied by the album. The upload titles
+    /// are what would then be written into the queue, the play history and the listening
+    /// stats, so the difference outlives the screen.
+    ///
+    /// The album's own artwork stands in for every track's: an album page carries one cover
+    /// and no per-track thumbnails, and a row with no artwork at all is worse than a row
+    /// showing the record it came from.
+    static func album(browseId: String) async throws -> AlbumPage {
+        let body: [String: Any] = [
+            "context": [
+                "client": ["clientName": "WEB_REMIX", "clientVersion": clientVersion],
+                "user": [String: Any](),
+            ],
+            "browseId": browseId,
+        ]
+        let json = try await post(
+            url: "https://music.youtube.com/youtubei/v1/browse?alt=json&prettyPrint=false&key=\(webRemixAPIKey)",
+            userAgent: webUserAgent,
+            origin: "https://music.youtube.com",
+            body: body
+        )
+        return try parseAlbumPage(json, browseId: browseId)
+    }
+
+    /// What an album page came back with: the release as the page describes it, and its
+    /// songs. Returned together because one request answers both, and the page's header is
+    /// more complete than the search row that led here — a release reached from a Home tile
+    /// after a sync may have arrived with no year at all.
+    struct AlbumPage {
+        let album: Album
+        let tracks: [Track]
+    }
+
+    static func parseAlbumPage(_ json: JSON, browseId: String) throws -> AlbumPage {
+        let twoColumn = json["contents"]["twoColumnBrowseResultsRenderer"]
+        let header = twoColumn["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"][0]["musicResponsiveHeaderRenderer"]
+
+        let title = header["title"]["runs"][0]["text"].string ?? "Unknown Album"
+        let artist = header["straplineTextOne"]["runs"][0]["text"].string ?? "Unknown Artist"
+        // "Album • 2001" — the kind first, the year last, same shape as the search row.
+        let subtitleRuns = header["subtitle"]["runs"].array ?? []
+        var kind = "Album"
+        var year: String?
+        for (index, run) in subtitleRuns.enumerated() where index % 2 == 0 {
+            guard let text = run["text"].string else { continue }
+            if isYear(text) { year = text } else if index == 0 { kind = text }
+        }
+        let thumbnails = header["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"].array ?? []
+        let artwork = thumbnails.last?["url"].string
+
+        let sections = twoColumn["secondaryContents"]["sectionListRenderer"]["contents"].array ?? []
+        // The track shelf is not always first — a release can lead with a description or a
+        // "Releases for you" carousel — so it is found rather than indexed.
+        let items = sections
+            .first { $0["musicShelfRenderer"]["contents"].array?.isEmpty == false }?["musicShelfRenderer"]["contents"].array ?? []
+
+        var tracks: [Track] = []
+        var playlistId: String?
+        for item in items {
+            let row = item["musicResponsiveListItemRenderer"]
+            if playlistId == nil {
+                playlistId = row["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]["playlistId"].string
+            }
+            guard let track = parseAlbumTrack(row, album: title, artist: artist, artwork: artwork) else { continue }
+            tracks.append(track)
+        }
+
+        guard !tracks.isEmpty else { throw APIError.server("This album came back empty.") }
+
+        return AlbumPage(
+            album: Album(
+                browseId: browseId,
+                title: title,
+                artist: artist,
+                kind: kind,
+                year: year,
+                thumbnailUrl: artwork,
+                audioPlaylistId: playlistId
+            ),
+            tracks: tracks
+        )
     }
 
     /// No personalized "home" endpoint without signing in, so this mirrors what the
@@ -540,6 +671,94 @@ enum InnerTubeClient {
             thumbnailUrl: thumbnails.last?["url"].string,
             durationSeconds: parsed.durationSeconds
         )
+    }
+
+    /// One row of the Albums search shelf.
+    ///
+    /// The second flex column is "Album • Artist • 2001" in the same even-index-is-data
+    /// layout `parseRuns` handles, but the pieces wanted here are different ones: that
+    /// function is looking for a *song's* artists and duration and would read "Album" as
+    /// nothing and the year as nothing, which is right for a song row and useless here.
+    static func parseAlbumSearchItem(_ item: JSON) -> Album? {
+        guard let browseId = item["navigationEndpoint"]["browseEndpoint"]["browseId"].string,
+              // The Albums filter is not a guarantee: the same shelf shape carries artist
+              // and playlist rows, whose browseIds are `UC…` and `VL…`. Fetching the album
+              // page for one of those returns something that is not an album at all.
+              browseId.hasPrefix("MPRE") else { return nil }
+
+        let title = item["flexColumns"][0]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"][0]["text"].string
+            ?? "Unknown Album"
+        let runs = item["flexColumns"][1]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"].array ?? []
+
+        var kind: String?
+        var artists: [String] = []
+        var year: String?
+        for (index, run) in runs.enumerated() where index % 2 == 0 {
+            guard let text = run["text"].string else { continue }
+            if run["navigationEndpoint"]["browseEndpoint"]["browseId"].exists {
+                artists.append(text)
+            } else if isYear(text) {
+                year = text
+            } else if kind == nil {
+                // The first plain run is the label ("Album" / "Single" / "EP"). Later plain
+                // runs are an artist YouTube gave no link to, which happens for uploads
+                // outside its artist graph.
+                kind = text
+            } else {
+                artists.append(text)
+            }
+        }
+
+        let thumbnails = item["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"].array ?? []
+
+        return Album(
+            browseId: browseId,
+            title: title,
+            artist: artists.isEmpty ? "Unknown Artist" : artists.joined(separator: ", "),
+            kind: kind ?? "Album",
+            year: year,
+            thumbnailUrl: thumbnails.last?["url"].string,
+            audioPlaylistId: item["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchPlaylistEndpoint"]["playlistId"].string
+        )
+    }
+
+    /// One row of an album page's track shelf.
+    ///
+    /// Unlike a search row this carries no artwork and usually no artist: the page states
+    /// both once, at the top, and every row inherits them. The duration lives in a
+    /// `fixedColumns` entry rather than in the byline runs, which is why `parseRuns` cannot
+    /// be reused here either.
+    static func parseAlbumTrack(_ row: JSON, album: String, artist: String, artwork: String?) -> Track? {
+        guard let videoId = row["playlistItemData"]["videoId"].string
+            ?? row["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]["videoId"].string
+        else { return nil }
+
+        let title = row["flexColumns"][0]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"][0]["text"].string
+            ?? "Unknown Title"
+        // Present on compilations and on any track with a guest, absent on a single-artist
+        // album — where the album's own artist is the honest answer, not "Unknown Artist".
+        let credited = (row["flexColumns"][1]["musicResponsiveListItemFlexColumnRenderer"]["text"]["runs"].array ?? [])
+            .enumerated()
+            .filter { $0.offset % 2 == 0 }
+            .compactMap { $0.element["text"].string }
+            .filter { !$0.isEmpty }
+        let duration = row["fixedColumns"][0]["musicResponsiveListItemFixedColumnRenderer"]["text"]["runs"][0]["text"].string
+
+        return Track(
+            videoId: videoId,
+            title: title,
+            artist: credited.isEmpty ? artist : credited.joined(separator: ", "),
+            album: album,
+            thumbnailUrl: artwork,
+            durationSeconds: duration.flatMap(parseDuration)
+        )
+    }
+
+    /// A four-digit year, and nothing else. Used to tell the release year apart from the
+    /// "Album" / "Single" label sitting in the same run of metadata — both are plain text
+    /// with no navigation endpoint, so position alone does not separate them.
+    static func isYear(_ text: String) -> Bool {
+        text.count == 4 && text.allSatisfy(\.isNumber)
     }
 
     private static func parseWatchItem(_ item: JSON) -> Track? {

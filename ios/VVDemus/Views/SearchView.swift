@@ -4,7 +4,12 @@ struct SearchView: View {
     @ObservedObject var player: PlayerService
     @ObservedObject var coordinator: NavigationCoordinator
     @State private var query = ""
-    @State private var results: [Track] = []
+    /// Songs and releases in one list — see `SearchResult.interleave`. The songs are kept
+    /// separately as well, because they and not the mixed list are what a tapped song plays
+    /// in the context of: a queue is a list of tracks, and an album row sitting in the middle
+    /// of one is not something the player could represent.
+    @State private var results: [SearchResult] = []
+    @State private var tracks: [Track] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var searchTask: Task<Void, Never>?
@@ -36,20 +41,15 @@ struct SearchView: View {
                     }
                 } else {
                     List {
-                        ForEach(Array(results.enumerated()), id: \.element.id) { index, track in
-                            TrackRow(
-                                track: track,
-                                isActive: player.currentTrack?.id == track.id,
-                                onTap: { player.play(track: track, context: results, contextTitle: "Search") }
-                            )
-                            .trackRowMetrics()
-                            .trackActions(track: track, player: player)
-                            // Every other list using `trackRowMetrics()` has a section header
-                            // above its first track, so row 0's top separator divides two real
-                            // things. Here it hangs under the search field, inset 76pt to the
-                            // title column with nothing to its left to justify the indent — a
-                            // stub line rather than a divider.
-                            .listRowSeparator(index == 0 ? .hidden : .automatic, edges: .top)
+                        ForEach(Array(results.enumerated()), id: \.element.id) { index, result in
+                            resultRow(result)
+                                .trackRowMetrics()
+                                // Every other list using `trackRowMetrics()` has a section header
+                                // above its first track, so row 0's top separator divides two real
+                                // things. Here it hangs under the search field, inset 76pt to the
+                                // title column with nothing to its left to justify the indent — a
+                                // stub line rather than a divider.
+                                .listRowSeparator(index == 0 ? .hidden : .automatic, edges: .top)
                         }
                     }
                     .listStyle(.plain)
@@ -93,6 +93,38 @@ struct SearchView: View {
                 guard !Task.isCancelled else { return }
                 await runSearch(newValue)
             }
+        }
+    }
+
+    /// A song plays; a release opens. The two rows are the same size and share a leading edge,
+    /// so the chevron on the album row is the only thing that says which is which — which is
+    /// why `AlbumRow` draws one here rather than leaning on a `NavigationLink`'s.
+    ///
+    /// A plain `Button` rather than a `NavigationLink`, for that reason: a link inside a `List`
+    /// adds the system disclosure indicator on top of the row's own, and the two do not line
+    /// up. The push target is this screen's own stack, so an album opened from a search stays
+    /// under Search — the phone does not jump to the Home tab the way `openRadio` does.
+    @ViewBuilder
+    private func resultRow(_ result: SearchResult) -> some View {
+        switch result {
+        case .track(let track):
+            TrackRow(
+                track: track,
+                isActive: player.currentTrack?.id == track.id,
+                onTap: { player.play(track: track, context: tracks, contextTitle: "Search") }
+            )
+            .trackActions(track: track, player: player)
+        case .album(let album):
+            Button {
+                path.append(LibraryDestination.album(album))
+            } label: {
+                AlbumRow(album: album)
+            }
+            // Without this the row is a *control*: macOS gives a `Button` in a list the
+            // automatic style, which paints a tinted rounded background and recolours the
+            // whole label to the accent — the same trap the recent-search rows below hit.
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the album")
         }
     }
 
@@ -187,6 +219,16 @@ struct SearchView: View {
         searchTask = Task { await runSearch(text) }
     }
 
+    /// The albums half of a search, with its failures folded into "no albums matched".
+    ///
+    /// A free function rather than a `try?` on the `async let` itself: the songs half is
+    /// what decides whether the search failed, and the two have to be awaited together to
+    /// run concurrently — which means the album errors need somewhere to go that isn't the
+    /// same `do` block.
+    private static func albums(matching query: String) async -> [Album] {
+        (try? await APIClient.shared.searchAlbums(query)) ?? []
+    }
+
     private func runSearch(_ text: String) async {
         // Cleared here rather than at the end, because three of this function's four exits
         // used to skip that line: the empty-query return below and both cancellation guards.
@@ -201,13 +243,25 @@ struct SearchView: View {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             results = []
+            tracks = []
             errorMessage = nil
             return
         }
         isLoading = true
         errorMessage = nil
+
+        // Two requests, concurrently. The albums half is allowed to fail on its own: a
+        // search that found songs is a working search, and losing every result because the
+        // album filter timed out would be a plain regression on what this screen did before
+        // albums existed. The songs half still decides whether the search failed.
+        async let songs = APIClient.shared.search(trimmed)
+        async let albums = Self.albums(matching: trimmed)
+
         do {
-            results = try await APIClient.shared.search(trimmed)
+            let (found, releases) = try await (songs, albums)
+            guard !Task.isCancelled else { return }
+            tracks = found
+            results = SearchResult.interleave(tracks: found, albums: releases)
             // Only remembered once it actually returned something, so half-typed queries
             // that happened to match nothing don't clutter the list.
             if !results.isEmpty { rememberSearch(trimmed) }
@@ -217,6 +271,7 @@ struct SearchView: View {
             // a request was superseded more than 350ms in.
             guard !Task.isCancelled else { return }
             results = []
+            tracks = []
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "Couldn't search right now."
         }
     }

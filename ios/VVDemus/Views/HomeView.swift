@@ -1,19 +1,5 @@
 import SwiftUI
 
-private enum ShortcutItem: Identifiable {
-    case likedSongs
-    case radio(RadioStation)
-    case playlist(Playlist)
-
-    var id: String {
-        switch self {
-        case .likedSongs: return "liked"
-        case .radio(let station): return "radio-\(station.id)"
-        case .playlist(let playlist): return "playlist-\(playlist.id)"
-        }
-    }
-}
-
 struct HomeView: View {
     @ObservedObject var player: PlayerService
     @ObservedObject var coordinator: NavigationCoordinator
@@ -21,11 +7,16 @@ struct HomeView: View {
     @ObservedObject private var liked = LikedSongsStore.shared
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @ObservedObject private var playlists = PlaylistStore.shared
+    @ObservedObject private var albumHistory = AlbumHistoryStore.shared
+    @ObservedObject private var recentOpens = RecentOpensStore.shared
     @ObservedObject private var daylist = DaylistStore.shared
     @ObservedObject private var network = NetworkMonitor.shared
     @ObservedObject private var feed = HomeFeedStore.shared
     @State private var isLoading = false
     @State private var errorMessage: String?
+    /// The grid's own width, measured. A `LazyVGrid` with `.adaptive` columns keeps its
+    /// column count to itself, and capping the grid at two rows means knowing it.
+    @State private var gridWidth: CGFloat = 0
 
     private var sections: [RecommendationsBuilder.Section] { feed.sections }
 
@@ -155,33 +146,41 @@ struct HomeView: View {
         .refreshable { await load(forceRefresh: true) }
     }
 
-    // MARK: - Shortcuts grid (Liked Songs, saved radios, playlists)
+    // MARK: - Shortcuts grid (Liked Songs, saved radios, playlists, opened albums)
 
-    private var shortcuts: [ShortcutItem] {
-        var items: [ShortcutItem] = []
-        if !liked.tracks.isEmpty { items.append(.likedSongs) }
-        items.append(contentsOf: radioHistory.stations.prefix(6).map(ShortcutItem.radio))
-        items.append(contentsOf: playlists.playlists.prefix(6).map(ShortcutItem.playlist))
-        // On a phone — two columns — an odd count leaves a half-width hole at the end, so trim
-        // to an even one, except for a lone shortcut, which would otherwise vanish from Home.
-        // A wider window fits more columns and a ragged last row there is ordinary; this is
-        // the phone case, which is the one that looked broken.
-        let capped = Array(items.prefix(8))
-        guard capped.count > 1 else { return capped }
-        return Array(capped.prefix(capped.count - capped.count % 2))
+    /// Everything eligible for the grid, newest first. The ordering itself lives in
+    /// `HomeShortcuts.ranked` — it reads four stores and is the whole of the behaviour, so it
+    /// is a free function over plain values rather than something only a running app can run.
+    private var rankedShortcuts: [HomeShortcut] {
+        HomeShortcuts.ranked(
+            hasLikedSongs: !liked.tracks.isEmpty,
+            radios: radioHistory.stations,
+            playlists: playlists.playlists,
+            albums: albumHistory.albums,
+            albumOpenedAt: { albumHistory.lastOpenedAt($0) },
+            openedAt: { recentOpens.openedAt($0) }
+        )
     }
 
-    /// The widest minimum that still leaves two columns on the narrowest supported phone: 375pt
-    /// less the gutters is 343, so two columns come out 165 wide. Anything larger and those
-    /// phones drop to a single full-width tile.
-    private static let shortcutColumnMinimum: CGFloat = 160
+    /// What the grid draws at the width it was given.
+    private var shortcuts: [HomeShortcut] {
+        let all = rankedShortcuts
+        let columns = ShortcutGridMetrics.columns(fitting: gridWidth, spacing: Theme.Space.md)
+        return Array(all.prefix(ShortcutGridMetrics.visibleCount(available: all.count, columns: columns)))
+    }
 
     private var shortcutGrid: some View {
+        // Still `.adaptive`: it holds the tile size and adds columns, which is exactly what a
+        // grid that should fill the window wants, and its columns share out the full width
+        // rather than leaving the remainder at the trailing edge.
+        //
+        // The gap this used to end on was never adaptive's doing — it was *running out of
+        // tiles*. A wide window fits nine columns; the grid was capped at eight items and
+        // trimmed to an even count, so six tiles were drawn into nine column slots and the
+        // last three stood empty. Hence the measurement below: the width decides how many
+        // tiles there are, and adaptive goes on deciding where they sit.
         LazyVGrid(
-            // `.adaptive`, not two `.flexible()` columns: a fixed pair is a phone measurement,
-            // and on a Mac it stretched two tiles of 56pt artwork across the whole window
-            // however wide it was pulled. This holds the tile size and adds columns instead.
-            columns: [GridItem(.adaptive(minimum: Self.shortcutColumnMinimum), spacing: Theme.Space.md)],
+            columns: [GridItem(.adaptive(minimum: ShortcutGridMetrics.columnMinimum), spacing: Theme.Space.md)],
             spacing: Theme.Space.md
         ) {
             ForEach(shortcuts) { item in
@@ -189,11 +188,20 @@ struct HomeView: View {
             }
         }
         .padding(.horizontal, Theme.Metrics.gutter)
+        // Measured after the gutters, so the column count is solved against the width the
+        // tiles actually get — the same arithmetic `.adaptive` does internally and will not
+        // report. Loop-free: the reported width comes from the parent and never depends on
+        // the tile count derived from it.
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width - 2 * Theme.Metrics.gutter
+        } action: { width in
+            gridWidth = max(0, width)
+        }
     }
 
     @ViewBuilder
-    private func shortcutTile(_ item: ShortcutItem) -> some View {
-        switch item {
+    private func shortcutTile(_ item: HomeShortcut) -> some View {
+        switch item.kind {
         case .likedSongs:
             NavigationLink(value: LibraryDestination.liked) {
                 ShortcutRow(title: "Liked Songs", imageURL: nil, systemImageFallback: "heart.fill")
@@ -213,6 +221,13 @@ struct HomeView: View {
             }
             .buttonStyle(.pressableCard)
             .cardHover()
+        case .album(let album):
+            NavigationLink(value: LibraryDestination.album(album)) {
+                ShortcutRow(title: album.title, imageURL: album.thumbnailUrl, systemImageFallback: "square.stack")
+            }
+            .buttonStyle(.pressableCard)
+            .cardHover()
+            .contextMenu { removeAlbumButton(album) }
         }
     }
 
@@ -226,10 +241,24 @@ struct HomeView: View {
         }
     }
 
+    /// The album counterpart of `removeRadioButton`. Both grids and both Library sections
+    /// offer it, since the same release appears in all of them.
+    private func removeAlbumButton(_ album: Album) -> some View {
+        Button(role: .destructive) {
+            withAnimation { AlbumHistoryStore.shared.delete(album) }
+        } label: {
+            Label("Remove Album", systemImage: "trash")
+        }
+    }
+
     /// Nothing cached and nothing saved — otherwise Home is a daylist card over a void on
     /// a fresh install.
+    ///
+    /// Asks `rankedShortcuts` rather than `shortcuts`: the latter is empty until the grid has
+    /// been measured once, and on the first pass of a fresh launch that would have shown the
+    /// "Nothing Here Yet" placeholder to someone with a full library.
     private var hasNothingToShow: Bool {
-        sections.isEmpty && shortcuts.isEmpty
+        sections.isEmpty && rankedShortcuts.isEmpty
             && radioHistory.stations.isEmpty && playlists.playlists.isEmpty
     }
 

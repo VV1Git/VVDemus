@@ -99,6 +99,10 @@ struct PlaylistDetailView: View {
         .onChange(of: canReorder) { _, allowed in
             if !allowed { editMode = .inactive }
         }
+        // Home's shortcut grid orders by when you last opened a thing, and a playlist's only
+        // other timestamp is `createdAt` — so without this a playlist made a year ago and
+        // opened a minute ago sorts to the bottom of a grid that is entirely about recency.
+        .task { RecentOpensStore.shared.markOpened(RecentOpensStore.playlistKey(playlistId)) }
     }
 
     @ViewBuilder

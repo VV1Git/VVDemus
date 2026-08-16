@@ -22,6 +22,7 @@ struct MacRootView: View {
     @StateObject private var coordinator = NavigationCoordinator()
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
+    @ObservedObject private var albumHistory = AlbumHistoryStore.shared
     @ObservedObject private var link = PeerLink.shared
     @State private var selection: MacSection? = .home
     /// The push stack for whichever leaf screen the sidebar has selected. One path shared by
@@ -191,6 +192,26 @@ struct MacRootView: View {
                                         selection = .home
                                     }
                                     playlists.delete(playlist)
+                                }
+                            }
+                    }
+                }
+            }
+
+            if !albumHistory.albums.isEmpty {
+                Section("Albums") {
+                    ForEach(albumHistory.albums) { album in
+                        row(.destination(.album(album)), album.title, "square.stack")
+                            .contextMenu {
+                                DownloadToPhoneButton(tracks: AlbumCacheStore.shared.tracks(for: album.browseId) ?? [])
+                                Divider()
+                                Button("Remove Album", role: .destructive) {
+                                    // Selection would otherwise point at a screen that is no
+                                    // longer reachable from the sidebar showing it.
+                                    if selection == .destination(.album(album)) {
+                                        selection = .home
+                                    }
+                                    albumHistory.delete(album)
                                 }
                             }
                     }

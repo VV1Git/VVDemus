@@ -165,6 +165,11 @@ const ICONS = {
   remove:
     '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>',
   note: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V5l11-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zm11-2a3 3 0 1 1-6 0 3 3 0 0 1 6 0z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+  // The one thing separating an album row from a song row: this one opens rather than plays.
+  chevron:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 5 7 7-7 7"/></svg>',
+  album:
+    '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zm0 2a7 7 0 1 1 0 14 7 7 0 0 1 0-14zm0 5a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>',
   // Three states of the same speaker, so the level is readable at a glance without
   // measuring the track. Same cone in all three; only the waves differ.
   volumeMute:
@@ -883,6 +888,104 @@ function trackRow(track, { onPlay, showRemove, onRemove } = {}) {
   return row;
 }
 
+/// A release in the search list. The chevron is the whole of the difference from a track
+/// row: both are 44px-artwork rows on the same leading edge, and one plays while the other
+/// navigates.
+function albumRow(album) {
+  const row = document.createElement("div");
+  row.className = "track-row album-row";
+
+  const artwork = document.createElement("div");
+  artwork.className = "track-art";
+  const img = document.createElement("img");
+  setArt(img, album.thumbnailUrl, 44);
+  artwork.appendChild(img);
+  row.appendChild(artwork);
+
+  const meta = document.createElement("div");
+  meta.className = "track-meta";
+  const title = document.createElement("div");
+  title.className = "track-title";
+  title.textContent = album.title;
+  const sub = document.createElement("div");
+  sub.className = "track-artist";
+  sub.textContent = albumSubtitle(album);
+  meta.appendChild(title);
+  meta.appendChild(sub);
+  row.appendChild(meta);
+
+  const chevron = document.createElement("div");
+  chevron.className = "row-chevron";
+  chevron.innerHTML = ICONS.chevron;
+  chevron.setAttribute("aria-hidden", "true");
+  row.appendChild(chevron);
+
+  makeActivatable(
+    row,
+    `Open the album ${album.title} by ${album.artist}`,
+    reporting("Opening album", () => withBusy(row, () => openAlbumDetail(album)))
+  );
+  return row;
+}
+
+/// "Album · Daft Punk · 2001" — the same byline the app draws, built from the same parts.
+function albumSubtitle(album) {
+  return [album.kind, album.artist, album.year].filter(Boolean).join(" · ");
+}
+
+/// The browser's copy of `SearchResult.interleave`. Kept deliberately identical: the two
+/// screens are looking at the same search and should not put the same album in two different
+/// places. See the Swift comment for why the top song stays first.
+const ALBUM_STRIDE = 4;
+
+function interleaveResults(tracks, albums) {
+  if (!albums.length) return tracks.map((t) => ({ track: t }));
+  const out = [];
+  let next = 0;
+  tracks.forEach((track, index) => {
+    if (index > 0 && (index - 1) % ALBUM_STRIDE === 0 && next < albums.length) {
+      out.push({ album: albums[next++] });
+    }
+    out.push({ track });
+  });
+  albums.slice(next).forEach((album) => out.push({ album }));
+  return out;
+}
+
+/// The search list, which is the one list in this file holding two kinds of row.
+///
+/// It cannot go through `renderList`: that function's signature is built from `videoId` and
+/// liked state, and an album has neither — two searches whose songs matched but whose albums
+/// did not would have compared equal and the second render would have been skipped.
+function renderSearchResults(container, results, opts) {
+  const signature =
+    (opts && opts.scope ? opts.scope : "") +
+    "|" +
+    (state.current ? state.current.videoId : "") +
+    "|" +
+    results
+      .map((r) =>
+        r.album
+          ? "a:" + r.album.browseId
+          : "t:" + r.track.videoId + (state.likedIds.has(r.track.videoId) ? "1" : "0")
+      )
+      .join(",");
+  if (container.dataset.sig === signature) return;
+  container.dataset.sig = signature;
+
+  container.innerHTML = "";
+  if (!results.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-hint";
+    empty.textContent = "Nothing here yet.";
+    container.appendChild(empty);
+    return;
+  }
+  results.forEach((r) =>
+    container.appendChild(r.album ? albumRow(r.album) : trackRow(r.track, opts))
+  );
+}
+
 /// Everything a rendered row actually displays: the tracks themselves, which one is
 /// playing, and which are liked. If none of that moved, the existing DOM is already
 /// correct.
@@ -1021,6 +1124,23 @@ function openRadioDetail(seedTrack, tracks) {
     seedTrack,
     showRefresh: true,
   });
+}
+
+/// No refresh button, unlike a radio: an album's tracklist is a fixed fact about a record,
+/// so a second fetch returns the same songs and the control would do nothing worth watching.
+async function openAlbumDetail(album) {
+  const tracks = await api(`/api/album?browseId=${encodeURIComponent(album.browseId)}`, {}, CONTENT_TIMEOUT_MS);
+  openDetail(tracks, {
+    title: album.title,
+    subtitle: albumSubtitle(album),
+    badge: album.kind || "Album",
+    imageURL: art(album.thumbnailUrl, 180),
+    kind: "album",
+  });
+  // The phone recorded the visit when it served that request, so the sidebar and Home now
+  // disagree with it until they are asked again.
+  loadLibraryList().catch(() => {});
+  loadHomeShortcuts().catch(() => {});
 }
 
 async function openDaylistDetail() {
@@ -2316,36 +2436,66 @@ function gridTrackCard(track, tracks, contextTitle) {
   return card;
 }
 
-async function loadHomeRadios() {
-  const stations = await api("/api/library/radios");
+/// The tiles at the top of Home: saved radios and opened albums.
+///
+/// Radios and albums come from two endpoints with no shared clock to interleave by — the
+/// phone hands back each list already ordered by its own recency, and inventing a merge order
+/// from timestamps this page does not have would be worse than admitting it doesn't know. So
+/// albums lead, being the more deliberate thing to have opened, and radios follow.
+///
+/// Nothing is capped here the way the app's grid is. This is a CSS `auto-fill` grid: it
+/// already fills the width and wraps, and the page is a scrolling document rather than a
+/// screen with shelves that have to stay reachable below the fold.
+async function loadHomeShortcuts() {
+  const [stations, albums] = await Promise.all([
+    api("/api/library/radios"),
+    api("/api/library/albums").catch(() => []),
+  ]);
   const container = document.getElementById("home-radios");
   container.innerHTML = "";
-  stations.forEach((station) => {
-    const chip = document.createElement("div");
-    chip.className = "radio-chip";
-    chip.innerHTML = `
-      ${artImg(station.seedTrack.thumbnailUrl, 64, 'loading="lazy"')}
-      <span class="r-title">${escapeHtml(station.seedTrack.title)} Radio</span>
-    `;
-    // Busy-marked: a radio fetch goes out to YouTube and can take seconds, during which
-    // the chip used to give no sign at all — so people clicked it repeatedly and each
-    // click started another fetch.
-    makeActivatable(
-      chip,
-      `Open ${station.seedTrack.title} Radio`,
-      reporting("Opening radio", () =>
-        withBusy(chip, async () => {
-          const tracks = await api(
-            `/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`,
-            {},
-            CONTENT_TIMEOUT_MS
-          );
-          openRadioDetail(station.seedTrack, tracks);
-        })
+
+  albums.forEach((album) => {
+    container.appendChild(
+      shortcutChip(album.thumbnailUrl, album.title, `Open the album ${album.title}`, (chip) =>
+        reporting("Opening album", () => withBusy(chip, () => openAlbumDetail(album)))
       )
     );
-    container.appendChild(chip);
   });
+
+  stations.forEach((station) => {
+    container.appendChild(
+      shortcutChip(
+        station.seedTrack.thumbnailUrl,
+        `${station.seedTrack.title} Radio`,
+        `Open ${station.seedTrack.title} Radio`,
+        (chip) =>
+          // Busy-marked: a radio fetch goes out to YouTube and can take seconds, during
+          // which the chip used to give no sign at all — so people clicked it repeatedly
+          // and each click started another fetch.
+          reporting("Opening radio", () =>
+            withBusy(chip, async () => {
+              const tracks = await api(
+                `/api/radio?videoId=${encodeURIComponent(station.seedTrack.videoId)}`,
+                {},
+                CONTENT_TIMEOUT_MS
+              );
+              openRadioDetail(station.seedTrack, tracks);
+            })
+          )
+      )
+    );
+  });
+}
+
+function shortcutChip(thumbnailUrl, title, label, makeHandler) {
+  const chip = document.createElement("div");
+  chip.className = "radio-chip";
+  chip.innerHTML = `
+    ${artImg(thumbnailUrl, 64, 'loading="lazy"')}
+    <span class="r-title">${escapeHtml(title)}</span>
+  `;
+  makeActivatable(chip, label, makeHandler(chip));
+  return chip;
 }
 
 async function loadHomeRecommendations() {
@@ -2379,7 +2529,7 @@ async function loadHomeRecommendations() {
 async function loadHome() {
   // Each half is allowed to fail on its own: one failing fetch shouldn't leave the whole
   // Home screen blank, and neither rejection had a handler before.
-  const results = await Promise.allSettled([loadHomeRadios(), loadHomeRecommendations()]);
+  const results = await Promise.allSettled([loadHomeShortcuts(), loadHomeRecommendations()]);
   homeLoaded = results.every((r) => r.status === "fulfilled");
   renderHomeRetry();
   return homeLoaded;
@@ -2452,10 +2602,18 @@ function runSearch(q) {
   list.setAttribute("aria-busy", "true");
   searchTimer = setTimeout(async () => {
     try {
-      const tracks = await api(`/api/search?q=${encodeURIComponent(q)}`, {}, CONTENT_TIMEOUT_MS);
+      // Both halves at once. The albums request is allowed to fail on its own — a search
+      // that found songs is a working search, and the phone answers the two from separate
+      // InnerTube calls, either of which can be the one that times out.
+      const [tracks, albums] = await Promise.all([
+        api(`/api/search?q=${encodeURIComponent(q)}`, {}, CONTENT_TIMEOUT_MS),
+        api(`/api/search/albums?q=${encodeURIComponent(q)}`, {}, CONTENT_TIMEOUT_MS).catch(() => []),
+      ]);
       if (generation !== searchGeneration) return; // a newer query has since been typed
-      renderList(list, tracks, {
+      renderSearchResults(list, interleaveResults(tracks, albums), {
         scope: `search:${q}`,
+        // `tracks`, not the interleaved list: this is the queue a tapped song plays in the
+        // context of, and an album row is not something a queue can hold.
         onPlay: (t) =>
           reporting("Play", async () => {
             await post("/api/play", { track: t, context: tracks, contextTitle: "Search" });
@@ -2466,7 +2624,7 @@ function runSearch(q) {
       if (generation !== searchGeneration) return;
       // Previously the old query's results just stayed on screen with the new query in the
       // box — actively misleading rather than merely empty.
-      renderList(list, [], { scope: `search-failed:${q}` });
+      renderSearchResults(list, [], { scope: `search-failed:${q}` });
       showError("Search failed — is your phone awake?");
     } finally {
       if (generation === searchGeneration) list.removeAttribute("aria-busy");
@@ -2485,9 +2643,34 @@ document.getElementById("global-search").addEventListener("focus", () => showVie
 // ---------- library (sidebar list: playlists + radio stations) ----------
 
 async function loadLibraryList() {
-  const [playlists, stations] = await Promise.all([api("/api/library/playlists"), api("/api/library/radios")]);
+  const [playlists, stations, albums] = await Promise.all([
+    api("/api/library/playlists"),
+    api("/api/library/radios"),
+    // Allowed to fail on its own: a phone on a build without album support answers 404 here,
+    // and the rest of the sidebar is still correct.
+    api("/api/library/albums").catch(() => []),
+  ]);
   const container = document.getElementById("library-list");
   container.innerHTML = "";
+
+  if (albums.length) {
+    const label = document.createElement("div");
+    label.className = "library-section-label";
+    label.textContent = "Albums";
+    container.appendChild(label);
+    albums.forEach((album) => {
+      const row = document.createElement("button");
+      row.className = "library-row";
+      row.innerHTML = `
+        <span class="lib-icon">${artImg(album.thumbnailUrl, 32, 'loading="lazy"')}</span>
+        <span class="track-title-sm">${escapeHtml(album.title)}<span class="row-sub">${escapeHtml(album.artist)}</span></span>
+      `;
+      row.onclick = reporting("Opening album", () =>
+        withBusy(row, () => navigateFromSidebar(row, () => openAlbumDetail(album)))
+      );
+      container.appendChild(row);
+    });
+  }
 
   if (stations.length) {
     const label = document.createElement("div");

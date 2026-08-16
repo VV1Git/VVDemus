@@ -133,6 +133,70 @@ struct RadioRecord: Codable, Equatable {
     var isPresent: Bool { removedAt == nil }
 }
 
+/// One release the user has opened. A tombstone for the same reason as everything else here:
+/// removing an album on one device must survive meeting a device that still has it.
+///
+/// The whole `Album` is carried rather than just its `browseId`. The peer may never have
+/// opened it, so there is nowhere for it to look the title and cover up — and going to
+/// YouTube for them would make a sync depend on the network reaching further than the room.
+struct AlbumRecord: Codable, Equatable {
+    var album: Album
+    var lastOpenedAt: Date
+    var removedAt: Date?
+    var stamp: EditStamp
+
+    var isPresent: Bool { removedAt == nil }
+}
+
+extension AlbumRecord {
+    /// Folds `incoming` into `local`, returning the merged set and how many records moved.
+    ///
+    /// A free function for the same reason `PlaylistRecord.merging` is one: this is where the
+    /// promise that a removal survives a sync actually lives, and `AlbumHistoryStore` is a
+    /// singleton over `UserDefaults.standard` — reaching the rule through it means a test
+    /// writes into the app's own library on whatever simulator it happens to run on.
+    ///
+    /// Whole-record newest-wins, unlike a playlist's per-entry merge: a release has no
+    /// contents of its own to lose, so there is nothing here that two devices can each hold
+    /// half of. The only fields are "when did you open it" and "have you removed it", and for
+    /// both the later edit is simply the right answer.
+    static func merging(
+        _ local: [AlbumRecord],
+        _ incoming: [AlbumRecord]
+    ) -> (records: [AlbumRecord], changed: Int) {
+        var result = local
+        var changed = 0
+        for record in incoming {
+            guard let index = result.firstIndex(where: { $0.album.browseId == record.album.browseId }) else {
+                result.append(record)
+                changed += 1
+                continue
+            }
+            // Equal stamps are not newer — merging has to be idempotent, so re-receiving a
+            // record the peer already sent is a no-op rather than a reported change.
+            guard record.stamp.isNewerThan(result[index].stamp) else { continue }
+            result[index] = record
+            changed += 1
+        }
+        return (result, changed)
+    }
+
+    /// The tombstone-free projection the UI reads: present records, newest first, capped.
+    ///
+    /// The cap is applied *here* and not to storage. Trimming the records would make falling
+    /// off the end indistinguishable from a deletion, and the next sync would hand every
+    /// trimmed album straight back.
+    static func present(_ records: [AlbumRecord], limit: Int) -> [Album] {
+        records
+            .filter(\.isPresent)
+            .sorted { $0.lastOpenedAt == $1.lastOpenedAt
+                ? $0.album.browseId < $1.album.browseId
+                : $0.lastOpenedAt > $1.lastOpenedAt }
+            .prefix(limit)
+            .map(\.album)
+    }
+}
+
 /// A cache that is generated whole — the daylist, Home's shelves, one station's track list.
 ///
 /// Merged newest-wins rather than unioned: these are single generated artefacts, and half of
@@ -157,12 +221,21 @@ struct SyncPayload: Codable {
     var likes: [LikeRecord]
     var playlists: [PlaylistRecord]
     var radios: [RadioRecord]
+    /// Optional purely for wire compatibility, and read through `openedAlbums`. The two
+    /// devices update independently, so a build that knows about albums has to be able to
+    /// decode a payload from one that does not — and a synthesised `Decodable` throws on a
+    /// missing key even when the property has a default.
+    var albums: [AlbumRecord]?
     var generated: [GeneratedRecord]
     var recentSearches: [String]
     var events: [PlayEvent]
     /// The newest event the sender already holds from the recipient, so the reply can skip
     /// everything older.
     var eventsSince: Date?
+
+    /// The album records, with "the peer is on an older build" folded into "the peer has no
+    /// albums" — which is the same thing as far as merging goes.
+    var openedAlbums: [AlbumRecord] { albums ?? [] }
 }
 
 // MARK: - Fractional order keys

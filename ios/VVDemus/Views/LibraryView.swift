@@ -4,6 +4,7 @@ struct LibraryView: View {
     @ObservedObject var player: PlayerService
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
+    @ObservedObject private var albumHistory = AlbumHistoryStore.shared
     @ObservedObject private var daylist = DaylistStore.shared
     @State private var showNewPlaylist = false
     @State private var showSpotifyImport = false
@@ -85,6 +86,30 @@ struct LibraryView: View {
                         .onDelete { offsets in
                             offsets.map { playlists.playlists[$0] }.forEach(playlists.delete)
                         }
+                    }
+                }
+
+                if !albumHistory.albums.isEmpty {
+                    Section("Albums") {
+                        ForEach(albumHistory.albums) { album in
+                            NavigationLink(value: LibraryDestination.album(album)) {
+                                // No chevron of its own — the `NavigationLink` supplies the
+                                // system one, and the two do not line up beside each other.
+                                AlbumRow(album: album, showsChevron: false)
+                            }
+                            .trackRowMetrics()
+                            // Mouse-reachable removal, for the reason the sections above give:
+                            // a mouse cannot swipe, so without this an album is here for good
+                            // on the Mac.
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    withAnimation { albumHistory.delete(album) }
+                                } label: {
+                                    Label("Remove Album", systemImage: "trash")
+                                }
+                            }
+                        }
+                        .onDelete { albumHistory.delete(at: $0) }
                     }
                 }
 

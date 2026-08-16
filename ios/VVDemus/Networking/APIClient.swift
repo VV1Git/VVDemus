@@ -53,6 +53,18 @@ final class APIClient {
         try await InnerTubeClient.search(query: query, limit: limit)
     }
 
+    /// The releases matching a query. Run concurrently with `search` — see the note on
+    /// `InnerTubeClient.searchAlbums` for why it is a second request rather than one
+    /// unfiltered one.
+    func searchAlbums(_ query: String, limit: Int = 4) async throws -> [Album] {
+        try await InnerTubeClient.searchAlbums(query: query, limit: limit)
+    }
+
+    /// One release's page: its tracks, plus the fuller metadata the album page carries.
+    func album(browseId: String) async throws -> InnerTubeClient.AlbumPage {
+        try await InnerTubeClient.album(browseId: browseId)
+    }
+
     func home() async throws -> [Track] {
         try await InnerTubeClient.home()
     }
