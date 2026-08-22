@@ -309,6 +309,30 @@ schemes:
       config: Debug
     archive:
       config: Release
+  # The Mac app as it is actually used, rather than as it is worked on.
+  #
+  # `VVDemusMac` runs Debug, which is right while changing the app and wrong for the copy that
+  # stays open between sessions: unoptimised, and carrying the seams that Debug exists to
+  # provide. `PairingSession.pinnedCode` is the one that matters — a `#if DEBUG` environment
+  # variable that pins the six-digit pairing code. It is unreachable over the network either
+  # way, but "unreachable" and "not compiled in" are not the same claim, and the long-lived
+  # local build should be able to make the second one.
+  #
+  # Every action is Release, deliberately. A scheme that only archives in Release leaves Run
+  # and Profile on Debug, so the build you launch from Xcode is never the build you keep —
+  # which is exactly the gap this scheme exists to close.
+  VVDemusMac-Release:
+    build:
+      targets:
+        VVDemusMac: all
+    run:
+      config: Release
+    profile:
+      config: Release
+    analyze:
+      config: Release
+    archive:
+      config: Release
   # Measures real bytes over the wire — run deliberately, not on every build.
   VVDemus-Benchmarks:
     build:
