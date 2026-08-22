@@ -4,6 +4,7 @@ struct LibraryView: View {
     @ObservedObject var player: PlayerService
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
+    @ObservedObject private var albumHistory = AlbumHistoryStore.shared
     @ObservedObject private var daylist = DaylistStore.shared
     @State private var showNewPlaylist = false
     @State private var showSpotifyImport = false
@@ -88,6 +89,30 @@ struct LibraryView: View {
                     }
                 }
 
+                if !albumHistory.albums.isEmpty {
+                    Section("Albums") {
+                        ForEach(albumHistory.albums) { album in
+                            NavigationLink(value: LibraryDestination.album(album)) {
+                                // No chevron of its own — the `NavigationLink` supplies the
+                                // system one, and the two do not line up beside each other.
+                                AlbumRow(album: album, showsChevron: false)
+                            }
+                            .trackRowMetrics()
+                            // Mouse-reachable removal, for the reason the sections above give:
+                            // a mouse cannot swipe, so without this an album is here for good
+                            // on the Mac.
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    withAnimation { albumHistory.delete(album) }
+                                } label: {
+                                    Label("Remove Album", systemImage: "trash")
+                                }
+                            }
+                        }
+                        .onDelete { albumHistory.delete(at: $0) }
+                    }
+                }
+
                 if !radioHistory.stations.isEmpty {
                     Section("Your Radio") {
                         ForEach(radioHistory.stations) { station in
@@ -123,7 +148,6 @@ struct LibraryView: View {
             .navigationDestination(for: LibraryDestination.self) { destination in
                 destination.destination(player: player)
             }
-            .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
             .toolbar {
                 ToolbarItemGroup(placement: .trailingActions) {
                     Button {
@@ -169,6 +193,9 @@ struct LibraryView: View {
                 SpotifyImportSheet()
             }
         }
+        // On the stack rather than on the list inside it, so the playlists, albums and radios
+        // this screen pushes get it as well — see the note in `MacRootView.detail`.
+        .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
     }
 }
 

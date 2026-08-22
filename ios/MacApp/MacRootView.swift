@@ -22,6 +22,7 @@ struct MacRootView: View {
     @StateObject private var coordinator = NavigationCoordinator()
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
+    @ObservedObject private var albumHistory = AlbumHistoryStore.shared
     @ObservedObject private var link = PeerLink.shared
     @State private var selection: MacSection? = .home
     /// The push stack for whichever leaf screen the sidebar has selected. One path shared by
@@ -189,6 +190,26 @@ struct MacRootView: View {
                 }
             }
 
+            if !albumHistory.albums.isEmpty {
+                Section("Albums") {
+                    ForEach(albumHistory.albums) { album in
+                        row(.destination(.album(album)), album.title, "square.stack")
+                            .contextMenu {
+                                DownloadToPhoneButton(tracks: AlbumCacheStore.shared.tracks(for: album.browseId) ?? [])
+                                Divider()
+                                Button("Remove Album", role: .destructive) {
+                                    // Selection would otherwise point at a screen that is no
+                                    // longer reachable from the sidebar showing it.
+                                    if selection == .destination(.album(album)) {
+                                        selection = .home
+                                    }
+                                    albumHistory.delete(album)
+                                }
+                            }
+                    }
+                }
+            }
+
             if !radioHistory.stations.isEmpty {
                 Section("Your Radio") {
                     ForEach(radioHistory.stations) { station in
@@ -244,13 +265,26 @@ struct MacRootView: View {
                     .navigationDestination(for: LibraryDestination.self) { pushed in
                         pushed.destination(player: player)
                     }
-                    // Outside the `navigationDestination`, as in `LibraryView`, so screens
-                    // pushed from here inherit it as well. Without it these screens got
-                    // `openRadio`'s default — a no-op closure — and "Go to Radio" on a track
-                    // in Liked Songs, Downloads, Daylist, Stats, a playlist or a saved radio
-                    // did nothing at all.
-                    .environment(\.openRadio) { leafPath.append(LibraryDestination.radio($0)) }
             }
+            // On the stack, not on the screen inside it.
+            //
+            // The measured symptom: "Go to Radio" works on whatever the sidebar has selected
+            // and is dead one push in. On a radio opened from Home, or a track inside an album
+            // opened from Library, the item runs `openRadio`'s default — a closure that does
+            // nothing — so the menu item is there, highlights, and goes nowhere.
+            //
+            // This was written one line further in, on the root screen, with a comment claiming
+            // that being outside the `navigationDestination` was enough for pushed screens to
+            // inherit it. Whatever else is true, that claim is not: the root screen got the
+            // value and the pushed one did not. A destination is built *for the stack*, so
+            // anything written below the stack is the wrong side of it — the same hoisting
+            // `QueueView` documents for toolbar items, one modifier over. Hence here.
+            //
+            // Not yet confirmed on a pushed screen: this is the placement the framework
+            // documents, but the clearance note in `detail:` above found the pushed screen is
+            // not laid out inside this closure either, and if the split view's own stack is
+            // taking the push then this environment does not reach it and the fix is elsewhere.
+            .environment(\.openRadio) { leafPath.append(LibraryDestination.radio($0)) }
         }
     }
 }

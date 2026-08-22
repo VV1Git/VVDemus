@@ -73,6 +73,10 @@ struct RadioDetailView: View {
             }
         }
         .task { await load() }
+        // The station's own `lastPlayedAt` only moves when its seed starts playing, so a
+        // radio you opened and read without pressing play would sort on Home as though you
+        // had never been near it. See `RecentOpensStore`.
+        .task { RecentOpensStore.shared.markOpened(RecentOpensStore.radioKey(seedTrack.videoId)) }
     }
 
     private var trackList: some View {

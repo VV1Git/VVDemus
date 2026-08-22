@@ -863,6 +863,44 @@ final class LocalControlServer: ObservableObject {
             }
         }
 
+        // A second route rather than a shape change to `/api/search`, which has always
+        // answered with a bare `[Track]`. The browser fetches both concurrently and
+        // interleaves them itself with the same rule the app uses, so a failure here costs
+        // the albums and not the search.
+        server.GET["/api/search/albums"] = { [weak self] request in
+            guard let self else { return .internalServerError }
+            let query = Self.queryValue(request, "q")
+            guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return self.jsonResponse([Album]()) }
+            switch self.awaitAsync({ try await APIClient.shared.searchAlbums(query) }) {
+            case .success(let albums): return self.jsonResponse(albums)
+            case .failure: return .internalServerError
+            }
+        }
+
+        // Serves the phone's cached tracklist when it has one, so opening an album from the
+        // browser costs nothing the phone has already paid for. Unlike `/api/radio` there is
+        // no "the two would disagree" risk behind that — an album's tracklist is fixed — it
+        // is purely about not making the same request twice.
+        server.GET["/api/album"] = { [weak self] request in
+            guard let self else { return .internalServerError }
+            let browseId = Self.queryValue(request, "browseId")
+            guard !browseId.isEmpty else { return .badRequest(.text("missing browseId")) }
+            if let cached = self.onMain({ AlbumCacheStore.shared.tracks(for: browseId) }) {
+                return self.jsonResponse(cached)
+            }
+            switch self.awaitAsync({ try await APIClient.shared.album(browseId: browseId) }) {
+            case .success(let page):
+                self.onMain {
+                    AlbumCacheStore.shared.store(page.tracks, for: browseId)
+                    // The browser opening an album is a visit, exactly as the app's own
+                    // screen is — so it lands on Home and in Library on the phone too.
+                    AlbumHistoryStore.shared.record(page.album)
+                }
+                return self.jsonResponse(page.tracks)
+            case .failure: return .internalServerError
+            }
+        }
+
         // Shares the phone's cached Home feed rather than building its own — opening the
         // web remote used to cost a full set of recommendation fetches even when the phone
         // had just built the identical shelves.
@@ -963,6 +1001,11 @@ final class LocalControlServer: ObservableObject {
         server.GET["/api/library/radios"] = { [weak self] _ in
             guard let self else { return .internalServerError }
             return self.jsonResponse(self.onMain { RadioHistoryStore.shared.stations })
+        }
+
+        server.GET["/api/library/albums"] = { [weak self] _ in
+            guard let self else { return .internalServerError }
+            return self.jsonResponse(self.onMain { AlbumHistoryStore.shared.albums })
         }
 
         // Downloading is phone-side storage, so the remote can only ask for it — which is

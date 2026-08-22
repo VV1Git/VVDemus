@@ -11,3 +11,4 @@
 
 com.anonymous.MyApp     # ~/Documents/MyApp
 VV1.MusicApp            # ~/Documents/codingstuff/MusicApp
+com.vvdemus.shoutout    # ~/Documents/Shoutout — the running music game that talks to this app
