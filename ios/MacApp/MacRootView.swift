@@ -43,41 +43,49 @@ struct MacRootView: View {
         NavigationSplitView {
             sidebar
         } detail: {
-            // The queue sits beside the content rather than over it, so it can stay open
-            // while you keep browsing — the reason it is a panel and not a sheet.
-            HStack(spacing: 0) {
-                detail
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    // A real inset rather than `contentMargins(.bottom, for: .scrollContent)`,
-                    // which is what this was and which only ever worked on two screens.
-                    //
-                    // The sidebar commit that came before this one found that a table-backed
-                    // `List` silently drops that margin, and fixed the sidebar — but recorded
-                    // the belief that the detail column was safe because "its screens are built
-                    // on `ScrollView`". Only Home and Stats are. Library, playlists, radios,
-                    // Liked Songs, Downloads, Search and the daylist are all `List`, so on seven
-                    // of the nine screens here the margin was dropped exactly as it was in the
-                    // sidebar and the last row sat under the transport bar — permanently, since
-                    // scrolling could not move content the container did not know was inset.
-                    //
-                    // A safe-area inset is honoured by both containers, so the two kinds of
-                    // screen stop needing to be right about which one they are.
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        Color.clear
-                            .frame(height: transportHeight)
-                            // The bar paints its own ground and sits over this; a clear spacer
-                            // that still accepted clicks would eat them on the way past.
-                            .allowsHitTesting(false)
+            VStack(spacing: 0) {
+                // The queue sits beside the content rather than over it, so it can stay open
+                // while you keep browsing — the reason it is a panel and not a sheet.
+                HStack(spacing: 0) {
+                    detail
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if showQueue {
+                        Divider()
+                        MacQueuePanel(isShown: $showQueue)
+                            .transition(.move(edge: .trailing))
                     }
-                if showQueue {
-                    Divider()
-                    MacQueuePanel(isShown: $showQueue)
-                        .transition(.move(edge: .trailing))
                 }
+
+                // The transport bar's clearance, bought as real layout space this column is
+                // simply not given — the same move the sidebar makes with `bottomClearance`.
+                //
+                // This has been three things and is not finished. `contentMargins(.bottom,
+                // for: .scrollContent)` was silently dropped by a table-backed `List`, which is
+                // seven of the nine screens here. A `safeAreaInset` on `detail` fixed those,
+                // but only while the screen was the one its `NavigationStack` was showing at
+                // the root: a radio opened from Home, or a playlist opened from Library, ran
+                // the full height of the window again with the bar over its last row. Opening
+                // the same playlist from the sidebar looked fine, which is what made it so
+                // hard to pin down. The detail pane's scroll view measures 871pt as a root and
+                // 932 — the whole column — one push in.
+                //
+                // A spacer is at least honest for what it does cover: `MacQueuePanel`, which
+                // was never inset at all and has had its last queued row under the bar since
+                // the panel landed, and every root screen. It does NOT fix the pushed case —
+                // that scroll view still measures 932 with this in place, which says the pushed
+                // screen is not being laid out inside this `VStack` at all. The next thing to
+                // check is whether `NavigationSplitView`'s own detail-column stack is taking
+                // the push from the inner stacks, as the note below already warns it can.
+                Color.clear
+                    .frame(height: transportHeight)
+                    // The bar paints its own ground and sits over this; a clear spacer that
+                    // still accepted clicks would eat them on the way past.
+                    .allowsHitTesting(false)
             }
             // The pane's own ground, so a screen that does not paint one — or paints one
             // sized to its content — shows black rather than the window's default grey.
             // Individual screens still set it; this is what stops the next one that forgets.
+            // On the `VStack`, so the strip behind the transport bar is painted too.
             .background(Theme.background)
         }
         // Attached to the split view, not returned from `detail:`, which is where these three
@@ -105,13 +113,12 @@ struct MacRootView: View {
         // was covered no matter how far you scrolled. Hence the measured height above: the inset
         // positions the bar, and each column keeps its own content out from under it.
         //
-        // The two columns do that differently, and the difference is not cosmetic.
-        // `contentMargins(for: .scrollContent)` holds in the detail column, whose screens are
-        // built on `ScrollView`. It does not hold on the sidebar: a `NavigationSplitView`
-        // sidebar `List` is table-backed on macOS, and the margin was silently dropped there —
-        // Settings went back under the bar and could only be glimpsed by dragging into the
-        // rubber-band past the end. So the sidebar buys its clearance with a real row instead,
-        // which no scroll container can decline to lay out. See `bottomClearance`.
+        // Both columns now do that the same way, and it took three attempts to get there.
+        // Neither `contentMargins(for: .scrollContent)` nor a `safeAreaInset` survives the trip:
+        // the first is silently dropped by a table-backed `List`, and the second is dropped by
+        // any `NavigationStack` on the way to a screen it pushes. Each column buys its clearance
+        // with layout the container cannot decline instead — a real last row in the sidebar
+        // (`bottomClearance`), and a real spacer below the content in the detail column.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 // The Mac's only surface for `player.errorMessage`. It is rendered on the phone by
@@ -290,13 +297,26 @@ struct MacRootView: View {
                     .navigationDestination(for: LibraryDestination.self) { pushed in
                         pushed.destination(player: player)
                     }
-                    // Outside the `navigationDestination`, as in `LibraryView`, so screens
-                    // pushed from here inherit it as well. Without it these screens got
-                    // `openRadio`'s default — a no-op closure — and "Go to Radio" on a track
-                    // in Liked Songs, Downloads, Daylist, Stats, a playlist or a saved radio
-                    // did nothing at all.
-                    .environment(\.openRadio) { leafPath.append(LibraryDestination.radio($0)) }
             }
+            // On the stack, not on the screen inside it.
+            //
+            // The measured symptom: "Go to Radio" works on whatever the sidebar has selected
+            // and is dead one push in. On a radio opened from Home, or a track inside an album
+            // opened from Library, the item runs `openRadio`'s default — a closure that does
+            // nothing — so the menu item is there, highlights, and goes nowhere.
+            //
+            // This was written one line further in, on the root screen, with a comment claiming
+            // that being outside the `navigationDestination` was enough for pushed screens to
+            // inherit it. Whatever else is true, that claim is not: the root screen got the
+            // value and the pushed one did not. A destination is built *for the stack*, so
+            // anything written below the stack is the wrong side of it — the same hoisting
+            // `QueueView` documents for toolbar items, one modifier over. Hence here.
+            //
+            // Not yet confirmed on a pushed screen: this is the placement the framework
+            // documents, but the clearance note in `detail:` above found the pushed screen is
+            // not laid out inside this closure either, and if the split view's own stack is
+            // taking the push then this environment does not reach it and the fix is elsewhere.
+            .environment(\.openRadio) { leafPath.append(LibraryDestination.radio($0)) }
         }
     }
 }

@@ -92,8 +92,10 @@ struct QueueView: View {
             .navigationDestination(for: LibraryDestination.self) { destination in
                 destination.destination(player: player)
             }
-            .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
         }
+        // On the stack rather than on the list inside it, so a radio reached from a queued
+        // track keeps working one push in — see the note in `MacRootView.detail`.
+        .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
     }
 
     /// Reordering works from either device.

@@ -71,20 +71,22 @@ struct SearchView: View {
             .navigationDestination(for: LibraryDestination.self) { destination in
                 destination.destination(player: player)
             }
-            .environment(\.openRadio) { track in
-                // The Mac has no tab bar: `MacRootView` drives its detail pane from its own
-                // sidebar selection and never reads `selectedTab`. Pushing onto Home's path
-                // there did nothing at the moment you asked for it, and then opened Home on a
-                // radio screen the next time you clicked Home, with nothing to explain it.
-                // This screen owns a stack, so push onto that. The phone keeps switching to
-                // the Home tab, where that path is the one actually on screen.
-                #if os(macOS)
-                path.append(LibraryDestination.radio(track))
-                #else
-                coordinator.homePath.append(LibraryDestination.radio(track))
-                coordinator.selectedTab = .home
-                #endif
-            }
+        }
+        // On the stack rather than on the content inside it, so an album opened from a search
+        // result gets it as well — see the note in `MacRootView.detail`.
+        .environment(\.openRadio) { track in
+            // The Mac has no tab bar: `MacRootView` drives its detail pane from its own
+            // sidebar selection and never reads `selectedTab`. Pushing onto Home's path
+            // there did nothing at the moment you asked for it, and then opened Home on a
+            // radio screen the next time you clicked Home, with nothing to explain it.
+            // This screen owns a stack, so push onto that. The phone keeps switching to
+            // the Home tab, where that path is the one actually on screen.
+            #if os(macOS)
+            path.append(LibraryDestination.radio(track))
+            #else
+            coordinator.homePath.append(LibraryDestination.radio(track))
+            coordinator.selectedTab = .home
+            #endif
         }
         .onChange(of: query) { _, newValue in
             searchTask?.cancel()

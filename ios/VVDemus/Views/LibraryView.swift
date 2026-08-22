@@ -146,7 +146,6 @@ struct LibraryView: View {
             .navigationDestination(for: LibraryDestination.self) { destination in
                 destination.destination(player: player)
             }
-            .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
             .toolbar {
                 ToolbarItemGroup(placement: .trailingActions) {
                     Button {
@@ -192,6 +191,9 @@ struct LibraryView: View {
                 SpotifyImportSheet()
             }
         }
+        // On the stack rather than on the list inside it, so the playlists, albums and radios
+        // this screen pushes get it as well — see the note in `MacRootView.detail`.
+        .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
     }
 }
 
