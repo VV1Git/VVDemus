@@ -13,8 +13,26 @@ import SwiftUI
 /// is not playing has no playhead, so there is no cursor to draw, nothing to scroll and
 /// nothing a tap could seek: it is text.
 struct LyricsView: View {
+    /// Whether this is the whole screen or a passenger in someone else's layout.
+    ///
+    /// The only difference is the ground it paints. As a screen it needs an opaque one, or a
+    /// pushed screen shows whatever it was pushed over. Inside `NowPlayingView` it must paint
+    /// nothing at all: it occupies the artwork's slot, and the artwork's slot has the artwork
+    /// gradient behind it — an opaque ground there would black out the one screen in the app
+    /// whose whole look is that gradient.
+    ///
+    /// Not a `Bool`, because `LyricsView(track:player:isInline: true)` reads as nothing at the
+    /// call site and this decides how the view is composed.
+    enum Presentation {
+        case screen
+        case inline
+    }
+
     let track: Track
     @ObservedObject var player: PlayerService
+    /// Defaulted, so the pushed `LibraryDestination` route and `MacLyricsPanel` say nothing and
+    /// get what they already had.
+    var presentation: Presentation = .screen
     /// The session as the transport shows it, which is this device's own or the paired
     /// device's. Read for the same reason `NowPlayingView` reads it for everything on screen:
     /// while the peer owns the session this device's `player.currentTrack` is deliberately
@@ -91,7 +109,9 @@ struct LyricsView: View {
                 content(lyrics)
             }
         }
-        .background(Theme.screenBackground)
+        // `.inline` paints nothing: see `Presentation`. On iOS `screenBackground` is black, and
+        // black over the artwork gradient is the whole of what would go wrong here.
+        .background(presentation == .screen ? Theme.screenBackground : .clear)
         .task(id: LoadRequest(videoId: track.videoId, attempt: retryCount)) { await load() }
         // A download fetches lyrics of its own after the audio lands, and the store is
         // `@Published` for exactly this: a screen sitting on "No Lyrics" while the words arrive

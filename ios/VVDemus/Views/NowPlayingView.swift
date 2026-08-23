@@ -96,7 +96,15 @@ struct NowPlayingView: View {
 
                     Spacer(minLength: Theme.Space.lg)
 
-                    artwork(fitting: proxy)
+                    // The lyrics take the artwork's slot and nothing else moves. The title,
+                    // the scrubber and the transport are laid out below this and are not
+                    // inside the swap, which is the point: the words are something you read
+                    // *while* the controls stay exactly where your thumb left them.
+                    if showLyrics, let track = peer.displayedTrack {
+                        inlineLyrics(track)
+                    } else {
+                        artwork(fitting: proxy)
+                    }
 
                     Spacer(minLength: Theme.Space.lg)
 
@@ -117,47 +125,65 @@ struct NowPlayingView: View {
             }
         }
         .foregroundStyle(.white)
-        .gesture(dismissGesture)
+        // Off while the words are up, and this is the one real cost of putting them here.
+        //
+        // `dismissGesture` closes this screen on any downward drag over 80pt, anywhere. Reading
+        // lyrics IS a downward drag, so left enabled it would shut Now Playing halfway through a
+        // verse — and the reader would have dragged the words, not the screen, so it would read
+        // as the app losing its place rather than as them closing it. The chevron in the header
+        // is unaffected and is the way out while reading; the artwork's own gesture is not in
+        // the hierarchy at all when the words have its slot.
+        .gesture(dismissGesture, isEnabled: !showLyrics)
         .sheet(isPresented: $showQueue) {
             QueueView(player: player)
         }
-        // A cover, not a push: this screen is itself presented as a `fullScreenCover` from
-        // `RootView`, so there is no stack under it to push onto — the same reason
-        // `NowPlayingActionsMenu` passes `onRadio: nil`. Everywhere else lyrics are a
-        // `LibraryDestination` case.
+        // The words used to be a `fullScreenCover` over this screen, which put them on top of
+        // the transport rather than beside it — you could read the song or drive it, not both.
+        // They now take the artwork's slot in the layout above, so there is nothing to present.
         //
-        // Reading `peer.displayedTrack`, like everything else shown here: while the paired
-        // device owns the session this one's `player.currentTrack` is deliberately empty, and
-        // a lyrics screen for `nil` is a blank one for the case mirroring exists to serve.
-        .lyricsCover(isPresented: $showLyrics) {
-            // The stack and its Done button are outside the `if let`, and that placement is the
-            // whole point. A `fullScreenCover` has no interactive dismissal, and the track can
-            // go away while this is open — the paired device dropping off the network is enough
-            // (`isMirroring` goes false, the local player was released the moment mirroring
-            // began, so `displayedTrack` is nil for as long as the peer stays away). With the
-            // toolbar inside the binding, that left a blank cover with no Done, no swipe and
-            // the chevron underneath unreachable: the way out was force-quitting the app.
-            NavigationStack {
-                Group {
-                    if let track = peer.displayedTrack {
-                        LyricsView(track: track, player: player)
-                    } else {
-                        ContentUnavailableView(
-                            "Nothing Playing",
-                            systemImage: "text.quote",
-                            description: Text("Play a song and its words show up here.")
-                        )
-                    }
-                }
-                .navigationTitle("Lyrics")
-                .compactNavigationTitle()
-                .toolbar {
-                    ToolbarItem(placement: .trailingActions) {
-                        Button("Done") { showLyrics = false }
-                    }
-                }
-            }
-        }
+        // A track going away while the words are up needs no handling of its own any more,
+        // which is most of what the cover got wrong: the `if let` in the layout falls back to
+        // the artwork, and the artwork's own empty state is already the answer for "nothing is
+        // playing". There is no separate surface left to be stranded on.
+    }
+
+    /// The words where the artwork was, taking whatever height is left over rather than a
+    /// share of the screen.
+    ///
+    /// It asks for no height of its own on purpose. The first version took 52% — the artwork
+    /// caps at 42% — on the reasoning that text has no aspect ratio to preserve and four lines
+    /// of a song is not worth reading. But the header and the control panel are fixed, the
+    /// `Spacer`s either side have a minimum, and this `VStack` is placed in a frame exactly the
+    /// screen's height: ask for more than is left and the stack's natural height exceeds that
+    /// frame, overflows *both* ends and centres. The visible result was the header climbing
+    /// into the Dynamic Island with the buttons under the battery, while the bottom — the end
+    /// that had room — looked right.
+    ///
+    /// `maxHeight: .infinity` with a layout priority instead: the fixed children are measured
+    /// first and this is handed the remainder, which cannot overflow by construction. The
+    /// priority is what stops the two `Spacer`s from splitting that remainder three ways.
+    private func inlineLyrics(_ track: Track) -> some View {
+        LyricsView(track: track, player: player, presentation: .inline)
+            // No width given: `artwork(fitting:)` computes one only because it has to stay
+            // square. Text does not, and the enclosing `VStack` already carries the screen's
+            // one horizontal gutter.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .layoutPriority(1)
+            // Masked rather than clipped square: lines entering and leaving a hard edge read as
+            // a bug next to the artwork's rounded corners, and the fade doubles as the hint
+            // that there is more above and below.
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black, location: 0.08),
+                        .init(color: .black, location: 0.92),
+                        .init(color: .clear, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
     }
 
     /// Square, and sized to whichever of width or height runs out first — a hardcoded 300pt
@@ -472,14 +498,17 @@ struct NowPlayingView: View {
     /// two gestures live: the artwork owns horizontal drag and the screen owns drag-down, and a
     /// tap on a button inside the panel is claimed by the button before either sees it.
     private var lyricsButton: some View {
-        Button { showLyrics = true } label: {
+        // A toggle, and the only way back to the artwork. Tapping the words themselves is
+        // already a seek, so the words cannot also be the way out without one gesture meaning
+        // two things a few pixels apart.
+        Button { withAnimation(.easeInOut(duration: 0.25)) { showLyrics.toggle() } } label: {
             HStack(spacing: Theme.Space.xs) {
                 Image(systemName: "quote.bubble")
                 Text("Lyrics")
                     .font(.miniSubtitle)
                     .lineLimit(1)
             }
-            .foregroundStyle(.secondary)
+            .foregroundStyle(showLyrics ? Theme.accent : .secondary)
             .padding(.horizontal, Theme.Space.xs)
             .frame(minWidth: Theme.Metrics.hitTarget, minHeight: Theme.Metrics.hitTarget)
             .contentShape(Rectangle())
@@ -576,26 +605,5 @@ private struct NowPlayingActionsMenu: View {
                 newPlaylistName = ""
             }
         }
-    }
-}
-
-/// A full-screen presentation on the phone, an ordinary sheet on the Mac.
-///
-/// `fullScreenCover` does not exist on macOS, and this file compiles into both targets —
-/// `project.yml` excludes only `RootView` and `MiniPlayerBar` from the Mac, so a screen the Mac
-/// never presents still has to build there. Named rather than left as a bare `#if` at the call
-/// site, matching `PlatformViewModifiers`; it lives here rather than in that file because the one
-/// caller is this screen, and the Mac reaches lyrics through `MacLyricsPanel` instead.
-fileprivate extension View {
-    @ViewBuilder
-    func lyricsCover<Content: View>(
-        isPresented: Binding<Bool>,
-        @ViewBuilder content: @escaping () -> Content
-    ) -> some View {
-        #if os(iOS)
-        fullScreenCover(isPresented: isPresented, content: content)
-        #else
-        sheet(isPresented: isPresented, content: content)
-        #endif
     }
 }
