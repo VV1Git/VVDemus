@@ -75,6 +75,14 @@ final class DownloadManager: NSObject, ObservableObject {
     private var completedBytes: [String: Int64] = [:]
     private var flushTask: Task<Void, Never>?
     private static let flushInterval: Duration = .milliseconds(250)
+    /// The lyrics lookup, behind a closure only so the regression test that matters most — a
+    /// lyrics failure leaves the download successful and `collectionProgress`'s `total`
+    /// untouched — can force a throw without waiting for a real host to be down.
+    static var lyricsFetch: (Track) async throws -> Lyrics? = { try await LyricsClient.lyrics(for: $0) }
+    /// The most recent prefetch, held only so a test can await one. Nothing in the download
+    /// path reads it: replacing it does not cancel what it replaced, and no completion waits
+    /// on it. See `prefetchLyrics(for:)`.
+    private(set) var lyricsPrefetch: Task<Void, Never>?
     /// Set when the system relaunched us purely to deliver background download events; must
     /// be called once they've all been processed or iOS will stop granting us background
     /// time for downloads.
@@ -780,6 +788,52 @@ final class DownloadManager: NSObject, ObservableObject {
         guard let data = try? JSONEncoder().encode(downloadedTracks) else { return }
         UserDefaults.standard.set(data, forKey: metadataKey)
     }
+
+    /// A few KB of words to go with the audio that just landed, so a downloaded track reads on
+    /// a plane as well as it plays.
+    ///
+    /// The rule is that a lyrics failure never fails, delays, or alters the audio download, and
+    /// the defence is structural rather than careful: by the time this is called the file is
+    /// moved, `downloadedTracks` is saved and the entry is cleared, so there is no longer a
+    /// download for this to affect. It touches neither `active` nor `completedBytes`, which is
+    /// what `collectionProgress` counts from — a prefetch is not a download and must never
+    /// appear in "N of M". The task is unstructured and unawaited, so it cannot hold the
+    /// delegate callback open or keep the background session's job alive, and it swallows
+    /// everything it can throw.
+    private func prefetchLyrics(for track: Track) {
+        let cache = LyricsCacheStore.shared
+        // Already answered, either way. Without this an album re-downloaded after a device
+        // move would ask two hosts once per track for words it is already holding.
+        guard cache.lyrics(for: track.videoId) == nil, !cache.isMissFresh(track.videoId) else { return }
+
+        lyricsPrefetch = Task {
+            do {
+                if let found = try await Self.lyricsFetch(track) {
+                    cache.store(found, for: track.videoId)
+                } else {
+                    cache.storeMiss(for: track.videoId)
+                }
+            } catch is CancellationError {
+                // Nothing was asked, so nothing was learned. A miss written here would buy a
+                // week of silence with a request that never reached a host.
+            } catch is LyricsSourceError {
+                // The distinction this error type exists to draw, honoured here for the same
+                // reason `LyricsView` honours it: "the host was unreachable" is not "nobody has
+                // typed these up". Recording it as a miss was worst exactly where it hurt most
+                // — a thirty-track album burst through lrclib's rate limit, every refusal was
+                // written down as an absence, and the words for the tracks the prefetch exists
+                // to serve were unfetchable for a week, behind a `ContentUnavailableView` with
+                // no Try Again on it. Leaving nothing behind costs a re-ask on the next
+                // download of the same track, which is the cheaper of the two wrongs.
+            } catch {
+                // Anything else is this build failing to make sense of a response, which a
+                // second attempt will fail at identically. Recorded as a miss rather than
+                // retried or reported: there is no one watching to tell, and a miss expires on
+                // its own.
+                cache.storeMiss(for: track.videoId)
+            }
+        }
+    }
 }
 
 extension DownloadManager: URLSessionDownloadDelegate {
@@ -847,6 +901,9 @@ extension DownloadManager: URLSessionDownloadDelegate {
             completedBytes[videoId] = max(size, lastShownBytes)
             save()
             clearEntry(videoId)
+            // Last, and only on the success path: the download is complete and published
+            // before the words are so much as asked for. See `prefetchLyrics(for:)`.
+            prefetchLyrics(for: track)
         } catch {
             let message = "Couldn't save \"\(track.title)\"."
             active[videoId]?.state = .failed(reason: message)

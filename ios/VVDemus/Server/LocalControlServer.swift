@@ -1038,6 +1038,143 @@ final class LocalControlServer: ObservableObject {
             _ = self.awaitAsync({ await DaylistStore.shared.refresh() })
             return .ok(.text("ok"))
         }
+
+        // The lyrics screen, readable from the command line: which source answered, what
+        // `LyricsMatch` made of it, and — the point of the route — which line is lit right
+        // now for the position the player is actually at.
+        //
+        // A cursor that highlights a line a second early is invisible in a test and obvious
+        // in a JSON body next to `position`. `POST /api/seek` to a chorus, read `activeIndex`
+        // and `activeLine` here, and the whole of `LyricsCursor` can be checked against a real
+        // playing track without anyone watching a screen.
+        server.GET["/api/lyrics"] = { [weak self] request in
+            guard let self else { return .internalServerError }
+            let wanted = Self.queryValue(request, "videoId")
+            let playing = self.onMain { PlayerService.shared.currentTrack }
+
+            // No `videoId` means "whatever is playing". One that names some other track can
+            // only be answered from the cache: a fetch needs a whole `Track` to score
+            // candidates against, and an id is not one — which is no real limit on a harness,
+            // since a harness reaches a track by playing it.
+            guard wanted.isEmpty || wanted == playing?.videoId, let track = playing else {
+                let cached = self.onMain { LyricsCacheStore.shared.lyrics(for: wanted) }
+                return self.jsonResponse(Self.lyricsReport(track: nil, videoId: wanted, lyrics: cached, position: nil))
+            }
+
+            let known = self.onMain {
+                (LyricsCacheStore.shared.lyrics(for: track.videoId), LyricsCacheStore.shared.isMissFresh(track.videoId))
+            }
+            var lyrics = known.0
+            if lyrics == nil, !known.1 {
+                // The same policy `LyricsView.load` follows, deliberately: polling this route
+                // once a second while a song plays would otherwise re-ask two hosts once a
+                // second, which is exactly what the store exists to stop.
+                switch self.awaitAsync({ try await LyricsClient.lyrics(for: track) }) {
+                case .success(let found):
+                    self.onMain {
+                        if let found {
+                            LyricsCacheStore.shared.store(found, for: track.videoId)
+                        } else {
+                            LyricsCacheStore.shared.storeMiss(for: track.videoId)
+                        }
+                    }
+                    lyrics = found
+                case .failure:
+                    // Not recorded as a miss, for the reason `LyricsView` gives: "the host was
+                    // unreachable" and "nobody has typed these up" are different facts, and a
+                    // harness hammering this route must not be able to poison a week of lookups.
+                    return .internalServerError
+                }
+            }
+
+            let position = self.onMain { PlayerService.shared.progress }
+            return self.jsonResponse(
+                Self.lyricsReport(track: track, videoId: track.videoId, lyrics: lyrics, position: position)
+            )
+        }
+    }
+
+    /// What `GET /api/lyrics` answers with. Flat on purpose: every field is meant to be
+    /// readable in a terminal without a JSON tool between it and the eye.
+    private struct LyricsReport: Encodable {
+        let videoId: String
+        let title: String?
+        let artist: String?
+        /// False when a `?videoId=` named something other than the playing track, which is
+        /// also when there is no position and so no active line.
+        let isCurrentTrack: Bool
+        let position: Double?
+        let found: Bool
+        let source: String
+        let verdict: String
+        /// "synced" or "plain" — the distinction the whole screen turns on.
+        let body: String?
+        let lineCount: Int
+        let activeIndex: Int?
+        let activeLine: String?
+        let attribution: String?
+        let matchedDuration: Int?
+    }
+
+    private static func lyricsReport(track: Track?, videoId: String, lyrics: Lyrics?, position: Double?) -> LyricsReport {
+        var kind: String?
+        var lineCount = 0
+        var activeIndex: Int?
+        var activeLine: String?
+
+        if let body = lyrics?.body {
+            switch body {
+            case .synced(let lines):
+                kind = "synced"
+                lineCount = lines.count
+                // Only for the playing track: a track that is not playing has no cursor, which
+                // is the same rule the screen follows.
+                if let position {
+                    activeIndex = LyricsCursor.activeIndex(in: lines, at: position)
+                    activeLine = activeIndex.map { lines[$0].text }
+                }
+            case .plain(let lines):
+                kind = "plain"
+                lineCount = lines.count
+            }
+        }
+
+        let provenance = Self.lyricsProvenance(lyrics?.attribution)
+        return LyricsReport(
+            videoId: videoId,
+            title: track?.title,
+            artist: track?.artist,
+            isCurrentTrack: track != nil,
+            position: position,
+            found: lyrics != nil,
+            source: provenance.source,
+            verdict: provenance.verdict,
+            body: kind,
+            lineCount: lineCount,
+            activeIndex: activeIndex,
+            activeLine: activeLine,
+            attribution: lyrics?.attribution,
+            matchedDuration: lyrics?.matchedDuration
+        )
+    }
+
+    /// `Lyrics` records neither the host it came from nor the verdict that let it through —
+    /// `LyricsView` explains why the attribution is the one field carrying that difference, and
+    /// the model was kept to what a screen needs. Both are recoverable from it, so the harness
+    /// gets them without a second flag threaded through the model and the cache. An entry
+    /// written by a build that worded its attribution differently reads as "unknown" rather
+    /// than being reported as something it is not.
+    private static func lyricsProvenance(_ attribution: String?) -> (source: String, verdict: String) {
+        switch attribution {
+        case nil: return ("none", "none")
+        case LyricsClient.timedAttribution: return ("lrclib", "accept")
+        case LyricsClient.plainAttribution: return ("lrclib", "accept")
+        case LyricsClient.untrustedTimingAttribution: return ("lrclib", "acceptUntimedOnly")
+        // YouTube Music is never scored — it is asked only after LRCLIB has given nothing, and
+        // it answers for the videoId already playing, so there is no candidate to compare.
+        case let text? where text.contains("YouTube Music"): return ("youtubeMusic", "unscored")
+        default: return ("unknown", "unknown")
+        }
     }
 
     // MARK: - Serving downloaded audio

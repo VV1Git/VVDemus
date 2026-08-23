@@ -98,6 +98,7 @@ struct QueueView: View {
         // On the stack rather than on the list inside it, so a radio reached from a queued
         // track keeps working one push in — see the note in `MacRootView.detail`.
         .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
+        .environment(\.openLyrics) { track in path.append(LibraryDestination.lyrics(track)) }
     }
 
     /// Reordering works from either device.

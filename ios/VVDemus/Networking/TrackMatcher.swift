@@ -12,6 +12,13 @@ import Foundation
 /// Everything is a pure function of the two values passed in: no network, no store, no clock.
 /// The whole point is that the interesting cases — the ones that only show up in a real search
 /// response, three screens into a real playlist — can be provoked directly in a unit test.
+///
+/// The normalisation half is internal rather than private — `normalisedTitle`, `similarity`,
+/// `variantMarkers`, `titleFloor`, `ArtistName` and the types they name. `LyricsMatch` asks the
+/// same question of a lyrics result that this asks of a search result, and the strip lists are
+/// the answer to both: a second copy would drift from this one, and the drift would surface as
+/// lyrics scrolling for somebody else's recording. The lists themselves stay private, so the
+/// only way to change what "official" or "(Remix)" means is still to change it here.
 enum TrackMatcher {
 
     /// The best acceptable candidate, or nil when none of them is the right recording.
@@ -151,7 +158,7 @@ enum TrackMatcher {
     // MARK: - Thresholds
 
     /// Below this the titles are not the same song and nothing else is consulted.
-    private static let titleFloor = 0.55
+    static let titleFloor = 0.55
 
     /// The share of the total a perfect title alone is worth; artist and duration make up the
     /// rest. Tuned so that a perfect title with an unreadable artist and no duration on either
@@ -200,7 +207,7 @@ enum TrackMatcher {
     /// segment is always kept, which is also what stops a track named nothing but "(Audio)" from
     /// normalising to the empty string. Two empty titles compare as a perfect match, so an
     /// unconditional stripper hands the top score to whichever piece of junk search listed first.
-    private static func normalisedTitle(_ raw: String) -> NormalisedTitle {
+    static func normalisedTitle(_ raw: String) -> NormalisedTitle {
         let folded = fold(raw)
         let segments = segmented(folded)
         var tokens: [String] = []
@@ -233,7 +240,7 @@ enum TrackMatcher {
 
     /// `tokens` is the title with its non-load-bearing decoration removed; `core` is the title
     /// proper, with *every* suffix removed whether it was load-bearing or not.
-    private struct NormalisedTitle {
+    struct NormalisedTitle {
         let tokens: [String]
         let core: [String]
         /// Exactly what `core` drops and `tokens` keeps: suffix material that survived the
@@ -386,7 +393,7 @@ enum TrackMatcher {
     /// it; the same goes for "Live and Let Die (Live)" and "Remix to Ignition (Remix)", which
     /// are precisely the songs whose real titles contain the word. The count keeps them
     /// distinguishable while still leaving the honest case alone: one `live` on each side.
-    private static func variantMarkers(in tokens: [String]) -> [String: Int] {
+    static func variantMarkers(in tokens: [String]) -> [String: Int] {
         var counts: [String: Int] = [:]
         for token in tokens {
             guard let marker = variantWords[token] else { continue }
@@ -424,7 +431,7 @@ enum TrackMatcher {
     /// carries those, and also softens a single mistyped or transliterated word. Deliberately
     /// symmetric — a containment measure would rate every title as a perfect match for any title
     /// that merely starts with it.
-    private static func similarity(_ a: [String], _ b: [String]) -> Double {
+    static func similarity(_ a: [String], _ b: [String]) -> Double {
         guard !a.isEmpty, !b.isEmpty else { return 0 }
         if a == b { return 1 }
 
@@ -467,7 +474,7 @@ enum TrackMatcher {
     /// rather than three, because a Japanese credit routinely mixes the first two and because
     /// merging them is the conservative direction — two names in the same bucket that share
     /// nothing keep the veto they have today.
-    private enum Script: Hashable {
+    enum Script: Hashable {
         case latin, cyrillic, greek, cjk, arabic, hebrew, devanagari, thai
     }
 
@@ -508,7 +515,7 @@ enum TrackMatcher {
     /// "<Artist> - Topic" channel or a label channel with the name run together and a suffix
     /// glued on. Equality is useless here and even token overlap fails on "TheWeekndVEVO", so
     /// both a token view and a run-together view are kept.
-    private struct ArtistName {
+    struct ArtistName {
         let tokens: Set<String>
         /// The same tokens in the order they were written. Only the *first* one distinguishes
         /// Nat King Cole from Natalie Cole, and a set has thrown that away.

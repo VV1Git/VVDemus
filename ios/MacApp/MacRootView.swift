@@ -34,6 +34,9 @@ struct MacRootView: View {
     /// window has room to show the queue beside the content, and a modal over everything was the
     /// phone's compromise, not the desktop's.
     @State private var showQueue = false
+    /// The lyrics panel's visibility, the queue's twin — same strip of window, same width, and
+    /// never both at once. See `panelBinding`.
+    @State private var showLyrics = false
     /// Measured, not guessed. The bar's height is three stacked children, two of which come and
     /// go (`PlaybackErrorBar`, `ResumeFromPeerBar`), so a constant would be wrong exactly when an
     /// error is showing — the moment the content underneath most needs to be readable.
@@ -57,7 +60,12 @@ struct MacRootView: View {
                     // row under the bar. Go to Radio on any track row was the common way in.
                 if showQueue {
                     Divider()
-                    MacQueuePanel(isShown: $showQueue)
+                    MacQueuePanel(isShown: queueShown)
+                        .transition(.move(edge: .trailing))
+                }
+                if showLyrics {
+                    Divider()
+                    MacLyricsPanel(isShown: lyricsShown, player: player)
                         .transition(.move(edge: .trailing))
                 }
             }
@@ -119,7 +127,7 @@ struct MacRootView: View {
                         .padding(.vertical, Theme.Space.xs)
                 }
                 ResumeFromPeerBar()
-                MacNowPlayingBar(player: player, showQueue: $showQueue)
+                MacNowPlayingBar(player: player, showQueue: queueShown, showLyrics: lyricsShown)
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
                 transportHeight = $0
@@ -146,6 +154,28 @@ struct MacRootView: View {
             PeerPlayback.shared.start()
             await PeerLink.shared.refreshResumeOffer()
         }
+    }
+
+    private var queueShown: Binding<Bool> { panelBinding($showQueue, closing: $showLyrics) }
+    private var lyricsShown: Binding<Bool> { panelBinding($showLyrics, closing: $showQueue) }
+
+    /// Opening either panel closes the other, enforced here rather than at each toggle, close
+    /// button and keyboard path — there are four ways to open one of these already and the rule
+    /// only holds if it is impossible to write a fifth that forgets it.
+    ///
+    /// The rule itself: the sidebar plus two 320pt panels leave the content column too narrow to
+    /// browse, and browsing while a panel stays open is the whole argument for a panel over a
+    /// sheet. Losing it would make both panels sheets with extra steps.
+    private func panelBinding(_ shown: Binding<Bool>, closing other: Binding<Bool>) -> Binding<Bool> {
+        Binding(
+            get: { shown.wrappedValue },
+            set: { opening in
+                // Inside whatever `withAnimation` the caller used, so the panel leaving and the
+                // panel arriving are one transition rather than a gap between two.
+                if opening { other.wrappedValue = false }
+                shown.wrappedValue = opening
+            }
+        )
     }
 
     /// Rows are `NavigationLink(value:)` rather than `Label(...).tag(...)` because that is the
@@ -285,6 +315,8 @@ struct MacRootView: View {
             // not laid out inside this closure either, and if the split view's own stack is
             // taking the push then this environment does not reach it and the fix is elsewhere.
             .environment(\.openRadio) { leafPath.append(LibraryDestination.radio($0)) }
+            // Same placement, same reasons: on the stack, not on the screen inside it.
+            .environment(\.openLyrics) { leafPath.append(LibraryDestination.lyrics($0)) }
         }
     }
 }

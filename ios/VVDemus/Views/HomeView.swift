@@ -145,6 +145,7 @@ struct HomeView: View {
         // On the stack rather than on the content inside it, so a radio, album or playlist
         // pushed from Home gets it as well — see the note in `MacRootView.detail`.
         .environment(\.openRadio) { track in coordinator.homePath.append(LibraryDestination.radio(track)) }
+        .environment(\.openLyrics) { track in coordinator.homePath.append(LibraryDestination.lyrics(track)) }
         .task { await load() }
         .task { await daylist.refreshIfNeeded() }
         .refreshable { await load(forceRefresh: true) }

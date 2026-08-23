@@ -18,6 +18,7 @@ struct TrackRowActions<Extra: View>: ViewModifier {
     // No `DownloadManager` here: the download item lives in `TrackMenuItems`, which observes
     // it itself. Observing it on the modifier re-rendered every row on every progress tick.
     @Environment(\.openRadio) private var openRadio
+    @Environment(\.openLyrics) private var openLyrics
     @State private var showNewPlaylistAlert = false
     @State private var newPlaylistName = ""
 
@@ -70,12 +71,14 @@ struct TrackRowActions<Extra: View>: ViewModifier {
                 .tint(.indigo)
             }
             .contextMenu {
-                // `openRadio` is resolved out here, on the modifier, and handed in: custom
-                // environment values do not reliably reach a `contextMenu`'s content.
+                // `openRadio` and `openLyrics` are resolved out here, on the modifier, and
+                // handed in: custom environment values do not reliably reach a
+                // `contextMenu`'s content.
                 TrackMenuItems(
                     track: track,
                     player: player,
                     onRadio: { openRadio(track) },
+                    onLyrics: { openLyrics(track) },
                     showNewPlaylistAlert: $showNewPlaylistAlert
                 )
                 // Last, and in its own section: screen-specific items are the destructive ones
@@ -112,6 +115,9 @@ struct TrackMenuItems: View {
     /// Nil hides "Go to Radio". Now Playing is a full-screen cover presented above every
     /// NavigationStack, so it has nowhere to push a radio to.
     var onRadio: (() -> Void)?
+    /// Nil hides "Show Lyrics", for the same reason: Now Playing presents the lyrics itself,
+    /// as a cover over its own sheet, because there is no stack under it to push onto.
+    var onLyrics: (() -> Void)?
     @Binding var showNewPlaylistAlert: Bool
     @ObservedObject private var liked = LikedSongsStore.shared
     @ObservedObject private var playlists = PlaylistStore.shared
@@ -151,6 +157,11 @@ struct TrackMenuItems: View {
             if let onRadio {
                 Button(action: onRadio) {
                     Label("Go to Radio", systemImage: "dot.radiowaves.left.and.right")
+                }
+            }
+            if let onLyrics {
+                Button(action: onLyrics) {
+                    Label("Show Lyrics", systemImage: "quote.bubble")
                 }
             }
             Button {

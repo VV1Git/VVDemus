@@ -196,6 +196,7 @@ struct LibraryView: View {
         // On the stack rather than on the list inside it, so the playlists, albums and radios
         // this screen pushes get it as well — see the note in `MacRootView.detail`.
         .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
+        .environment(\.openLyrics) { track in path.append(LibraryDestination.lyrics(track)) }
     }
 }
 

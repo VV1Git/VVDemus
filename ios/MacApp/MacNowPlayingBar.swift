@@ -20,6 +20,9 @@ struct MacNowPlayingBar: View {
     private let colorLoader = ArtworkColorLoader.shared
 
     @Binding var showQueue: Bool
+    /// Both of these arrive as bindings that close the other panel on the way open — the rule
+    /// lives in `MacRootView.panelBinding`, so a toggle here is just a toggle.
+    @Binding var showLyrics: Bool
 
     /// Where the thumb is being dragged to, while it is being dragged.
     ///
@@ -217,6 +220,14 @@ struct MacNowPlayingBar: View {
                 tint: showQueue ? Theme.accent : nil
             ) {
                 withAnimation(.easeInOut(duration: 0.18)) { showQueue.toggle() }
+            }
+
+            HoverButton(
+                systemImage: "text.quote",
+                label: showLyrics ? "Hide lyrics" : "Show lyrics",
+                tint: showLyrics ? Theme.accent : nil
+            ) {
+                withAnimation(.easeInOut(duration: 0.18)) { showLyrics.toggle() }
             }
 
             HStack(spacing: Theme.Space.xs) {

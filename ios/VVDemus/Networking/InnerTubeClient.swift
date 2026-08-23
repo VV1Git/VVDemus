@@ -10,8 +10,12 @@ import Foundation
 /// yt-dlp there's no upstream project patching this when it eventually breaks; the fix
 /// at that point is code, not a `pip install -U`.
 enum InnerTubeClient {
-    private static let webRemixAPIKey = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
-    private static let webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0"
+    /// Internal rather than private only so `LyricsClient` can make the two WEB_REMIX calls the
+    /// lyrics tab needs (`/next`, then `/browse`) without a second copy of the key, the
+    /// user-agent or the retry loop living in that file. Copies of these are exactly what goes
+    /// stale the next time YouTube moves, so there is one of each.
+    static let webRemixAPIKey = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
+    static let webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0"
     private static let androidUserAgent = "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip"
     private static let androidVRUserAgent = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
     /// InnerTube "params" blob selecting the Songs filter — reverse-engineered value,
@@ -848,17 +852,29 @@ enum InnerTubeClient {
         return request
     }
 
-    private static func post(
+    /// Internal for the reason `webRemixAPIKey` gives: `LyricsClient` posts to `/next` and
+    /// `/browse` like everything else here, and it must go through this loop so a lyrics fetch
+    /// honours the same rate-limit gate playback does instead of hammering past it.
+    ///
+    /// `recordingLimitsOn` is what keeps that one-directional. Honouring the shared gate is the
+    /// point; *writing* to it on a lyrics request's behalf is not, and the two used to be the
+    /// same thing. A thirty-track album fires one decorative prefetch per landed transfer, each
+    /// falling through to two more `music.youtube.com` posts; the first of those to earn a 429
+    /// closed the gate every still-queued audio resolution parks on, so the collection went to
+    /// "Paused — resuming in 4:59" on behalf of words nobody had asked for. Passing a gate of
+    /// the caller's own leaves the wait shared and the accounting separate.
+    static func post(
         url: String,
         userAgent: String,
         origin: String?,
         body: [String: Any],
-        visitorData: String? = nil
+        visitorData: String? = nil,
+        recordingLimitsOn recorder: RateLimitGate = .shared
     ) async throws -> JSON {
         let request = try makeRequest(
             url: url, userAgent: userAgent, origin: origin, body: body, visitorData: visitorData
         )
-        return try await send(request)
+        return try await send(request, recordingLimitsOn: recorder)
     }
 
     /// One logical request, retried a bounded number of times for the failures that a retry
@@ -873,14 +889,28 @@ enum InnerTubeClient {
     /// handed back as `APIError.rateLimited` so the UI can say when to try again, rather than
     /// holding a spinner for a minute. Sleeps use `Task.sleep`, so a search superseded by the
     /// next keystroke stops waiting the moment it's cancelled.
-    private static func send(_ request: URLRequest) async throws -> JSON {
+    /// The longer of two cool-downs, or nil when neither gate is closed. `nil` is "open", not
+    /// zero, so `max` on the raw optionals would pick the open gate over the closed one.
+    private static func longestCooldown(_ gates: RateLimitGate...) -> TimeInterval? {
+        var seen = Set<ObjectIdentifier>()
+        return gates
+            .filter { seen.insert(ObjectIdentifier($0)).inserted }
+            .compactMap { $0.remainingCooldown() }
+            .max()
+    }
+
+    private static func send(
+        _ request: URLRequest,
+        recordingLimitsOn recorder: RateLimitGate = .shared
+    ) async throws -> JSON {
         var lastError: Error = APIError.server("YouTube request failed")
 
         for attempt in 1...RateLimit.maximumAttempts {
             // A cool-down another request already discovered. Checked before sending, so
             // concurrent callers (Home fans out into three searches) back off together
-            // instead of each earning their own 429.
-            if let remaining = RateLimitGate.shared.remainingCooldown() {
+            // instead of each earning their own 429. Both gates are honoured when they differ,
+            // so a caller with a budget of its own waits out playback's *and* its own.
+            if let remaining = longestCooldown(RateLimitGate.shared, recorder) {
                 guard remaining <= RateLimit.maximumWait else {
                     throw APIError.rateLimited(retryAfter: remaining)
                 }
@@ -895,13 +925,13 @@ enum InnerTubeClient {
 
                 if (200..<300).contains(http.statusCode) {
                     // Something got through, so whatever limit was in force has lifted.
-                    RateLimitGate.shared.clear()
+                    recorder.clear()
                     return try JSON.parse(data)
                 }
 
                 if http.statusCode == 429 {
                     let retryAfter = RateLimit.retryAfter(http.value(forHTTPHeaderField: "Retry-After"))
-                    RateLimitGate.shared.recordRateLimit(retryAfter: retryAfter)
+                    recorder.recordRateLimit(retryAfter: retryAfter)
                     lastError = APIError.rateLimited(retryAfter: retryAfter ?? RateLimit.defaultCooldown)
                     // No backoff sleep here: the gate now holds the wait, and the top of the
                     // next iteration honours it. Sleeping in both places would double it.

@@ -90,6 +90,12 @@ struct SearchView: View {
             coordinator.selectedTab = .home
             #endif
         }
+        // Lyrics stay on this screen's own stack on both platforms, unlike radio: a radio is a
+        // place you go and keep browsing from, so the phone hands it to Home, but reading the
+        // words to a search result should leave you one back-swipe from the results.
+        .environment(\.openLyrics) { track in
+            path.append(LibraryDestination.lyrics(track))
+        }
         .onChange(of: query) { _, newValue in
             searchTask?.cancel()
             searchTask = Task {

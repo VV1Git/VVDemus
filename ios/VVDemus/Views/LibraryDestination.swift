@@ -9,6 +9,10 @@ enum LibraryDestination: Hashable {
     /// entry in any store until its screen opens and records one, so an id alone would have
     /// nothing to resolve against — and the title would be blank until the fetch landed.
     case album(Album)
+    /// A case here, not a destination type of its own: a `NavigationLink` carrying a type no
+    /// inner stack registers is taken by the split view's own detail stack on the Mac, which
+    /// replaces the detail closure entire — transport bar included.
+    case lyrics(Track)
     case daylist
     case downloads
     case stats
@@ -29,6 +33,8 @@ extension LibraryDestination {
             RadioDetailView(seedTrack: seed, player: player)
         case .album(let album):
             AlbumDetailView(album: album, player: player)
+        case .lyrics(let track):
+            LyricsView(track: track, player: player)
         case .daylist:
             DaylistDetailView(player: player)
         case .downloads:
