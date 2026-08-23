@@ -64,7 +64,7 @@ struct SearchView: View {
             // dropped onto the page. Every other branch here is a List, which fills on its
             // own, which is why only the empty state showed it.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Theme.background)
+            .background(Theme.screenBackground)
             .navigationTitle("Search")
             // On the content, not on the `NavigationStack`: attached to the stack, the
             // "Songs, artists" field leaked into every pushed destination — including

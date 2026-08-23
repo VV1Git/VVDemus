@@ -50,7 +50,7 @@ struct AlbumDetailView: View {
                 trackList
             }
         }
-        .background(Theme.background)
+        .background(Theme.screenBackground)
         .navigationTitle(current.title)
         .compactNavigationTitle()
         .toolbar {

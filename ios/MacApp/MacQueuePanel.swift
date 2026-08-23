@@ -108,7 +108,17 @@ struct MacQueuePanel: View {
             .listStyle(.inset)
         }
         .frame(width: 320)
-        .background(Theme.background)
+        // The window's own ground, painted here rather than inherited.
+        //
+        // A panel is attached to the split view with `safeAreaInset`, which puts it OUTSIDE
+        // the split view rather than inside a column — so there is no material behind it to
+        // show through, and a panel that paints nothing is transparent, not system-coloured.
+        // It looked correct in the queue only because a `List` paints its own background; the
+        // header above it, and the whole of the lyrics panel, came out clear.
+        //
+        // `.windowBackground`, not `Theme.background`: the Mac is system-coloured throughout
+        // now. See `Theme.screenBackground`.
+        .background(.windowBackground)
     }
 
     /// Every action goes straight to `PlayerService`, which sends it to the paired device when

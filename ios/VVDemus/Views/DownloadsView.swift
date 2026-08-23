@@ -70,7 +70,7 @@ struct DownloadsView: View {
                 .listStyle(.plain)
             }
         }
-        .background(Theme.background)
+        .background(Theme.screenBackground)
         .navigationTitle(title)
         .compactNavigationTitle()
         .toolbar {

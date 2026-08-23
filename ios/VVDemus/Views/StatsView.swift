@@ -147,9 +147,9 @@ struct StatsView: View {
             .padding(.vertical, Theme.Space.lg)
             .transportClearance()
         }
-            .background(Theme.background)
+            .background(Theme.screenBackground)
         }
-        .background(Theme.background)
+        .background(Theme.screenBackground)
         .navigationTitle("Your Stats")
         .compactNavigationTitle()
     }

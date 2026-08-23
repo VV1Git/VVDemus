@@ -22,7 +22,7 @@ struct LikedSongsView: View {
                 trackList
             }
         }
-        .background(Theme.background)
+        .background(Theme.screenBackground)
         .navigationTitle("Liked Songs")
         .compactNavigationTitle()
         .toolbar {

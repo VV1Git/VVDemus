@@ -91,7 +91,7 @@ struct LyricsView: View {
                 content(lyrics)
             }
         }
-        .background(Theme.background)
+        .background(Theme.screenBackground)
         .task(id: LoadRequest(videoId: track.videoId, attempt: retryCount)) { await load() }
         // A download fetches lyrics of its own after the audio lands, and the store is
         // `@Published` for exactly this: a screen sitting on "No Lyrics" while the words arrive

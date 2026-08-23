@@ -55,10 +55,12 @@ struct MacRootView: View {
                 // navigation stack and nothing pushed onto it, so every screen reached from
                 // the sidebar looked right while every screen navigated into kept its last
                 // row under the bar. Go to Radio on any track row was the common way in.
-            // The pane's own ground, so a screen that does not paint one — or paints one
-            // sized to its content — shows black rather than the window's default grey.
-            // Individual screens still set it; this is what stops the next one that forgets.
-            .background(Theme.background)
+            // No ground painted here any more, deliberately. This used to force black so a
+            // screen that painted none — or painted one sized to its content — did not show
+            // the window's default grey. The window's grey is now the answer on this platform:
+            // the `List`-backed screens were already showing it, because a `List` paints over
+            // whatever is behind it, so half the window was grey and half was black with every
+            // screen asking for the same thing. See `Theme.screenBackground`.
         }
         // Attached to the split view, not returned from `detail:`, which is where these three
         // used to sit as VStack siblings. Two reasons, and only the first is visible today.

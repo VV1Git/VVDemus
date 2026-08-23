@@ -37,7 +37,7 @@ struct PairingView: View {
             .frame(maxWidth: 520, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
-        .background(Theme.background)
+        .background(Theme.screenBackground)
         .navigationTitle("Connect a Device")
         .compactNavigationTitle()
         .task {

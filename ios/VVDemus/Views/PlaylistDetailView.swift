@@ -44,7 +44,7 @@ struct PlaylistDetailView: View {
                 )
             }
         }
-        .background(Theme.background)
+        .background(Theme.screenBackground)
         .navigationTitle(playlist?.name ?? "Playlist")
         .compactNavigationTitle()
         .toolbar {

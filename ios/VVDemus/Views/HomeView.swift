@@ -103,7 +103,7 @@ struct HomeView: View {
                 // And the Mac's transport bar, which is taller and is not part of any tab bar.
                 .transportClearance()
             }
-            .background(Theme.background)
+            .background(Theme.screenBackground)
             .navigationTitle(greeting)
             .prominentNavigationTitle()
             .toolbar {

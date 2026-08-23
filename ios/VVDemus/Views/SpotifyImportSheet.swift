@@ -74,7 +74,7 @@ struct SpotifyImportSheet: View {
             #if os(macOS)
             .frame(height: macContentHeight)
             #endif
-            .background(Theme.background)
+            .background(Theme.screenBackground)
             .navigationTitle("Import from Spotify")
             .compactNavigationTitle()
             .toolbar {

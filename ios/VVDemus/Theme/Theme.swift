@@ -8,6 +8,32 @@ enum Theme {
     // MARK: - Palette
 
     static let background = Color.black
+    /// The ground a whole screen paints behind itself. `background` is still the right answer
+    /// for a surface *inside* a screen; this is only for the screen itself.
+    ///
+    /// The two platforms want different things here, and asking for black on both is what made
+    /// the Mac inconsistent with itself. The phone is black everywhere by design — it declares
+    /// `UIUserInterfaceStyle: Dark`, the palette above is tuned against black, and Now Playing
+    /// runs an artwork gradient down into it.
+    ///
+    /// The Mac has none of that and never asked for it. What it had instead was a split: screens
+    /// built on `List` were already showing the window's own material, because a `List` paints
+    /// its background *over* anything behind it, so `.background(Theme.background)` on those
+    /// screens did nothing at all. Only the `ScrollView` screens — Home the obvious one — came
+    /// out black. Every screen was asking for the same thing and roughly half were quietly
+    /// losing, which read as a design decision rather than the accident it was.
+    ///
+    /// So on macOS this is nothing, and the window supplies the ground for every screen alike.
+    /// `SettingsView` reaches for `.scrollContentBackground(.hidden)` to win that argument on
+    /// one screen, and still needs to on the phone, where black is the point. It is the only
+    /// screen that ever did — which is the tell that the Mac's split was an accident.
+    static var screenBackground: Color {
+        #if os(macOS)
+        .clear
+        #else
+        background
+        #endif
+    }
     /// Opaque surfaces and image placeholders ONLY — never a separator or a border.
     static let card = Color(white: 0.12)
     /// Pressed / raised surface ONLY.

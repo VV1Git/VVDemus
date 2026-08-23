@@ -32,7 +32,7 @@ struct DaylistDetailView: View {
                 trackList
             }
         }
-        .background(Theme.background)
+        .background(Theme.screenBackground)
         .navigationTitle(title)
         .compactNavigationTitle()
         .toolbar {
