@@ -46,29 +46,15 @@ struct MacRootView: View {
         NavigationSplitView {
             sidebar
         } detail: {
-            // The queue sits beside the content rather than over it, so it can stay open
-            // while you keep browsing — the reason it is a panel and not a sheet.
-            HStack(spacing: 0) {
-                detail
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    // No `safeAreaInset` here any more, and no `contentMargins` before it.
-                    // Each screen carries its own clearance instead — see `TransportClearance`.
-                    //
-                    // The inset that used to sit here reached the *root* of the detail column's
-                    // navigation stack and nothing pushed onto it, so every screen reached from
-                    // the sidebar looked right while every screen navigated into kept its last
-                    // row under the bar. Go to Radio on any track row was the common way in.
-                if showQueue {
-                    Divider()
-                    MacQueuePanel(isShown: queueShown)
-                        .transition(.move(edge: .trailing))
-                }
-                if showLyrics {
-                    Divider()
-                    MacLyricsPanel(isShown: lyricsShown, player: player)
-                        .transition(.move(edge: .trailing))
-                }
-            }
+            detail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // No `safeAreaInset` here any more, and no `contentMargins` before it.
+                // Each screen carries its own clearance instead — see `TransportClearance`.
+                //
+                // The inset that used to sit here reached the *root* of the detail column's
+                // navigation stack and nothing pushed onto it, so every screen reached from
+                // the sidebar looked right while every screen navigated into kept its last
+                // row under the bar. Go to Radio on any track row was the common way in.
             // The pane's own ground, so a screen that does not paint one — or paints one
             // sized to its content — shows black rather than the window's default grey.
             // Individual screens still set it; this is what stops the next one that forgets.
@@ -108,6 +94,34 @@ struct MacRootView: View {
         // So neither is used for clearance any more. Every scrolling screen in the window
         // carries its own, as a real row or real padding, sized from the height measured below.
         // See `TransportClearance`.
+        // Beside the split view, not returned from `detail:` — the same move, for the same
+        // reason, that the transport bar makes just below.
+        //
+        // The measured symptom: the queue opened on Home and was simply not there on a radio
+        // opened from Home's shelf. Both panels, either way in. Inside `detail:` they were
+        // laid out as the content's siblings in an `HStack`, and that only holds while the
+        // column is showing its root — one push in, the pushed screen is laid out over the
+        // whole column and covers them. The clearance note above measured exactly that from
+        // the other side: 871pt as a root, 932 — the full column — one push in. A panel a
+        // screen can paint over is not a panel.
+        //
+        // Applied BEFORE the bottom inset deliberately, so the transport bar still spans the
+        // whole window width and runs under the panel rather than stopping where it starts.
+        // Both panels keep their own `TransportClearance`: this reserves width, and says
+        // nothing about whether the bar overlaps what is inside them.
+        .safeAreaInset(edge: .trailing, spacing: 0) {
+            HStack(spacing: 0) {
+                if showQueue || showLyrics { Divider() }
+                if showQueue {
+                    MacQueuePanel(isShown: queueShown)
+                        .transition(.move(edge: .trailing))
+                }
+                if showLyrics {
+                    MacLyricsPanel(isShown: lyricsShown, player: player)
+                        .transition(.move(edge: .trailing))
+                }
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 // The Mac's only surface for `player.errorMessage`. It is rendered on the phone by
