@@ -290,6 +290,44 @@ schemes:
             - DownloadIntegrationTests
     archive:
       config: Release
+  # The phone app as it is actually carried, rather than as it is worked on — `VVDemusMac-Release`
+  # for the other target, and here for the same reason plus one the Mac does not have.
+  #
+  # The shared reason: `VVDemus` runs Debug, so the seams Debug exists to provide are compiled in.
+  # `PairingSession.pinnedCode` is the one that matters — a `#if DEBUG` environment variable that
+  # pins the six-digit pairing code. Unreachable over the network either way, but "unreachable"
+  # and "not compiled in" are different claims and the build you carry should make the second.
+  #
+  # The one the Mac does not have: this is the target where optimisation is felt. A phone decodes
+  # audio, runs the resource loader and holds a background session on a battery, and an
+  # unoptimised build of that is not a fair test of any of it. A stutter that only ever appeared
+  # in Debug has nowhere to hide once there is a scheme that runs Release on the device.
+  #
+  # Every action is Release, deliberately — a scheme that only archives in Release leaves Run and
+  # Profile on Debug, so the build you profile is never the build you ship. Profile especially:
+  # Instruments against a Debug build measures the wrong program.
+  #
+  # No test action, and that is not an oversight. The everyday suite already skips the benchmark
+  # classes by name in the `VVDemus` scheme and `VVDemus-Benchmarks` inverts that same list; a
+  # third copy would be a third thing to keep in step, and the first one to drift would do it
+  # silently. Run the suite from `VVDemus`; use this to build, run, profile and archive.
+  VVDemus-Release:
+    build:
+      targets:
+        VVDemus: all
+    run:
+      config: Release
+    # No test targets above, so this action runs nothing today. It is set anyway: XcodeGen
+    # defaults an unspecified test action to Debug, and a scheme whose every other action is
+    # Release with one silent Debug in it is exactly the inconsistency this scheme exists to end.
+    test:
+      config: Release
+    profile:
+      config: Release
+    analyze:
+      config: Release
+    archive:
+      config: Release
   # `xcodebuild test -scheme VVDemus-Screens` — walks the app and attaches a screenshot of every
   # screen. Kept off the `VVDemus` scheme so a normal test run stays fast and headless.
   VVDemus-Screens:
@@ -326,6 +364,10 @@ schemes:
       targets:
         VVDemusMac: all
     run:
+      config: Release
+    # Set for the same reason as its twin above: an unspecified test action silently defaults
+    # to Debug, which made "every action is Release" false the day it was written.
+    test:
       config: Release
     profile:
       config: Release
