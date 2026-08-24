@@ -287,14 +287,110 @@ enum InnerTubeClient {
 
     // MARK: - Radio
 
+    /// YouTube Music's radio for a track.
+    ///
+    /// ## Why the seed is normalised first
+    ///
+    /// A radio inherits the *kind* of recording it was seeded from, completely. Measured against
+    /// the live endpoint: seeding with `hefh9dFnChY` — Tame Impala's "'Cause I'm A Man (Official
+    /// Video)" — returns 50 of 50 entries marked `MUSIC_VIDEO_TYPE_OMV`, every one the video cut.
+    /// Seeding with `PvM79DJ2PmM`, the "- Topic" audio upload of the same artist's catalogue,
+    /// returns 49 `MUSIC_VIDEO_TYPE_ATV` and one stray `UGC`.
+    ///
+    /// That matters because a music video is a different recording: a different length, an intro
+    /// the album cut does not have, sometimes a different edit entirely. The audio is wrong, and
+    /// every lyric line is timed against a master that is not playing — which is how this was
+    /// found, as "the words are out of sync for The Less I Know The Better".
+    ///
+    /// And it spreads. Autoplay seeds the next radio from the last track it played, so one video
+    /// entering the queue makes every radio after it a video radio, for the rest of the session.
+    /// Filtering the results alone cannot fix that: when the seed is a video the response is
+    /// *entirely* videos, so filtering would return an empty radio rather than a correct one. The
+    /// seed itself has to be swapped, which is what `audioCounterpart` does.
+    ///
+    /// `isAudioOnly: true` is already in the request below and YouTube ignores it — it governs
+    /// playback, not selection.
     static func radio(videoId: String, limit: Int = radioLength) async throws -> [Track] {
+        let first = try await fetchRadio(seed: videoId, limit: limit)
+
+        // The seed is always the first entry, so its kind is the whole answer.
+        if let seed = first.first, seed.isAudio == false,
+           let audioSeed = try? await audioCounterpart(of: seed.track), audioSeed != videoId {
+            let retry = try await fetchRadio(seed: audioSeed, limit: limit)
+            if retry.contains(where: \.isAudio) { return keepingAudio(retry, limit: limit) }
+        }
+        return keepingAudio(first, limit: limit)
+    }
+
+    private struct RadioEntry {
+        let track: Track
+        /// `nil` means the response carried no `musicVideoType` at all, which is treated as audio:
+        /// a missing field is an absence of evidence, and dropping every entry on it would empty
+        /// radios wholesale the first time YouTube renames the key.
+        let musicVideoType: String?
+
+        var isAudio: Bool { musicVideoType == nil || musicVideoType == "MUSIC_VIDEO_TYPE_ATV" }
+    }
+
+    /// Drops the entries that are not audio, unless doing so would gut the mix.
+    ///
+    /// The floor is what stops this making things worse. If the seed could not be swapped — no
+    /// audio counterpart exists, or the search for one failed — the response is still all videos,
+    /// and a strict filter would hand back nothing at all. A radio of the wrong recordings is bad;
+    /// a radio of no recordings is worse, and it is the case the user cannot work around.
+    private static func keepingAudio(_ entries: [RadioEntry], limit: Int) -> [Track] {
+        let audio = entries.filter(\.isAudio)
+        guard audio.count >= max(2, entries.count / 4) else {
+            return Array(entries.map(\.track).prefix(limit))
+        }
+        return Array(audio.map(\.track).prefix(limit))
+    }
+
+    /// The `- Topic` audio upload matching a music video, found by searching for it.
+    ///
+    /// Search is used because the watch response carries no counterpart of its own — checked, and
+    /// there is no `counterpart` key anywhere in it. Search's own results are audio tracks, so the
+    /// first result that genuinely matches is the one wanted; `TrackMatcher` decides "genuinely",
+    /// so a cover or a live take cannot be swapped in for the master.
+    private static func audioCounterpart(of track: Track) async throws -> String? {
+        let query = "\(track.title) \(track.artist)"
+        let results = try await search(query: query, limit: 5)
+        return results.first { candidate in
+            guard candidate.videoId != track.videoId else { return false }
+            return isSameSong(candidate, as: track)
+        }?.videoId
+    }
+
+    /// Whether two rows are the same song, using `TrackMatcher`'s own comparisons.
+    ///
+    /// The same shape as `LyricsMatch.textAgrees`, and for the same reason: the strip lists there
+    /// already know that "(Official Video)" is packaging while "(Remix)" is not, so a video and
+    /// its audio upload compare equal while a remix of it does not. Duration is deliberately not
+    /// compared — a music video and its album cut differ in length by design, and that difference
+    /// is the very thing being corrected here.
+    private static func isSameSong(_ candidate: Track, as track: Track) -> Bool {
+        let wanted = TrackMatcher.normalisedTitle(track.title)
+        let theirs = TrackMatcher.normalisedTitle(candidate.title)
+
+        guard TrackMatcher.variantMarkers(in: wanted.tokens)
+            == TrackMatcher.variantMarkers(in: theirs.tokens) else { return false }
+
+        let whole = TrackMatcher.similarity(wanted.tokens, theirs.tokens)
+        let core = TrackMatcher.similarity(wanted.core, theirs.core)
+        guard max(whole, core) >= TrackMatcher.titleFloor else { return false }
+
+        return TrackMatcher.ArtistName(track.artist)
+            .agreement(with: TrackMatcher.ArtistName(candidate.artist)) != 0
+    }
+
+    private static func fetchRadio(seed: String, limit: Int) async throws -> [RadioEntry] {
         let body: [String: Any] = [
             "context": [
                 "client": ["clientName": "WEB_REMIX", "clientVersion": clientVersion],
                 "user": [String: Any](),
             ],
-            "videoId": videoId,
-            "playlistId": "RDAMVM" + videoId,
+            "videoId": seed,
+            "playlistId": "RDAMVM" + seed,
             "params": "wAEB",
             "enablePersistentPlaylistPanel": true,
             "isAudioOnly": true,
@@ -308,18 +404,26 @@ enum InnerTubeClient {
         )
 
         let items = json["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"]["contents"].array ?? []
-        var tracks: [Track] = []
+        var entries: [RadioEntry] = []
         for item in items {
-            if let track = parseWatchItem(item["playlistPanelVideoRenderer"]) {
+            let renderer = item["playlistPanelVideoRenderer"]
+            if let track = parseWatchItem(renderer) {
                 // The seed (always first) is kept whatever its length — starting a radio
                 // from a long mix is a deliberate choice. Everything after it is a
                 // recommendation, and an hour-long one derails the rest of the queue.
-                guard tracks.isEmpty || !track.isLongFormMix else { continue }
-                tracks.append(track)
-                if tracks.count >= limit { break }
+                guard entries.isEmpty || !track.isLongFormMix else { continue }
+                entries.append(RadioEntry(track: track, musicVideoType: musicVideoType(of: renderer)))
+                if entries.count >= limit { break }
             }
         }
-        return tracks
+        return entries
+    }
+
+    /// `MUSIC_VIDEO_TYPE_ATV` for an audio upload, `…_OMV` for an official video, `…_UGC` for a
+    /// user upload. Buried this deep because it belongs to the *endpoint* the row navigates to
+    /// rather than to the row.
+    private static func musicVideoType(of renderer: JSON) -> String? {
+        renderer["navigationEndpoint"]["watchEndpoint"]["watchEndpointMusicSupportedConfigs"]["watchEndpointMusicConfig"]["musicVideoType"].string
     }
 
     // MARK: - Stream resolution

@@ -568,6 +568,16 @@ final class LocalControlServer: ObservableObject {
             }
             return .ok(.text("ok"))
         }
+        #if os(macOS)
+        server.POST["/api/debug/miniplayer"] = { [weak self] _ in
+            guard let self else { return .internalServerError }
+            self.onMain {
+                NotificationCenter.default.post(name: .vvdemusDebugOpenMiniplayer, object: nil)
+            }
+            return .ok(.text("ok"))
+        }
+        #endif
+
         server.POST["/api/toggle"] = { [weak self] _ in
             self?.onMain { PlayerService.shared.togglePlayPause() }
             return .ok(.text("ok"))

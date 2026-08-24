@@ -13,6 +13,12 @@ struct MacNowPlayingBar: View {
     @ObservedObject var player: PlayerService
     @ObservedObject private var peer = PeerPlayback.shared
     @ObservedObject private var liked = LikedSongsStore.shared
+    /// The corner player is a separate window, so its visibility is not a `@State` of this view's
+    /// — it can be closed by its own close button or by going idle, neither of which this bar
+    /// hears about. See `MiniPlayerPresence`.
+    @ObservedObject private var miniPlayer = MiniPlayerPresence.shared
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     /// Not `@ObservedObject`. This bar only ever *warms* the cache — unlike `NowPlayingView` it
     /// never reads a colour back out — and now that it is mounted for the life of the window, an
     /// observation here would re-render the whole transport every time any other screen resolved
@@ -66,6 +72,9 @@ struct MacNowPlayingBar: View {
             .padding(.vertical, Theme.Space.sm)
         }
         .background(.bar)
+        .onReceive(NotificationCenter.default.publisher(for: .vvdemusDebugOpenMiniplayer)) { _ in
+            openWindow(id: MiniPlayerPresence.windowId)
+        }
     }
 
     // MARK: - Pieces
@@ -228,6 +237,21 @@ struct MacNowPlayingBar: View {
                 tint: showLyrics ? Theme.accent : nil
             ) {
                 withAnimation(.easeInOut(duration: 0.18)) { showLyrics.toggle() }
+            }
+
+            // Not part of `panelBinding`'s pair: the queue and lyrics panels share one strip of
+            // this window and so exclude each other, while the miniplayer is a window of its own
+            // and has nothing to take turns with.
+            HoverButton(
+                systemImage: "pip",
+                label: miniPlayer.isOpen ? "Close miniplayer" : "Open miniplayer",
+                tint: miniPlayer.isOpen ? Theme.accent : nil
+            ) {
+                if miniPlayer.isOpen {
+                    dismissWindow(id: MiniPlayerPresence.windowId)
+                } else {
+                    openWindow(id: MiniPlayerPresence.windowId)
+                }
             }
 
             HStack(spacing: Theme.Space.xs) {

@@ -32,6 +32,23 @@ struct AlbumDetailView: View {
         sortOption.apply(to: filterTracks(tracks, matching: searchText))
     }
 
+    /// What a tapped row queues up behind itself.
+    ///
+    /// Sorted, because the queue has to be the order on screen: `PlayerService.play` queues
+    /// everything after the track *in the array it is handed*, so passing the album's natural
+    /// order while showing a re-sorted list queued songs that were nowhere near the one tapped —
+    /// and if the tapped row happened to be the album's last track in natural order, it queued
+    /// nothing at all. An empty context queue with a track still playing is the one state that
+    /// sends `advance()` into `continueAutoplay`, so the album stopped being an album and became
+    /// a radio named after that song, halfway down a list with songs still visible below it.
+    ///
+    /// Not filtered, deliberately: "Find on this page" narrows what you are *looking* at, and
+    /// playing a search hit should carry on through the record rather than through the three
+    /// songs that matched what you typed.
+    private var playbackContext: [Track] {
+        sortOption.apply(to: tracks)
+    }
+
     var body: some View {
         Group {
             if isLoading && tracks.isEmpty {
@@ -85,12 +102,14 @@ struct AlbumDetailView: View {
             } else {
                 ForEach(visibleTracks) { track in
                     TrackRow(track: track, isActive: player.currentTrack?.id == track.id) {
-                        player.play(track: track, context: tracks, contextTitle: current.title)
+                        player.play(track: track, context: playbackContext, contextTitle: current.title)
                     }
                     .trackRowMetrics()
                     .trackActions(track: track, player: player)
                 }
             }
+
+            TransportClearanceRow()
         }
         .listStyle(.plain)
         .searchable(text: $searchText, prompt: "Find on this page")
@@ -98,7 +117,10 @@ struct AlbumDetailView: View {
 
     private func playAll(shuffled: Bool) {
         guard !tracks.isEmpty else { return }
-        let ordered = shuffled ? tracks.shuffled() : tracks
+        // Same order the rows are in, for the same reason `playbackContext` exists: pressing Play
+        // on an album sorted by title and getting it back in track order is the same surprise as
+        // the queue disagreeing with the list, one press earlier.
+        let ordered = shuffled ? tracks.shuffled() : playbackContext
         // No `contextSeed`: that is what starts a *radio*, and it would record this album's
         // first track as a station in `RadioHistoryStore` every time the album was played.
         player.play(track: ordered[0], context: ordered, contextTitle: current.title)

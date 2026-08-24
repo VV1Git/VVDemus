@@ -481,4 +481,35 @@ final class QueueIdentityTests: XCTestCase {
 
         XCTAssertEqual(harness.player.manualQueue.map(\.videoId), ["q1", "q3"])
     }
+
+    // MARK: - Rolling into a radio (probe)
+
+    func testStartingTheLastTrackOfACollectionRollsStraightIntoARadio() async {
+        let album = Fixtures.tracks(["a", "b", "c"])
+        harness.radios.results["c"] = Fixtures.tracks(["r1", "r2", "r3"])
+
+        // The album's final track in its natural order.
+        await harness.startPlaying(album[2], context: album)
+        XCTAssertTrue(harness.player.contextQueue.isEmpty, "queue is empty the moment playback starts")
+
+        harness.player.advance()
+        await harness.settle { self.harness.player.currentTrack?.videoId == "r1" }
+
+        XCTAssertEqual(harness.player.currentTrack?.videoId, "r1")
+        XCTAssertEqual(harness.player.queueContextTitle, "c Radio")
+        XCTAssertEqual(harness.radios.requests, ["c"])
+    }
+
+    func testStartingAMiddleTrackKeepsPlayingTheAlbum() async {
+        let album = Fixtures.tracks(["a", "b", "c"])
+        harness.radios.results["b"] = Fixtures.tracks(["r1"])
+
+        await harness.startPlaying(album[1], context: album)
+        harness.player.advance()
+        await harness.settle { self.harness.player.currentTrack?.videoId == "c" }
+
+        XCTAssertEqual(harness.player.currentTrack?.videoId, "c")
+        XCTAssertTrue(harness.radios.requests.isEmpty, "no radio fetched while the album still has tracks")
+    }
+
 }

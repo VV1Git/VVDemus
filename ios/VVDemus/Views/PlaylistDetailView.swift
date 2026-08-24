@@ -24,6 +24,17 @@ struct PlaylistDetailView: View {
         sortOption.apply(to: filterTracks(playlist.tracks, matching: searchText))
     }
 
+    /// The order on screen, which is what a tapped row has to queue behind itself. See
+    /// `AlbumDetailView.playbackContext`: queueing from the unsorted list put the wrong songs
+    /// next, and tapping the row that was last in *that* order queued nothing — the one state
+    /// that rolls `advance()` into a fresh autoplay radio partway down a visible list.
+    ///
+    /// Sorted but not filtered, so playing a search hit carries on through the whole playlist
+    /// rather than through the handful of rows that matched what was typed.
+    private func playbackContext(for playlist: Playlist) -> [Track] {
+        sortOption.apply(to: playlist.tracks)
+    }
+
     var body: some View {
         Group {
             if let playlist {
@@ -127,7 +138,7 @@ struct PlaylistDetailView: View {
             } else {
                 ForEach(visible) { track in
                     TrackRow(track: track, isActive: player.currentTrack?.id == track.id) {
-                        player.play(track: track, context: playlist.tracks, contextTitle: playlist.name)
+                        player.play(track: track, context: playbackContext(for: playlist), contextTitle: playlist.name)
                     }
                     .trackRowMetrics()
                     .trackActions(track: track, player: player, includesTrailingSwipes: false) {
@@ -168,7 +179,7 @@ struct PlaylistDetailView: View {
 
     private func playAll(_ playlist: Playlist, shuffled: Bool) {
         guard !playlist.tracks.isEmpty else { return }
-        let ordered = shuffled ? playlist.tracks.shuffled() : playlist.tracks
+        let ordered = shuffled ? playlist.tracks.shuffled() : playbackContext(for: playlist)
         player.play(track: ordered[0], context: ordered, contextTitle: playlist.name)
     }
 }
