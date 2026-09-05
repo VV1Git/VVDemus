@@ -64,6 +64,14 @@ targets:
         NSLocalNetworkUsageDescription: >-
           Spotify β uses your local network to find and stay in sync with the Spotify β app on
           your computer.
+        # Bluetooth carries an address and nothing else — see PeerBeacon. It is how the two
+        # devices still find each other on a network that puts them in different subnets, where
+        # Bonjour cannot reach: mDNS is multicast with a TTL of 1 and no router forwards it.
+        # A missing usage string is not a degraded feature but an immediate crash, at the moment
+        # a CBCentralManager or CBPeripheralManager is allocated.
+        NSBluetoothAlwaysUsageDescription: >-
+          Spotify β uses Bluetooth to find the Spotify β app on your computer when your network
+          keeps the two from seeing each other.
         NSBonjourServices:
           - _vvdemus._tcp
         # The backup file's own type, so the import picker can offer backups instead of
@@ -172,6 +180,12 @@ targets:
         NSLocalNetworkUsageDescription: >-
           Spotify β uses your local network to find and stay in sync with the Spotify β app on
           your phone.
+        # See the iOS target's copy of this key. macOS 11+ prompts for Bluetooth too, and reads
+        # the same key; the grant is tied to the code signature, exactly as the local-network
+        # one already is.
+        NSBluetoothAlwaysUsageDescription: >-
+          Spotify β uses Bluetooth to find the Spotify β app on your phone when your network
+          keeps the two from seeing each other.
         NSBonjourServices:
           - _vvdemus._tcp
         # The backup file's own type, so the import picker can offer backups instead of

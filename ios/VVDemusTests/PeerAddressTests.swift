@@ -45,3 +45,65 @@ final class PeerAddressTests: XCTestCase {
         XCTAssertNil(PeerDiscovery.preferredIPv4(from: []))
     }
 }
+
+/// Which addresses are worth *writing down*, which is a narrower question than which are worth
+/// dialling — and conflating the two is what left one pairing pinned to a dead `169.254` address
+/// for months, with only Bonjour able to correct it and Bonjour unable to cross a router.
+final class RememberedAddressTests: XCTestCase {
+    func testASelfAssignedAddressIsNeverRemembered() {
+        XCTAssertFalse(
+            PeerDiscovery.isWorthRemembering("169.254.38.38"),
+            "a self-assigned address outlives the interface that invented it, and is then preferred over discovery on every reconnect"
+        )
+    }
+
+    func testARoutableAddressIsRemembered() {
+        for address in ["10.29.190.75", "192.168.1.79", "172.16.4.2"] {
+            XCTAssertTrue(PeerDiscovery.isWorthRemembering(address), address)
+        }
+    }
+
+    /// Loopback stays acceptable on purpose: a simulator running beside the Mac app genuinely
+    /// does reach it that way, which is why `preferredIPv4` ranks it above link-local rather
+    /// than discarding it.
+    func testLoopbackIsStillWorthRemembering() {
+        XCTAssertTrue(
+            PeerDiscovery.isWorthRemembering("127.0.0.1"),
+            "two copies of the app on one machine reach each other here and nowhere else"
+        )
+    }
+
+    /// Swifter hands back an empty string rather than nil when it cannot name the peer, and a
+    /// hostname cannot be dialled by an IPv4-only server.
+    func testNonAddressesAreNotRemembered() {
+        for junk in ["", "localhost", "nishants-macbook-pro.local", "fe80::1%en0", "10.29.190"] {
+            XCTAssertFalse(PeerDiscovery.isWorthRemembering(junk), "\"\(junk)\" was written down as a peer address")
+        }
+    }
+}
+
+/// The bound on how far a remembered address can point.
+///
+/// `PeerRoutes.learnPeerAddress` writes this field from an inbound request, authorised by a
+/// bearer token that travels in cleartext. Keeping the field inside the private ranges is what
+/// stops one captured token from redirecting a device to an attacker's machine on the open
+/// internet, permanently and on every future network.
+final class PeerAddressReachTests: XCTestCase {
+    func testAPublicAddressIsNeverRemembered() {
+        for address in ["203.0.113.9", "8.8.8.8", "18.30.139.221", "1.1.1.1"] {
+            XCTAssertFalse(
+                PeerDiscovery.isWorthRemembering(address),
+                "\(address) is off-LAN — this link is LAN-only, so that cannot be the peer"
+            )
+        }
+    }
+
+    func testTheEdgesOfThePrivateRangesAreRespected() {
+        for inside in ["172.16.0.1", "172.31.255.254", "10.0.0.1", "192.168.0.1", "100.64.0.1"] {
+            XCTAssertTrue(PeerDiscovery.isPrivateIPv4(inside), "\(inside) is inside a private range")
+        }
+        for outside in ["172.15.0.1", "172.32.0.1", "192.169.0.1", "100.128.0.1", "11.0.0.1"] {
+            XCTAssertFalse(PeerDiscovery.isPrivateIPv4(outside), "\(outside) is outside every private range")
+        }
+    }
+}

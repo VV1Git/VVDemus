@@ -1690,22 +1690,33 @@ final class LocalControlServer: ObservableObject {
     }
 
     private static func currentWiFiAddress() -> String? {
-        var address: String?
+        currentIPv4Addresses()["en0"]
+    }
+
+    /// Every IPv4 address this device currently holds, by interface name.
+    ///
+    /// Read fresh on every call, and deliberately not filtered down to `en0` the way
+    /// `currentWiFiAddress` is. That filter is right for the address shown in Settings — it is
+    /// the one a person types into a browser — but wrong for anything that has to keep working
+    /// as the machine moves: a Mac on Ethernet has no `en0` address at all, and `localAddress`
+    /// is captured once when the server starts and never revisited, so a device that changes
+    /// network goes on reporting the address it had at launch. `PeerBeacon` needs the truth now,
+    /// and picks among these with `PeerDiscovery.preferredIPv4`.
+    nonisolated static func currentIPv4Addresses() -> [String: String] {
+        var addresses: [String: String] = [:]
         var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddrPtr) == 0, let firstAddr = ifaddrPtr else { return nil }
+        guard getifaddrs(&ifaddrPtr) == 0, let firstAddr = ifaddrPtr else { return [:] }
         defer { freeifaddrs(ifaddrPtr) }
 
         for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
             let interface = ptr.pointee
             guard interface.ifa_addr.pointee.sa_family == UInt8(AF_INET) else { continue }
-            let name = String(cString: interface.ifa_name)
-            guard name == "en0" else { continue }
             var addr = interface.ifa_addr.pointee
             var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             getnameinfo(&addr, socklen_t(interface.ifa_addr.pointee.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
-            address = String(cString: hostname)
+            addresses[String(cString: interface.ifa_name)] = String(cString: hostname)
         }
-        return address
+        return addresses
     }
 }
 

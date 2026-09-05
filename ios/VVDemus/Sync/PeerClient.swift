@@ -222,6 +222,24 @@ enum PeerClient {
             }
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
+        // Bluetooth last, and only because the two above have failed. It is the slowest of the
+        // three — a scan, a connect and a read — but it is the only one that survives the two
+        // devices sitting on different subnets of one network, which is where Bonjour stops:
+        // mDNS is multicast with a TTL of 1 and no router forwards it. That is not an exotic
+        // setup; it is what a campus or office network does to two devices on one SSID.
+        if let found = await PeerBeacon.shared.resolveAddress(for: peer),
+           let url = URL(string: "http://\(found.host):\(found.port)") {
+            // Probed, not trusted. A beacon is sealed but not necessarily current — the peer may
+            // have moved since it sealed one — and this is the cheap way to tell, so the payload
+            // carries no expiry of its own.
+            if await answers(url, as: peer.peerId) {
+                PairedPeerStore.shared.rememberAddress(host: found.host, port: found.port)
+                PairLog.info("resolveBase: Bluetooth found \(peer.name) at \(found.host):\(found.port)")
+                cachedBase = (url, Date())
+                return url
+            }
+            PairLog.error("resolveBase: Bluetooth offered \(found.host):\(found.port) for \(peer.name), but nothing answered there")
+        }
         PairLog.error("resolveBase: gave up — \(peer.name) was not found on the network")
         throw PeerError.unreachable
     }
@@ -258,19 +276,28 @@ enum PeerClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if authorized {
-            guard let token = PairedPeerStore.shared.sessionToken() else { throw PeerError.notPaired }
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        if authorized { try authorize(&request) }
         request.httpBody = try encoder.encode(body)
         return try await send(request)
     }
 
     private static func get<Reply: Decodable>(_ url: URL) async throws -> Reply {
         var request = URLRequest(url: url)
+        try authorize(&request)
+        return try await send(request)
+    }
+
+    /// Both peer headers in one place: who we are, and where to call us back.
+    ///
+    /// The port is here because the other side cannot work it out. It learns this device's
+    /// address from the inbound connection, but that connection's source port is ephemeral — so
+    /// without this header a peer holds a host it can trust beside a port it has to guess, and
+    /// 51825 is only the right guess until two copies of the app on one machine push the second
+    /// to 51826.
+    private static func authorize(_ request: inout URLRequest) throws {
         guard let token = PairedPeerStore.shared.sessionToken() else { throw PeerError.notPaired }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        return try await send(request)
+        request.setValue(String(LocalControlServer.shared.port), forHTTPHeaderField: "x-vvdemus-port")
     }
 
     private static func send<Reply: Decodable>(_ request: URLRequest) async throws -> Reply {

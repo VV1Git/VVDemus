@@ -37,6 +37,10 @@ final class PairedPeerStore: ObservableObject {
     }
 
     func rememberAddress(host: String, port: Int) {
+        // The guard that was missing. See `PeerDiscovery.isWorthRemembering`: a self-assigned
+        // address stored here outlives the interface that invented it and is then preferred over
+        // discovery on every reconnect, so the link can only get worse from the moment it lands.
+        guard PeerDiscovery.isWorthRemembering(host) else { return }
         guard var peer, peer.lastKnownHost != host || peer.lastKnownPort != port else { return }
         peer.lastKnownHost = host
         peer.lastKnownPort = port
@@ -56,6 +60,10 @@ final class PairedPeerStore: ObservableObject {
         // relayed into nowhere and swallowed, with no way back short of relaunching the app.
         SessionOwnership.shared.resetToLocal()
         PeerPlayback.shared.forgetPeer()
+        // Otherwise the radio keeps offering this device's address, sealed to a peer that is no
+        // longer paired, for the rest of the process — advertising a relationship that has just
+        // been ended, and the one thing an unpair should certainly stop.
+        PeerBeacon.shared.stopAdvertising()
     }
 
     /// The bearer token both sides derive independently. Never transmitted during pairing —

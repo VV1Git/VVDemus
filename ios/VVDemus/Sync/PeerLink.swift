@@ -46,6 +46,7 @@ final class PeerLink: ObservableObject {
 
     func start() {
         PeerDiscovery.shared.startAdvertising(port: Int(LocalControlServer.shared.port))
+        PeerBeacon.shared.startAdvertising(port: Int(LocalControlServer.shared.port))
         guard timer == nil else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: Self.interval, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.syncNow() }
@@ -61,6 +62,7 @@ final class PeerLink: ObservableObject {
         timer?.invalidate()
         timer = nil
         PeerDiscovery.shared.stopAdvertising()
+        PeerBeacon.shared.stopAdvertising()
     }
 
     /// Pushes local library changes to the peer soon, rather than at the next minute boundary.
@@ -85,6 +87,10 @@ final class PeerLink: ObservableObject {
     /// One sync round. Safe to call at any time; overlapping calls collapse into one.
     func syncNow() async {
         guard let peer = PairedPeerStore.shared.peer, !isSyncing else { return }
+        // This device may have moved since the last round. Re-sealing here rather than on a timer
+        // of the beacon's own: a round is already the heartbeat that notices everything else
+        // about the link, and an address nobody is asking about costs nothing to leave stale.
+        PeerBeacon.shared.refreshAdvertisedAddress()
         isSyncing = true
         phase = "Reaching \(peer.name)…"
         defer {

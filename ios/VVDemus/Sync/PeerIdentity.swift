@@ -65,14 +65,22 @@ final class PeerIdentity {
     /// Salted with both peer ids in sorted order so the two sides agree without exchanging one
     /// more thing, and so the same key pair paired with a different device yields a different
     /// token.
-    func sharedSecret(with peerPublicKey: Data, peerId otherId: String) throws -> SymmetricKey {
+    /// `info` separates one use of the pairing from another. It defaults to the session key,
+    /// which is what becomes the bearer token; `PeerBeaconPayload.keyInfo` derives an independent
+    /// key from the same X25519 secret, so the beacon is not readable by anyone who has merely
+    /// watched a request go past on the LAN carrying that token in the clear.
+    func sharedSecret(
+        with peerPublicKey: Data,
+        peerId otherId: String,
+        info: String = "vvdemus-session-v1"
+    ) throws -> SymmetricKey {
         let publicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerPublicKey)
         let shared = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
         let salt = [peerId, otherId].sorted().joined(separator: "|")
         return shared.hkdfDerivedSymmetricKey(
             using: SHA256.self,
             salt: Data(salt.utf8),
-            sharedInfo: Data("vvdemus-session-v1".utf8),
+            sharedInfo: Data(info.utf8),
             outputByteCount: 32
         )
     }
