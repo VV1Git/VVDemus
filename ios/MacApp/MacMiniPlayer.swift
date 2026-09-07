@@ -70,6 +70,41 @@ struct MacMiniPlayerView: View {
     /// because it has no opaque ground left to draw.
     private static let windowCornerRadius: CGFloat = 14
 
+    /// How small the window may be dragged.
+    ///
+    /// The floor is here and nowhere else: `MiniPlayerWindowConfigurator` sets no
+    /// `contentMinSize`, so whatever this view declares as its minimum is what AppKit refuses to
+    /// resize past. 150pt square is about a third of the area the old 220×260 allowed, and it is
+    /// the point below which the transport row cannot be drawn at all — see `fullControlsWidth`.
+    private static let minimumSide: CGFloat = 150
+
+    /// The width the transport row needs to be drawn whole.
+    ///
+    /// Measured, not guessed: five controls — shuffle, previous, play, next, and the hidden twin
+    /// that centres the play disc — are 28pt each bar the 42pt disc, with four 12pt gaps and 12pt
+    /// of padding either side. That is 226pt, which the old 220pt floor was already 6pt inside:
+    /// at its smallest the window was clipping the capsule it was sized around. Narrower than
+    /// this the row sheds its shuffle buttons rather than being cut off.
+    private static let fullControlsWidth: CGFloat = 226
+
+    /// The height below which the title row drops to one line. A 150pt panel spends a third of
+    /// itself on a title block otherwise, and the artist is the half you can do without while
+    /// looking at the artwork it belongs to.
+    private static let twoLineTitleHeight: CGFloat = 210
+
+    /// The window's own size, measured rather than assumed.
+    ///
+    /// `onGeometryChange` rather than wrapping the body in a `GeometryReader`: a reader is a
+    /// layout container and would take part in sizing the very thing it reports, which is the
+    /// mistake the overlay comment further down was written about. This only observes.
+    @State private var panelSize: CGSize = .zero
+
+    /// Too narrow for the full transport row.
+    private var isNarrow: Bool { panelSize.width > 0 && panelSize.width < Self.fullControlsWidth }
+
+    /// Too short for a title *and* an artist.
+    private var isShort: Bool { panelSize.height > 0 && panelSize.height < Self.twoLineTitleHeight }
+
     /// What keeps a label readable when the glass goes the same brightness as the text on it.
     ///
     /// Matched to the appearance, not fixed: a black halo behind black text is what produced the
@@ -100,7 +135,8 @@ struct MacMiniPlayerView: View {
             stage
             bottomBar
         }
-        .frame(minWidth: 220, minHeight: 260)
+        .frame(minWidth: Self.minimumSide, minHeight: Self.minimumSide)
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { panelSize = $0 }
         // One glass surface for the whole window rather than a material per bar.
         //
         // The top strip, the bands either side of the cover and the title row are all the same
@@ -153,14 +189,27 @@ struct MacMiniPlayerView: View {
                     resting(side: side)
                 }
 
-                // Above the art, below the scrubber: the controls are what the pointer is here
-                // for, and the scrubber has to stay hittable while they are showing.
-                if isHovering, peer.displayedTrack != nil {
-                    controlsLayer
-                        .transition(.opacity)
-                }
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            // An overlay, and always mounted — never a sibling inside the `ZStack` above, and
+            // never inserted by an `if`. Both of those were doing visible damage in lyrics mode:
+            //
+            // - As a `ZStack` child it took part in the layout. Its lyrics-mode form is a
+            //   `Spacer` above a 118pt gradient, so the stack re-measured the moment it appeared
+            //   and shoved the words up, then dropped them again when the pointer left.
+            // - Being added and removed changed the stack's child list, which churned
+            //   `LyricsView`'s identity and lost its scroll position — which is why the words did
+            //   not come back to where they had been.
+            //
+            // An overlay is laid out against its parent's already-decided frame and cannot
+            // influence it, and a child whose opacity changes is never structurally re-created.
+            .overlay {
+                controlsLayer
+                    .opacity(isHovering && peer.displayedTrack != nil ? 1 : 0)
+                    // Invisible controls must not eat clicks meant for the words behind them.
+                    .allowsHitTesting(isHovering && peer.displayedTrack != nil)
+            }
+            // After the controls, so the scrubber stays on top and hittable while they show.
             .overlay(alignment: .bottom) { scrubberBlock }
             .clipped()
             .contentShape(Rectangle())
@@ -240,8 +289,11 @@ struct MacMiniPlayerView: View {
     }
 
     private var transportOverlay: some View {
-        HStack(spacing: Theme.Space.md) {
-            shuffleButton
+        HStack(spacing: isNarrow ? Theme.Space.sm : Theme.Space.md) {
+            // Shuffle is what goes first when there is no room, on both sides: it is the one
+            // control here with an equivalent a click away in the main window, and dropping a
+            // pair keeps the play disc centred without the balancing trick below.
+            if !isNarrow { shuffleButton }
 
             HoverButton(systemImage: "backward.fill", label: "Previous track") { player.previous() }
 
@@ -262,7 +314,7 @@ struct MacMiniPlayerView: View {
                             .foregroundStyle(onPrimary)
                     }
                 }
-                .frame(width: 42, height: 42)
+                .frame(width: playDiameter, height: playDiameter)
                 .contentShape(Circle())
             }
             .buttonStyle(.pressable)
@@ -277,17 +329,26 @@ struct MacMiniPlayerView: View {
             // looking for, and the one the artwork is centred behind. Mirroring the leading
             // button's exact width puts it dead centre without inventing a fifth control or
             // hand-tuning a padding that would drift the moment a glyph changed.
-            shuffleButton
-                .hidden()
-                .accessibilityHidden(true)
+            //
+            // Narrow, there is nothing to balance: previous, play and next are symmetric on
+            // their own, and a hidden 28pt column is 28pt the row cannot spare.
+            if !isNarrow {
+                shuffleButton
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
         }
-        .padding(.horizontal, Theme.Space.md)
+        .padding(.horizontal, isNarrow ? Theme.Space.sm : Theme.Space.md)
         .padding(.vertical, Theme.Space.sm)
         // Glass, not a black wash: the wash was invisible over a dark desktop and a grey slab
         // over a light one. `.regular` rather than the window's `.clear` deliberately — the
         // controls are the one thing here that must stay legible whatever is behind them.
         .glassEffect(.regular, in: .capsule)
     }
+
+    /// The play disc shrinks with the panel rather than crowding out its neighbours: at the
+    /// 150pt floor a 34pt disc with 8pt gaps puts the row at 122pt, comfortably inside the glass.
+    private var playDiameter: CGFloat { isNarrow ? 34 : 42 }
 
     private var shuffleButton: some View {
         HoverButton(
@@ -344,10 +405,12 @@ struct MacMiniPlayerView: View {
                 Text(peer.displayedTrack?.title ?? "Nothing playing")
                     .font(.miniTitle)
                     .lineLimit(1)
-                Text(peer.displayedTrack?.artist ?? " ")
-                    .font(.miniSubtitle)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if !isShort {
+                    Text(peer.displayedTrack?.artist ?? " ")
+                        .font(.miniSubtitle)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

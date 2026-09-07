@@ -213,7 +213,13 @@ async function api(path, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
     // Every request funnels through here, so this is the one place reachability has to be
     // recorded — the poll is no longer the only thing that can clear the banner.
     noteContactWithPhone();
-    if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+    if (!res.ok) {
+      // The status travels with the error: a caller that can say something more useful than
+      // "it failed" for one particular code needs to be able to tell which code it was.
+      const failure = new Error(`${path} -> ${res.status}`);
+      failure.status = res.status;
+      throw failure;
+    }
     const contentType = res.headers.get("content-type") || "";
     // `await`, not a bare `return` of the promise. Returning it from inside `try/finally`
     // runs the `finally` — and so `clearTimeout` — as soon as the promise is *created*,
@@ -1094,8 +1100,16 @@ document.getElementById("detail-shuffle").onclick = reporting("Shuffle play", as
   refreshBtn.onclick = reporting("Refresh", () =>
     withBusy(refreshBtn, async () => {
       if (detail.kind === "radio" && detail.seedTrack) {
-        const tracks = await post("/api/radio/refresh", { videoId: detail.seedTrack.videoId }, CONTENT_TIMEOUT_MS);
-        openRadioDetail(detail.seedTrack, tracks);
+        try {
+          const tracks = await post("/api/radio/refresh", { videoId: detail.seedTrack.videoId }, CONTENT_TIMEOUT_MS);
+          openRadioDetail(detail.seedTrack, tracks);
+        } catch (e) {
+          // 409 is the phone saying the station is intact but YouTube had nothing new for
+          // this seed. The mix on screen is still correct, so it is left exactly as it is —
+          // and the message says what happened instead of blaming the connection.
+          if (e && e.status === 409) showError("No new songs for this radio right now");
+          else throw e;
+        }
       } else if (detail.kind === "daylist") {
         await post("/api/library/daylist/refresh", {}, CONTENT_TIMEOUT_MS);
         await openDaylistDetail();

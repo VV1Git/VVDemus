@@ -1,5 +1,17 @@
 import Foundation
 
+/// One page of a radio: the songs on it, and the token that asks for the next one.
+///
+/// A radio is infinite — the response says so, `isInfinite: true` — and every page carries a
+/// `nextRadioContinuationData` token for the one after it. Nothing read that token until
+/// refresh needed songs a station had not already shown; see `RadioFreshener`.
+struct RadioPage {
+    let tracks: [Track]
+    /// `nil` when the response offered no further page. Rare for a radio, and treated as
+    /// "this seam is exhausted" rather than as an error.
+    let continuation: String?
+}
+
 /// Talks directly to YouTube Music's internal ("InnerTube") API — the same API the
 /// music.youtube.com web client and the ytmusicapi/yt-dlp Python libraries use — so the
 /// app needs no backend server of its own and works over any network, not just a LAN.
@@ -311,15 +323,66 @@ enum InnerTubeClient {
     /// `isAudioOnly: true` is already in the request below and YouTube ignores it — it governs
     /// playback, not selection.
     static func radio(videoId: String, limit: Int = radioLength) async throws -> [Track] {
+        try await radioPage(videoId: videoId, limit: limit).tracks
+    }
+
+    /// The same mix, plus the token that asks for the next page of it.
+    ///
+    /// Only refresh wants the token — everything else (autoplay, the recommendation shelves,
+    /// the daylist, the control server's `/api/radio`) wants the songs and calls `radio`.
+    static func radioPage(videoId: String, limit: Int = radioLength) async throws -> RadioPage {
         let first = try await fetchRadio(seed: videoId, limit: limit)
 
         // The seed is always the first entry, so its kind is the whole answer.
-        if let seed = first.first, seed.isAudio == false,
+        if let seed = first.entries.first, seed.isAudio == false,
            let audioSeed = try? await audioCounterpart(of: seed.track), audioSeed != videoId {
             let retry = try await fetchRadio(seed: audioSeed, limit: limit)
-            if retry.contains(where: \.isAudio) { return keepingAudio(retry, limit: limit) }
+            if retry.entries.contains(where: \.isAudio) {
+                // The retry's token, not the first attempt's: the two are different stations,
+                // and continuing the video-seeded one would page deeper into exactly the
+                // recordings the swap was made to get away from.
+                return RadioPage(tracks: keepingAudio(retry.entries, limit: limit), continuation: retry.continuation)
+            }
         }
-        return keepingAudio(first, limit: limit)
+        return RadioPage(tracks: keepingAudio(first.entries, limit: limit), continuation: first.continuation)
+    }
+
+    /// The next page of a radio already begun, `token` coming from a previous page.
+    ///
+    /// The token goes in the body rather than the query string. They arrive already carrying
+    /// `%`-escapes, so putting one in a URL means re-encoding an encoded string correctly
+    /// every time, and getting that subtly wrong reads as an empty page rather than an error.
+    ///
+    /// No seed normalisation here, unlike `radioPage`: a continuation belongs to a station
+    /// that was already normalised when it was started, and there is nothing to re-seed with.
+    static func radioContinuation(token: String) async throws -> RadioPage {
+        let body: [String: Any] = [
+            "context": [
+                "client": ["clientName": "WEB_REMIX", "clientVersion": clientVersion],
+                "user": [String: Any](),
+            ],
+            "continuation": token,
+        ]
+        let json = try await post(
+            url: "https://music.youtube.com/youtubei/v1/next?alt=json&prettyPrint=false&key=\(webRemixAPIKey)",
+            userAgent: webUserAgent,
+            origin: "https://music.youtube.com",
+            body: body
+        )
+
+        let panel = json["continuationContents"]["playlistPanelContinuation"]
+        var entries: [RadioEntry] = []
+        for item in panel["contents"].array ?? [] {
+            let renderer = item["playlistPanelVideoRenderer"]
+            // Every entry is a recommendation here — there is no seed on a second page to
+            // make an exception for, so the long-form filter applies to all of them.
+            guard let track = parseWatchItem(renderer), !track.isLongFormMix else { continue }
+            entries.append(RadioEntry(track: track, musicVideoType: musicVideoType(of: renderer)))
+        }
+        return RadioPage(
+            tracks: keepingAudio(entries, limit: entries.count),
+            continuation: continuationToken(in: panel)
+        )
     }
 
     private struct RadioEntry {
@@ -383,7 +446,18 @@ enum InnerTubeClient {
             .agreement(with: TrackMatcher.ArtistName(candidate.artist)) != 0
     }
 
-    private static func fetchRadio(seed: String, limit: Int) async throws -> [RadioEntry] {
+    /// A page as it comes off the wire, before the audio filter runs — `keepingAudio` needs
+    /// to see every entry to know whether filtering would gut the mix.
+    private struct RadioFetch {
+        let entries: [RadioEntry]
+        let continuation: String?
+    }
+
+    private static func continuationToken(in panel: JSON) -> String? {
+        panel["continuations"][0]["nextRadioContinuationData"]["continuation"].string
+    }
+
+    private static func fetchRadio(seed: String, limit: Int) async throws -> RadioFetch {
         let body: [String: Any] = [
             "context": [
                 "client": ["clientName": "WEB_REMIX", "clientVersion": clientVersion],
@@ -403,7 +477,8 @@ enum InnerTubeClient {
             body: body
         )
 
-        let items = json["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"]["contents"].array ?? []
+        let panel = json["contents"]["singleColumnMusicWatchNextResultsRenderer"]["tabbedRenderer"]["watchNextTabbedResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["musicQueueRenderer"]["content"]["playlistPanelRenderer"]
+        let items = panel["contents"].array ?? []
         var entries: [RadioEntry] = []
         for item in items {
             let renderer = item["playlistPanelVideoRenderer"]
@@ -416,7 +491,7 @@ enum InnerTubeClient {
                 if entries.count >= limit { break }
             }
         }
-        return entries
+        return RadioFetch(entries: entries, continuation: continuationToken(in: panel))
     }
 
     /// `MUSIC_VIDEO_TYPE_ATV` for an audio upload, `…_OMV` for an official video, `…_UGC` for a

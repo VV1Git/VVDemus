@@ -146,8 +146,8 @@ struct RadioDetailView: View {
         player.play(track: ordered[0], context: ordered, contextTitle: title, contextSeed: seedTrack)
     }
 
-    private func fetchTracks() async throws -> [Track] {
-        try await APIClient.shared.radio(videoId: seedTrack.videoId)
+    private func fetchPage() async throws -> RadioPage {
+        try await APIClient.shared.radioPage(videoId: seedTrack.videoId)
     }
 
     /// Fetches a mix only the first time a radio is opened; after that the cached list is
@@ -166,8 +166,11 @@ struct RadioDetailView: View {
         }
         isLoading = true
         do {
-            let fresh = try await fetchTracks()
-            RadioCacheStore.shared.store(fresh, for: seedTrack.videoId)
+            // The page's continuation token is stored alongside its songs so the first
+            // refresh can page straight on from here instead of spending a request
+            // re-reading the page it is trying to get away from.
+            let fresh = try await fetchPage()
+            RadioCacheStore.shared.store(fresh.tracks, for: seedTrack.videoId, continuation: fresh.continuation)
         } catch {
             if tracks.isEmpty {
                 errorMessage = "Couldn't load this radio. Check your connection."
@@ -176,15 +179,27 @@ struct RadioDetailView: View {
         isLoading = false
     }
 
-    /// Re-fetches a fresh mix for the same seed track — YouTube Music's radio endpoint
-    /// varies between calls, so this surfaces a different set of related songs. Storing it
-    /// updates every view (and every connected web browser) watching this radio.
+    /// Rebuilds the mix around the same seed, keeping the seed itself pinned at the top.
+    ///
+    /// `RadioRefreshService` is what does the work, and it is shared with the web remote's
+    /// Refresh button so the two cannot mean different things. What it guarantees: over half
+    /// the list is songs this station has not shown, and nothing survives three refreshes.
+    ///
+    /// This used to be one more call to the same endpoint, on the belief that the endpoint
+    /// answers differently every time. It answers *nearly* the same — 31 of 50 tracks shared
+    /// between two back-to-back calls — so Refresh reshuffled the list and brought the same
+    /// songs back, which is what it was reported as doing.
     private func refresh() async {
         isRefreshing = true
         errorMessage = nil
         do {
-            let fresh = try await fetchTracks()
-            RadioCacheStore.shared.store(fresh, for: seedTrack.videoId)
+            try await RadioRefreshService.refresh(seedVideoId: seedTrack.videoId, fallbackSeed: seedTrack)
+        } catch RadioRefreshService.Failure.notEnoughNewSongs {
+            // Distinguished from a connection failure because the fix is different: nothing
+            // is wrong with the network, YouTube has simply run out of songs to suggest for
+            // this seed. Telling someone to check their connection sends them after a
+            // problem they do not have.
+            errorMessage = "No new songs for this radio right now. Try again later."
         } catch {
             // The `try?` this replaces made a refresh that never reached YouTube look exactly
             // like one that came back with the same songs: the menu item stopped saying
