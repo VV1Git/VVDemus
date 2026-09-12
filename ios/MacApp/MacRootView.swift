@@ -168,6 +168,8 @@ struct MacRootView: View {
             // After the server, which owns the port being advertised.
             PeerLink.shared.start()
             PeerPlayback.shared.start()
+            // Does nothing until switched on in Settings.
+            DiscordPresence.shared.start()
             await PeerLink.shared.refreshResumeOffer()
         }
     }

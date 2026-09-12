@@ -113,6 +113,10 @@ struct SettingsView: View {
 
         DataTransferSection()
 
+        #if os(macOS)
+        DiscordPresenceSection()
+        #endif
+
         Section {
             Toggle(
                 "VVDemus Connect",
