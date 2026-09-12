@@ -114,8 +114,16 @@ struct RemoteImage: View {
     /// device's display scale, shrunk further under Data Saver. Avoids paying for (and
     /// caching) full-resolution bytes for a 48pt row thumbnail.
     static func targetPixelSize(for pointSize: CGFloat, displayScale: CGFloat) -> Int {
+        #if os(macOS)
+        // Data Saver is not consulted on the Mac. It exists for a phone paying for bytes on a
+        // cellular connection — the setting's own screen says so — and a desktop on wifi shrinking
+        // its artwork by a quarter buys nothing anyone asked for. The clamp in
+        // `resizedThumbnailUrl` still applies, so this asks for more only where more exists.
+        let multiplier = 1.0
+        #else
         let dataSaver = UserDefaults.standard.bool(forKey: InnerTubeClient.dataSaverDefaultsKey)
         let multiplier = dataSaver ? 0.75 : 1.0
+        #endif
         return max(1, Int((pointSize * displayScale * multiplier).rounded(.up)))
     }
 
@@ -160,11 +168,24 @@ struct RemoteImage: View {
         let base = String(path[..<range.upperBound])
 
         let variant: String
+        #if os(macOS)
+        // One step up from the phone's ladder at every rung.
+        //
+        // These variants are 16:9, and this app shows artwork square — so `mqdefault`'s 320×180
+        // has only 180px down the axis that gets cropped to, and a 96pt tile on a Retina Mac
+        // wants 192. It was being handed less than it asked for and the result read as blurry
+        // even though the sizing arithmetic was "right". A desktop on wifi can afford the 21.4 KB.
+        switch targetPixels {
+        case ..<320: variant = "hqdefault"   // 480×360, ~21.4 KB
+        default: return nil                  // anything larger keeps the full-size original
+        }
+        #else
         switch targetPixels {
         case ..<200: variant = "mqdefault"   // 320×180, ~11.5 KB
         case ..<400: variant = "hqdefault"   // 480×360, ~21.4 KB
         default: return nil                  // hero images keep whatever they were given
         }
+        #endif
         return "https://i.ytimg.com\(base)\(variant).jpg"
     }
 }

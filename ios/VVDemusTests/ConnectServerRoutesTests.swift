@@ -24,6 +24,7 @@ final class ConnectServerRoutesTests: XCTestCase {
 
     override func tearDown() async throws {
         server.radioMix.restoreDefault()
+        server.radioRefresh.restoreDefault()
         server.freshStreamUrl.restoreDefault()
         server.backgroundTasks = UIApplication.shared
         PlayerService.shared.setActiveDevice(.iphone)
@@ -85,12 +86,16 @@ final class ConnectServerRoutesTests: XCTestCase {
     func testRefreshingARadioThatComesBackEmptyKeepsTheMixAlreadyCached() async throws {
         let seed = uniqueId("seed")
         let firstId = uniqueId("mix")
-        server.radioMix.replace { _ in [Fixtures.track(firstId), Fixtures.track(firstId + "-b")] }
+        server.radioRefresh.replace { _ in [Fixtures.track(firstId), Fixtures.track(firstId + "-b")] }
         let populated = try await post("/api/radio/refresh", ["videoId": seed])
         XCTAssertEqual(populated.status, 200)
         XCTAssertEqual(try populated.json([Track].self).count, 2)
+        // The stub returns the mix but does not cache it, so put it where a real refresh
+        // would have: the route answers with what the store holds, which is the whole point
+        // of the assertion below.
+        RadioCacheStore.shared.store([Fixtures.track(firstId), Fixtures.track(firstId + "-b")], for: seed)
 
-        server.radioMix.replace { _ in [] }
+        server.radioRefresh.replace { _ in [] }
         let empty = try await post("/api/radio/refresh", ["videoId": seed])
 
         XCTAssertEqual(empty.status, 200)
@@ -103,12 +108,35 @@ final class ConnectServerRoutesTests: XCTestCase {
 
     func testRefreshingARadioWithARealMixReplacesTheCachedOne() async throws {
         let seed = uniqueId("seed")
-        server.radioMix.replace { _ in [Fixtures.track("old")] }
-        _ = try await post("/api/radio/refresh", ["videoId": seed])
-        server.radioMix.replace { _ in [Fixtures.track("new-a"), Fixtures.track("new-b")] }
+        RadioCacheStore.shared.store([Fixtures.track("old")], for: seed)
+        server.radioRefresh.replace { videoId in
+            let fresh = [Fixtures.track("new-a"), Fixtures.track("new-b")]
+            await MainActor.run { RadioCacheStore.shared.store(fresh, for: videoId) }
+            return fresh
+        }
 
         let refreshed = try await post("/api/radio/refresh", ["videoId": seed])
         XCTAssertEqual(try refreshed.json([Track].self).map(\.videoId), ["new-a", "new-b"])
+    }
+
+    /// A refresh that could not find enough new songs is not a fault and must not read as
+    /// one: the station is intact, and 409 is what tells the browser to say so and leave the
+    /// list it is showing exactly where it is.
+    func testARefreshWithNothingNewToOfferIsRejectedRatherThanEmptied() async throws {
+        let seed = uniqueId("seed")
+        RadioCacheStore.shared.store([Fixtures.track("kept-a"), Fixtures.track("kept-b")], for: seed)
+        server.radioRefresh.replace { _ in
+            throw RadioRefreshService.Failure.notEnoughNewSongs(found: 0, needed: 1)
+        }
+
+        let response = try await post("/api/radio/refresh", ["videoId": seed])
+
+        XCTAssertEqual(response.status, 409)
+        XCTAssertEqual(
+            RadioCacheStore.shared.tracks(for: seed)?.map(\.videoId),
+            ["kept-a", "kept-b"],
+            "A refusal must leave the station alone"
+        )
     }
 
     // MARK: - Bounds

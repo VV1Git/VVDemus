@@ -110,4 +110,10 @@ final class APIClient {
     func radio(videoId: String, limit: Int = InnerTubeClient.radioLength) async throws -> [Track] {
         try await InnerTubeClient.radio(videoId: videoId, limit: limit)
     }
+
+    /// The same mix, plus the token for the next page of it. Only the radio screen's first
+    /// load and `RadioRefreshService` want the token; see `RadioFreshener` for what it buys.
+    func radioPage(videoId: String, limit: Int = InnerTubeClient.radioLength) async throws -> RadioPage {
+        try await InnerTubeClient.radioPage(videoId: videoId, limit: limit)
+    }
 }

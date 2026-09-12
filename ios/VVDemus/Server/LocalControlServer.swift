@@ -169,6 +169,13 @@ final class LocalControlServer: ObservableObject {
     nonisolated let radioMix = UpstreamCall<String, [Track]> { videoId in
         try await APIClient.shared.radio(videoId: videoId)
     }
+    /// A radio *refreshed*, which is a different job from fetching one: it has to bring songs
+    /// this station has not shown before. `RadioRefreshService` is the same code the phone's
+    /// own Refresh button runs, so the browser and the screen cannot disagree about what
+    /// pressing it does. It stores the result itself — hence `[Track]` back, not a write here.
+    nonisolated let radioRefresh = UpstreamCall<String, [Track]> { videoId in
+        try await RadioRefreshService.refresh(seedVideoId: videoId)
+    }
     /// The port the request guards compare against.
     ///
     /// The guards run on Swifter's connection threads and are installed exactly once (see
@@ -568,6 +575,16 @@ final class LocalControlServer: ObservableObject {
             }
             return .ok(.text("ok"))
         }
+        #if os(macOS)
+        server.POST["/api/debug/miniplayer"] = { [weak self] _ in
+            guard let self else { return .internalServerError }
+            self.onMain {
+                NotificationCenter.default.post(name: .vvdemusDebugOpenMiniplayer, object: nil)
+            }
+            return .ok(.text("ok"))
+        }
+        #endif
+
         server.POST["/api/toggle"] = { [weak self] _ in
             self?.onMain { PlayerService.shared.togglePlayPause() }
             return .ok(.text("ok"))
@@ -935,21 +952,26 @@ final class LocalControlServer: ObservableObject {
         }
         server.POST["/api/radio/refresh"] = { [weak self] request in
             guard let self, let body: VideoIdBody = self.decodeBody(request) else { return .badRequest(.text("bad body")) }
-            switch self.awaitAsync({ [radioMix = self.radioMix] in try await radioMix(body.videoId) }) {
+            switch self.awaitAsync({ [radioRefresh = self.radioRefresh] in try await radioRefresh(body.videoId) }) {
             case .success(let tracks):
-                // Storing pushes onUpdate → broadcastRadioUpdate, which is what actually
-                // syncs this to the phone (and any other open browser) live.
+                // The service stores what it decided, and storing pushes onUpdate →
+                // broadcastRadioUpdate, which is what syncs this to the phone (and any other
+                // open browser) live.
                 //
-                // The reply is whatever the store now holds, not what came back: `store`
-                // deliberately refuses an empty mix (YouTube's radio endpoint returns one
-                // often enough), so answering with `tracks` told the browser to render
+                // The reply is whatever the store now holds rather than what came back: a
+                // refresh that could not find enough new songs deliberately leaves the mix
+                // alone, and answering with an empty list told the browser to render
                 // "Nothing here yet." over a perfectly good station the phone still had —
                 // a refresh that changed nothing anywhere looked like it had wiped the list.
-                let stored = self.onMain {
-                    RadioCacheStore.shared.store(tracks, for: body.videoId)
-                    return RadioCacheStore.shared.tracks(for: body.videoId)
-                }
+                let stored = self.onMain { RadioCacheStore.shared.tracks(for: body.videoId) }
                 return self.jsonResponse(stored ?? tracks)
+            case .failure(RadioRefreshService.Failure.notEnoughNewSongs):
+                // Distinguished from a 500 because it is not a fault: YouTube has run out of
+                // suggestions for this seed, the station is untouched, and the browser should
+                // say so rather than "Refresh failed" — which reads as "your phone is broken"
+                // and invites the retry that will fail the same way.
+                return .raw(409, "Conflict", ["Content-Type": "text/plain"],
+                            { try $0.write(Data("no new songs for this radio".utf8)) })
             case .failure: return .internalServerError
             }
         }

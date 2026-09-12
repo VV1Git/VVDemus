@@ -14,6 +14,14 @@ struct DaylistDetailView: View {
         sortOption.apply(to: filterTracks(store.tracks, matching: searchText))
     }
 
+    /// The order on screen, which is what a tapped row has to queue behind itself. See
+    /// `AlbumDetailView.playbackContext`: queueing from the unsorted list put the wrong songs
+    /// next, and tapping the row that was last in *that* order queued nothing — the one state
+    /// that rolls `advance()` into a fresh autoplay radio partway down a visible list.
+    private var playbackContext: [Track] {
+        sortOption.apply(to: store.tracks)
+    }
+
     var body: some View {
         Group {
             if store.tracks.isEmpty && store.isRefreshing {
@@ -75,7 +83,7 @@ struct DaylistDetailView: View {
             } else {
                 ForEach(visibleTracks) { track in
                     TrackRow(track: track, isActive: player.currentTrack?.id == track.id) {
-                        player.play(track: track, context: store.tracks, contextTitle: store.title)
+                        player.play(track: track, context: playbackContext, contextTitle: store.title)
                     }
                     .trackRowMetrics()
                     .trackActions(track: track, player: player)
@@ -90,7 +98,7 @@ struct DaylistDetailView: View {
 
     private func playAll(shuffled: Bool) {
         guard !store.tracks.isEmpty else { return }
-        let ordered = shuffled ? store.tracks.shuffled() : store.tracks
+        let ordered = shuffled ? store.tracks.shuffled() : playbackContext
         player.play(track: ordered[0], context: ordered, contextTitle: store.title)
     }
 }

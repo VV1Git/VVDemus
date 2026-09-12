@@ -59,8 +59,10 @@ struct TransportClearanceRow: View {
 private struct TransportClearancePadding: ViewModifier {
     @ObservedObject private var metrics = TransportMetrics.shared
 
+    let isEnabled: Bool
+
     func body(content: Content) -> some View {
-        content.padding(.bottom, metrics.height)
+        content.padding(.bottom, isEnabled ? metrics.height : 0)
     }
 }
 
@@ -70,7 +72,14 @@ extension View {
     /// Applied to the content *inside* a `ScrollView`, never to the `ScrollView` itself —
     /// padding on the container moves the whole viewport and leaves the content scrolling
     /// under the bar exactly as before.
-    func transportClearance() -> some View {
-        modifier(TransportClearancePadding())
+    ///
+    /// `isEnabled: false` is for content in a window that has no transport bar under it. The
+    /// height above is a single app-wide figure measured by `MacRootView` — deliberately, so it
+    /// cannot be positioned wrongly — which means a second window inherits the *main* window's
+    /// bar height and reserves empty space for a bar that is not there. The miniplayer is the
+    /// case: it shows `LyricsView`, whose every branch clears itself, in a panel shorter than the
+    /// clearance it would apply.
+    func transportClearance(_ isEnabled: Bool = true) -> some View {
+        modifier(TransportClearancePadding(isEnabled: isEnabled))
     }
 }
