@@ -2626,11 +2626,13 @@ function runSearch(q) {
       if (generation !== searchGeneration) return; // a newer query has since been typed
       renderSearchResults(list, interleaveResults(tracks, albums), {
         scope: `search:${q}`,
-        // `tracks`, not the interleaved list: this is the queue a tapped song plays in the
-        // context of, and an album row is not something a queue can hold.
+        // No context, as on the phone's Search screen. The other results are other answers
+        // to the query, not songs that belong after this one, and queuing them played the
+        // search back in result order. With nothing queued, autoplay rolls into this song's
+        // radio when it ends.
         onPlay: (t) =>
           reporting("Play", async () => {
-            await post("/api/play", { track: t, context: tracks, contextTitle: "Search" });
+            await post("/api/play", { track: t, contextTitle: "Search" });
             await refreshState();
           })(),
       });
