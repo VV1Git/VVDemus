@@ -207,9 +207,9 @@ targets:
       base:
         # The Discord application whose name follows "Listening to" on a profile — created at
         # discord.com/developers/applications, and not a secret: it is sent in the clear to the
-        # local Discord app and grants nothing. Empty leaves Settings ▸ Show on Discord saying
-        # the build has no application id.
-        DISCORD_CLIENT_ID: ""
+        # local Discord app and grants nothing. Empty would leave Settings ▸ Show on Discord
+        # saying the build has no application id.
+        DISCORD_CLIENT_ID: "1548803211677270118"
         # A distinct id from the phone's: these are two apps, installed on two machines, and
         # the Mac has its own container. Derived from the same local value so it moves with
         # whatever prefix this machine signs under.
