@@ -4,12 +4,8 @@ struct SearchView: View {
     @ObservedObject var player: PlayerService
     @ObservedObject var coordinator: NavigationCoordinator
     @State private var query = ""
-    /// Songs and releases in one list — see `SearchResult.interleave`. The songs are kept
-    /// separately as well, because they and not the mixed list are what a tapped song plays
-    /// in the context of: a queue is a list of tracks, and an album row sitting in the middle
-    /// of one is not something the player could represent.
+    /// Songs and releases in one list — see `SearchResult.interleave`.
     @State private var results: [SearchResult] = []
-    @State private var tracks: [Track] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var searchTask: Task<Void, Never>?
@@ -121,7 +117,11 @@ struct SearchView: View {
             TrackRow(
                 track: track,
                 isActive: player.currentTrack?.id == track.id,
-                onTap: { player.play(track: track, context: tracks, contextTitle: "Search") }
+                // No context. The other results are other answers to the query, not songs
+                // that belong after this one, and queuing them played the search back in
+                // result order. With nothing queued, autoplay rolls into this song's radio
+                // when it ends.
+                onTap: { player.play(track: track, contextTitle: "Search") }
             )
             .trackActions(track: track, player: player)
         case .album(let album):
@@ -255,7 +255,6 @@ struct SearchView: View {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             results = []
-            tracks = []
             errorMessage = nil
             return
         }
@@ -272,7 +271,6 @@ struct SearchView: View {
         do {
             let (found, releases) = try await (songs, albums)
             guard !Task.isCancelled else { return }
-            tracks = found
             results = SearchResult.interleave(tracks: found, albums: releases)
             // Only remembered once it actually returned something, so half-typed queries
             // that happened to match nothing don't clutter the list.
@@ -283,7 +281,6 @@ struct SearchView: View {
             // a request was superseded more than 350ms in.
             guard !Task.isCancelled else { return }
             results = []
-            tracks = []
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "Couldn't search right now."
         }
     }
