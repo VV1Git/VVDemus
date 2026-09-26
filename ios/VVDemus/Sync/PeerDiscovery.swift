@@ -164,6 +164,48 @@ extension PeerDiscovery: NetServiceDelegate, NetServiceBrowserDelegate {
         return 1
     }
 
+    /// Whether an address is worth *remembering*, as opposed to worth dialling right now.
+    ///
+    /// The two are not the same question, and conflating them is what broke this link. Ranking
+    /// picks the best of what a browse turned up, and if a self-assigned address is all there is
+    /// then dialling it is still the best move available. Writing it down is not: it routes
+    /// nowhere the moment the interface that invented it changes, and `lastKnownHost` is tried
+    /// ahead of Bonjour on every reconnect for the rest of the pairing's life. One pairing spent
+    /// months pinned to `169.254.38.38` with the peer reachable on a routable address the whole
+    /// time, because the only thing that could overwrite it was a browse — and a browse cannot
+    /// cross a router.
+    ///
+    /// Loopback stays acceptable: two copies of the app on one machine genuinely do reach each
+    /// other that way, which `rank` already allows for.
+    /// A public address is refused too, and that is a security bound rather than a tidiness one.
+    /// This link is LAN-only by construction, so a peer that appears to live on the open internet
+    /// is not the peer. It matters because `PeerRoutes.learnPeerAddress` now writes this field
+    /// from an inbound request: the bearer token authorising that request travels in cleartext
+    /// over plain HTTP, so anyone who has watched one exchange can send their own — and without
+    /// this, one such request would redirect the victim to an address of the attacker's choosing
+    /// for good, on every future network. Refusing anything off-LAN keeps the blast radius inside
+    /// a network the two devices genuinely share.
+    nonisolated static func isWorthRemembering(_ address: String) -> Bool {
+        guard LocalControlServer.isIPv4Literal(address), !address.hasPrefix("169.254.") else { return false }
+        return isPrivateIPv4(address)
+    }
+
+    /// RFC 1918, loopback, and the carrier-grade range Tailscale and similar hand out.
+    nonisolated static func isPrivateIPv4(_ address: String) -> Bool {
+        let parts = address.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4 else { return false }
+        switch (parts[0], parts[1]) {
+        case (10, _), (127, _), (192, 168):
+            return true
+        case (172, 16...31):
+            return true
+        case (100, 64...127):
+            return true
+        default:
+            return false
+        }
+    }
+
     nonisolated func netServiceDidResolveAddress(_ service: NetService) {
         MainActor.assumeIsolated {
             resolving.remove(service)

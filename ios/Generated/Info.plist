@@ -20,6 +20,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Spotify β uses Bluetooth to find the Spotify β app on your computer when your network keeps the two from seeing each other.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_vvdemus._tcp</string>

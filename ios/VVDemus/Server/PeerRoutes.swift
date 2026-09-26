@@ -81,7 +81,7 @@ extension LocalControlServer {
 
         server.POST["/api/sync"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.isAuthorizedPeer(request) }) else {
+            guard self.onMain({ self.authorizePeer(request) }) else {
                 PairLog.error("rejected /api/sync — bearer token missing or wrong")
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
@@ -108,7 +108,7 @@ extension LocalControlServer {
         // path that touches playback.
         server.GET["/api/peer/state"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.isAuthorizedPeer(request) }) else {
+            guard self.onMain({ self.authorizePeer(request) }) else {
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
             return self.onMain {
@@ -123,7 +123,7 @@ extension LocalControlServer {
         // session: pressing pause on the Mac while the phone is the one playing sends this.
         server.POST["/api/peer/command"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.isAuthorizedPeer(request) }) else {
+            guard self.onMain({ self.authorizePeer(request) }) else {
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
             guard let body = try? Self.peerDecoder.decode(PeerCommand.self, from: Data(request.body)) else {
@@ -230,7 +230,7 @@ extension LocalControlServer {
         // Downloads requested by the other device — the receiving end of "Download to Phone".
         server.POST["/api/peer/download"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.isAuthorizedPeer(request) }) else {
+            guard self.onMain({ self.authorizePeer(request) }) else {
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
             guard let tracks = try? Self.peerDecoder.decode([Track].self, from: Data(request.body)) else {
@@ -252,7 +252,7 @@ extension LocalControlServer {
 
         server.GET["/api/peer/checkpoint"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.isAuthorizedPeer(request) }) else {
+            guard self.onMain({ self.authorizePeer(request) }) else {
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
             return self.onMain {
@@ -265,7 +265,7 @@ extension LocalControlServer {
 
         server.POST["/api/peer/handoff"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.isAuthorizedPeer(request) }) else {
+            guard self.onMain({ self.authorizePeer(request) }) else {
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
             guard let body = try? Self.peerDecoder.decode(HandoffRequest.self, from: Data(request.body)) else {
@@ -293,6 +293,50 @@ extension LocalControlServer {
                 return .ok(.data(data, contentType: "application/json"))
             }
         }
+    }
+
+    /// Authorizes a peer request, and takes the peer's current address from it on the way past.
+    ///
+    /// The address half wraps the check rather than sitting beside each caller because it has to
+    /// run for every authenticated route and a route added later must not be able to forget it.
+    /// It costs no extra main-queue hop: the callers already pay for one around the authorization
+    /// check itself — a blocking `DispatchQueue.main.sync` from a Swifter worker — and this rides
+    /// inside that same hop.
+    ///
+    /// This is the direction that was missing. Pairing recorded an address only on the device
+    /// that *initiated* it; the device that accepted stored `lastKnownHost: nil` and could find
+    /// its peer by Bonjour alone ever after. Two devices on different subnets then had no way to
+    /// learn anything about each other, even while one was successfully talking to the other.
+    func authorizePeer(_ request: HttpRequest) -> Bool {
+        guard isAuthorizedPeer(request) else { return false }
+        learnPeerAddress(from: request)
+        return true
+    }
+
+    /// Records where an authenticated request came from.
+    ///
+    /// Only the host. A connection's source port is ephemeral and says nothing about where the
+    /// peer *listens* — the original reason pairing stored no port at all — so the listening port
+    /// has to be told to us, in `x-vvdemus-port`. Absent that, the port already on file is kept
+    /// rather than guessed: overwriting a correct port with 51825 would break the very address
+    /// this is trying to repair, since a second copy of the app on one machine listens on 51826.
+    private func learnPeerAddress(from request: HttpRequest) {
+        // Swifter's `address` defaults to the empty string rather than nil, so an absent address
+        // arrives as "" and would otherwise be written down as the peer's location.
+        guard let host = request.address, !host.isEmpty else { return }
+        guard let peer = PairedPeerStore.shared.peer else { return }
+        let advertised = (request.headers["x-vvdemus-port"] ?? request.headers["X-VVDemus-Port"])
+            .flatMap(Int.init)
+            .flatMap { (1...65535).contains($0) ? $0 : nil }
+        guard let port = advertised ?? peer.lastKnownPort else { return }
+        // Logged because this field is now writable by anything that can authenticate, and a
+        // redirect is otherwise the quietest possible change: the link keeps working, against a
+        // different machine. `rememberAddress` no-ops when nothing moved, so this stays silent
+        // in the steady state and speaks up exactly when the peer's address changes.
+        if peer.lastKnownHost != host || peer.lastKnownPort != port {
+            PairLog.info("learned \(peer.name) is at \(host):\(port) from an authenticated request")
+        }
+        PairedPeerStore.shared.rememberAddress(host: host, port: port)
     }
 
     /// Constant-time check of the bearer token both devices derived from the pairing.
