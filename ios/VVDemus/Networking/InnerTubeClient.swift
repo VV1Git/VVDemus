@@ -38,6 +38,10 @@ enum InnerTubeClient {
     /// Returns singles and EPs as well as full albums — YouTube files all three here, and
     /// each carries its own label in the row, which `Album.kind` keeps.
     private static let albumsFilterParams = "EgWKAQIYAWoMEA4QChADEAQQCRAF"
+    /// And for the Videos filter (`\x10`). This is where unreleased music lives: a leak or an
+    /// unreleased track has no catalogue entry, so the Songs filter cannot return it at all, and
+    /// the only copies are fan uploads that YouTube Music files as videos.
+    private static let videosFilterParams = "EgWKAQIQAWoMEA4QChADEAQQCRAF"
 
     static let dataSaverDefaultsKey = "data_saver_enabled"
 
@@ -151,6 +155,53 @@ enum InnerTubeClient {
             }
         }
         return albums
+    }
+
+    /// Fan uploads matching a query, as they come off the wire — raw title, uploader and all.
+    /// `SearchBlend` decides which of them are worth showing and what to call them, because
+    /// that depends on what the Songs half of the same search found.
+    ///
+    /// Only `MUSIC_VIDEO_TYPE_UGC`. The Videos filter also returns official music videos, and
+    /// those are released songs whose catalogue entry is already in the Songs half — as a
+    /// video, with the wrong length and the video's edit of the audio.
+    static func searchUploads(query: String, limit: Int) async throws -> [SearchBlend.Upload] {
+        let body: [String: Any] = [
+            "context": [
+                "client": ["clientName": "WEB_REMIX", "clientVersion": clientVersion],
+                "user": [String: Any](),
+            ],
+            "query": query,
+            "params": videosFilterParams,
+        ]
+        let json = try await post(
+            url: "https://music.youtube.com/youtubei/v1/search?alt=json&prettyPrint=false&key=\(webRemixAPIKey)",
+            userAgent: webUserAgent,
+            origin: "https://music.youtube.com",
+            body: body
+        )
+
+        let shelves = json["contents"]["tabbedSearchResultsRenderer"]["tabs"][0]["tabRenderer"]["content"]["sectionListRenderer"]["contents"].array ?? []
+        var uploads: [SearchBlend.Upload] = []
+        for shelf in shelves {
+            let items = shelf["musicShelfRenderer"]["contents"].array ?? []
+            for item in items {
+                let renderer = item["musicResponsiveListItemRenderer"]
+                let watch = renderer["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]
+                guard watch["watchEndpointMusicSupportedConfigs"]["watchEndpointMusicConfig"]["musicVideoType"].string == "MUSIC_VIDEO_TYPE_UGC",
+                      let row = parseSearchItem(renderer) else { continue }
+                // `parseSearchItem` reads a song row; on a video row the "artist" it finds is
+                // the uploader's channel and the title is the upload's, verbatim.
+                uploads.append(SearchBlend.Upload(
+                    videoId: row.videoId,
+                    rawTitle: row.title,
+                    channel: row.artist,
+                    thumbnailUrl: row.thumbnailUrl,
+                    durationSeconds: row.durationSeconds
+                ))
+                if uploads.count >= limit { return uploads }
+            }
+        }
+        return uploads
     }
 
     /// One release's track list, plus whatever the album page knows that search didn't.
@@ -431,7 +482,7 @@ enum InnerTubeClient {
     /// its audio upload compare equal while a remix of it does not. Duration is deliberately not
     /// compared — a music video and its album cut differ in length by design, and that difference
     /// is the very thing being corrected here.
-    private static func isSameSong(_ candidate: Track, as track: Track) -> Bool {
+    static func isSameSong(_ candidate: Track, as track: Track) -> Bool {
         let wanted = TrackMatcher.normalisedTitle(track.title)
         let theirs = TrackMatcher.normalisedTitle(candidate.title)
 

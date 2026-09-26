@@ -285,6 +285,13 @@ enum TrackMatcher {
         )
     }
 
+    /// Free text — a search query, or a row's title and credit run together — folded and split
+    /// the way titles are here, so "Choosin’" in an upload and "choosin" typed into search are
+    /// the same word.
+    static func words(_ text: String) -> [String] {
+        tokenise(fold(text))
+    }
+
     private static func tokenise(_ text: String) -> [String] {
         text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
     }

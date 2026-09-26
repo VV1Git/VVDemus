@@ -874,7 +874,7 @@ final class LocalControlServer: ObservableObject {
             guard let self else { return .internalServerError }
             let query = Self.queryValue(request, "q")
             guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return self.jsonResponse([Track]()) }
-            switch self.awaitAsync({ try await APIClient.shared.search(query) }) {
+            switch self.awaitAsync({ try await APIClient.shared.searchIncludingUploads(query) }) {
             case .success(let tracks): return self.jsonResponse(tracks)
             case .failure: return .internalServerError
             }

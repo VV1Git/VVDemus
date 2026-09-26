@@ -265,7 +265,7 @@ struct SearchView: View {
         // search that found songs is a working search, and losing every result because the
         // album filter timed out would be a plain regression on what this screen did before
         // albums existed. The songs half still decides whether the search failed.
-        async let songs = APIClient.shared.search(trimmed)
+        async let songs = APIClient.shared.searchIncludingUploads(trimmed)
         async let albums = Self.albums(matching: trimmed)
 
         do {

@@ -53,6 +53,19 @@ final class APIClient {
         try await InnerTubeClient.search(query: query, limit: limit)
     }
 
+    /// What a person typing into search gets: the catalogue's songs with fan uploads folded in,
+    /// which is the only way unreleased music is findable at all — see `SearchBlend`. Kept apart
+    /// from `search`, whose other callers (the Daylist's mood searches, the Spotify importer's
+    /// matching) want released songs and nothing else.
+    ///
+    /// The uploads half is allowed to fail on its own, the way albums are: a search that found
+    /// songs is a working search.
+    func searchIncludingUploads(_ query: String, limit: Int = 25) async throws -> [Track] {
+        async let uploads = try? InnerTubeClient.searchUploads(query: query, limit: 20)
+        let songs = try await InnerTubeClient.search(query: query, limit: limit)
+        return SearchBlend.blend(songs: songs, uploads: await uploads ?? [], query: query)
+    }
+
     /// The releases matching a query. Run concurrently with `search` — see the note on
     /// `InnerTubeClient.searchAlbums` for why it is a second request rather than one
     /// unfiltered one.
