@@ -1254,6 +1254,22 @@ final class PlayerService: ObservableObject {
             updateNowPlayingInfo()
             return
         }
+        // Nothing of this track ever reached the engine: its load failed, after `beginLoad` had
+        // already cleared `attachedURL`. What the engine still holds is the *previous* track's
+        // item, paused wherever that one stopped — so `engine.play()` below resumed the wrong
+        // song under this one's title or, with that song already over, played nothing while
+        // `isPlaying` said otherwise. The error on screen says "try again"; this is the press
+        // that has to mean it.
+        if shouldPlay, attachedURL == nil, !isLoading, let track = currentTrack {
+            // Carried across the reload the way `adopt` does it, since a scrub made since the
+            // failure is a position the user chose. Zeroed first because none of it was heard,
+            // and `beginLoad` would otherwise credit it to the listening stats.
+            let resumeAt = progress
+            progress = 0
+            beginLoad(track)
+            progress = resumeAt
+            return
+        }
         // Bumped on the phone's own play/pause too, not just while casting. The epoch is
         // what a browser uses to recognise reports describing a state the phone has
         // already moved past, and a pause taken here while a browser was still connected

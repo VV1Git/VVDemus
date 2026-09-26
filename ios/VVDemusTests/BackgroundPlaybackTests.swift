@@ -182,6 +182,30 @@ final class BackgroundPlaybackTests: XCTestCase {
         XCTAssertEqual(harness.nowPlaying.latest?.rate, 0)
     }
 
+    /// "Couldn't play … try again" has to be something a press of play can act on. The failed
+    /// load left the engine holding the *previous* track's item, and play resumed that: the
+    /// wrong song under this one's title, or — with that song already over — silence while
+    /// `isPlaying` claimed otherwise. Found with every resolve refused behind a VPN: fixing the
+    /// network changed nothing until a different song was picked.
+    func testPlayAfterAFailedLoadRetriesTheTrackRatherThanResumingTheLastOne() async {
+        harness.streams.failing = ["b"]
+        let list = Fixtures.tracks(["a", "b"])
+        await harness.startPlaying(list[0], context: list)
+        harness.player.advance()
+        await harness.settle { self.harness.player.errorMessage != nil }
+        XCTAssertEqual(harness.engine.attachedURL?.lastPathComponent, "a.m4a",
+                       "Precondition: the engine is still holding the previous track")
+
+        harness.streams.failing = []
+        harness.player.togglePlayPause()
+        await harness.settle { self.harness.player.isPlaying && !self.harness.player.isLoading }
+
+        XCTAssertEqual(harness.engine.attachedURL?.lastPathComponent, "b.m4a",
+                       "Play resumed the previous track's item instead of retrying this one")
+        XCTAssertEqual(harness.player.currentTrack?.videoId, "b")
+        XCTAssertNil(harness.player.errorMessage)
+    }
+
     // MARK: - Playback failing mid-stream
 
     /// An expired stream URL is the routine case: they are time-limited, so a queue built
