@@ -51,6 +51,35 @@ final class PlaybackSmokeTest: XCTestCase {
         )
     }
 
+    /// A track the muxed fallback cannot carry: its itag 18 is an 86 KB header for media that
+    /// is never sent, so a fallback here is not a data cost but a song that will not play.
+    /// Asserts the resolved URL is audio and that its last bytes are actually served — the
+    /// same gate `servesWholeResource` applies, checked from outside.
+    func testATrackWithAStubVideoFileResolvesToWholeAudio() async throws {
+        let stream = try await InnerTubeClient.stream(videoId: "FJX0JPXD2nM") // we fell in love in october
+        XCTAssertFalse(InnerTubeClient.lastStreamWasMuxedFallback,
+                       "Fell back to the stub itag 18 — this track is unplayable that way")
+        XCTAssertTrue(stream.mimeType.hasPrefix("audio/"), "Got \(stream.mimeType)")
+
+        let url = try XCTUnwrap(URL(string: stream.url))
+        var probe = URLRequest(url: url)
+        probe.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        let (_, head) = try await URLSession.shared.data(for: probe)
+        let range = try XCTUnwrap((head as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Range"))
+        let total = try XCTUnwrap(range.split(separator: "/").last.flatMap { Int64($0) })
+        probe.setValue("bytes=\(total - 2)-\(total - 1)", forHTTPHeaderField: "Range")
+        let (_, end) = try await URLSession.shared.data(for: probe)
+        XCTAssertEqual((end as? HTTPURLResponse)?.statusCode, 206, "Capped: the song would stop partway")
+    }
+
+    /// A video id that has been taken down since a queue saved it. It has to play its
+    /// reissue rather than fail, and the stream must keep answering to the id it was asked for.
+    func testATakenDownVideoPlaysItsReissue() async throws {
+        let stream = try await InnerTubeClient.stream(videoId: "54kTO17-j_0") // Fallen Star, old art track
+        XCTAssertEqual(stream.videoId, "54kTO17-j_0")
+        XCTAssertTrue(stream.mimeType.hasPrefix("audio/"), "Got \(stream.mimeType)")
+    }
+
     /// Measures the difference rather than trusting it: the audio-only format has to be
     /// materially smaller than the muxed one, or the whole exercise bought nothing.
     func testAudioOnlyIsSubstantiallySmallerThanTheFallback() async throws {

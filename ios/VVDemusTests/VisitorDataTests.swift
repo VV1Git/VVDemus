@@ -206,7 +206,7 @@ final class VisitorDataTests: XCTestCase {
         XCTAssertEqual(clientContext["visitorData"] as? String, "TOKEN-XYZ",
                        "YouTube reads the token from the client context; omitting it is the whole bug")
         XCTAssertEqual(json["videoId"] as? String, "abc123")
-        XCTAssertEqual(clientContext["clientName"] as? String, "ANDROID_VR")
+        XCTAssertEqual(clientContext["clientName"] as? String, "VISIONOS")
     }
 
     /// Without a token the request must go out clean rather than carrying an empty or

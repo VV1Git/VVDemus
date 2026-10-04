@@ -30,6 +30,7 @@ enum InnerTubeClient {
     static let webUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0"
     private static let androidUserAgent = "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip"
     private static let androidVRUserAgent = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+    private static let visionOSUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
     /// InnerTube "params" blob selecting the Songs filter — reverse-engineered value,
     /// stable in practice (it's what music.youtube.com itself sends for this filter).
     private static let songsFilterParams = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
@@ -556,7 +557,26 @@ enum InnerTubeClient {
 
     /// Audio-only first (a few MB instead of the ~3-4x heavier muxed video+audio file),
     /// falling back to the muxed path if the audio-only client ever stops cooperating.
+    ///
+    /// A video that is gone gets one more chance: the copy that replaced it. Labels re-deliver
+    /// releases under new video ids and the old ones are taken down, but a queue, a playlist or
+    /// a download still holds the old id and would fail on it forever — "Fallen Star" in a radio
+    /// queued before The Neighbourhood's single was re-released. The `StreamInfo` keeps the id
+    /// that was asked for, so everything keyed on it carries on as if nothing happened.
     static func stream(videoId: String) async throws -> StreamInfo {
+        do {
+            return try await streamOfThisCopy(videoId: videoId)
+        } catch let gone as GoneVideo {
+            guard let original = gone.original,
+                  let reissue = try? await reissue(of: original) else { throw gone }
+            NSLog("[InnerTubeClient] %@ is gone (%@) — playing its reissue %@",
+                  videoId, gone.reason, reissue.videoId)
+            let stream = try await streamOfThisCopy(videoId: reissue.videoId)
+            return StreamInfo(videoId: videoId, url: stream.url, expiresAt: stream.expiresAt, mimeType: stream.mimeType)
+        }
+    }
+
+    private static func streamOfThisCopy(videoId: String) async throws -> StreamInfo {
         do {
             return try await audioOnlyStream(videoId: videoId)
         } catch {
@@ -581,6 +601,57 @@ enum InnerTubeClient {
     /// Whether the most recent resolution had to fall back to the heavy muxed format.
     /// Read by diagnostics; not used to make playback decisions.
     private(set) static var lastStreamWasMuxedFallback = false
+
+    /// This copy of the video is gone — taken down, region-blocked, superseded — as opposed to
+    /// refused for want of a token. YouTube goes on describing a video while refusing to play
+    /// it, and that description is what `stream` finds the replacement with.
+    struct GoneVideo: LocalizedError {
+        let reason: String
+        let original: Track?
+        var errorDescription: String? { reason }
+    }
+
+    /// A refusal that is about the video rather than the request, or nil for any other kind.
+    static func gone(_ json: JSON, videoId: String) -> GoneVideo? {
+        let status = json["playabilityStatus"]["status"].string
+        guard status == "UNPLAYABLE" || status == "ERROR" else { return nil }
+        let details = json["videoDetails"]
+        let original = details["title"].string.map { title in
+            Track(
+                videoId: videoId,
+                title: title,
+                // Art tracks are credited to "<Artist> - Topic"; the suffix would only cost
+                // the search that follows.
+                artist: (details["author"].string ?? "").replacingOccurrences(of: " - Topic", with: ""),
+                album: nil,
+                thumbnailUrl: nil,
+                durationSeconds: details["lengthSeconds"].string.flatMap(Int.init)
+            )
+        }
+        return GoneVideo(reason: json["playabilityStatus"]["reason"].string ?? "video unavailable",
+                         original: original)
+    }
+
+    /// The re-release is the same master, so it is the same song by `isSameSong` — no remix,
+    /// sped-up or live marker on one side only, an artist that agrees — *and* the same length.
+    /// A length that differs is a different recording, and silently playing one in place of
+    /// what was queued is worse than the error.
+    static let reissueLengthTolerance = 3
+
+    private static func reissue(of original: Track) async throws -> Track? {
+        let candidates = try await search(query: "\(original.title) \(original.artist)", limit: 10)
+        return reissue(of: original, among: candidates)
+    }
+
+    static func reissue(of original: Track, among candidates: [Track]) -> Track? {
+        guard let wanted = original.durationSeconds else { return nil }
+        return candidates.first { candidate in
+            guard candidate.videoId != original.videoId,
+                  let length = candidate.durationSeconds,
+                  abs(length - wanted) <= reissueLengthTolerance else { return false }
+            return isSameSong(candidate, as: original)
+        }
+    }
 
     /// A player client that hands back direct, un-ciphered audio-only URLs.
     ///
@@ -662,7 +733,27 @@ enum InnerTubeClient {
     /// muxed fallback carries whatever fails it. `VVDemusTests/ThrottleCapDiagnostics`
     /// measures the cap per client — run it on the *device*, not the simulator, because
     /// the simulator borrows the Mac's networking and never sees this.
+    ///
+    /// **By late September 2026 the Mac was capped too**, ANDROID_VR at 1.02 MiB on every
+    /// track, so every song fell back to muxed. Usually that only cost data, but some tracks'
+    /// itag 18 is a stub — "we fell in love in october" is an 86 KB header indexing 4.8 MB of
+    /// media that is never sent — so those tracks could not be played at all. VISIONOS is
+    /// what yt-dlp moved its default to: plain URLs, no player JavaScript, and measured whole
+    /// (every 512 KiB range 206 to the last byte, that song included). It refuses requests
+    /// without a visitor token, which `resolveWithTokenRetry` already supplies. ANDROID_VR
+    /// stays behind it for the day VISIONOS is the one that gets capped.
     static let audioOnlyClients: [PlayerClient] = [
+        PlayerClient(
+            name: "VISIONOS",
+            version: "1.02",
+            userAgent: visionOSUserAgent,
+            extraContext: [
+                "deviceMake": "Apple",
+                "deviceModel": "RealityDevice17,1",
+                "osName": "visionOS",
+                "osVersion": "26.5.23O471",
+            ]
+        ),
         PlayerClient(
             name: "ANDROID_VR",
             version: "1.65.10",
@@ -791,9 +882,9 @@ enum InnerTubeClient {
         let status = json["playabilityStatus"]["status"].string
         guard status == "OK" else {
             let reason = json["playabilityStatus"]["reason"].string ?? "video unavailable"
-            throw isTokenRefusal(status: status, reason: reason)
-                ? TokenRefusal(reason: reason) as Error
-                : APIError.server(reason)
+            if isTokenRefusal(status: status, reason: reason) { throw TokenRefusal(reason: reason) }
+            if let gone = gone(json, videoId: videoId) { throw gone }
+            throw APIError.server(reason)
         }
 
         // AAC-in-MP4 only (itags 139/140) — AVPlayer doesn't support WebM/Opus, which is
@@ -857,8 +948,8 @@ enum InnerTubeClient {
         )
 
         guard json["playabilityStatus"]["status"].string == "OK" else {
-            let reason = json["playabilityStatus"]["reason"].string ?? "video unavailable"
-            throw APIError.server(reason)
+            if let gone = gone(json, videoId: videoId) { throw gone }
+            throw APIError.server(json["playabilityStatus"]["reason"].string ?? "video unavailable")
         }
 
         let formats = json["streamingData"]["formats"].array ?? []
