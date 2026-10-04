@@ -46,6 +46,47 @@ final class PeerAddressTests: XCTestCase {
     }
 }
 
+/// Which of this device's own addresses the Bluetooth beacon hands the peer.
+///
+/// Found on a network that kept the two apart: the beacon worked, and each side then dialled an
+/// address the other could never answer on — the Mac had advertised WARP's tunnel `172.16.0.2`
+/// rather than its Wi-Fi address, and the phone its cellular `100.115.146.218`. Every address
+/// tied on number alone, and the tie went to dictionary order.
+final class OwnAddressTests: XCTestCase {
+    func testWiFiBeatsAVPNTunnelAndCellularWhateverTheOrder() {
+        let mac = ["utun4": "172.16.0.2", "en0": "10.54.160.76", "lo0": "127.0.0.1"]
+        let phone = ["pdp_ip0": "100.115.146.218", "en0": "10.54.160.169", "utun2": "172.16.0.2"]
+        // Dictionaries yield in no particular order, so ask many times.
+        for _ in 0..<50 {
+            XCTAssertEqual(PeerDiscovery.preferredOwnIPv4(from: mac), "10.54.160.76")
+            XCTAssertEqual(PeerDiscovery.preferredOwnIPv4(from: phone), "10.54.160.169")
+        }
+    }
+
+    /// No other device can reach a phone's cellular address or anyone's loopback, so neither is
+    /// offered even as a last resort — a wrong address costs the peer a timeout on every reconnect.
+    func testCellularAndLoopbackAreNeverOffered() {
+        XCTAssertNil(PeerDiscovery.preferredOwnIPv4(from: ["pdp_ip0": "100.115.146.218", "lo0": "127.0.0.1"]))
+    }
+
+    /// With nothing better, a tunnel is still worth offering: on the same Tailscale network the
+    /// peer genuinely can reach it.
+    func testAVPNTunnelIsUsedWhenItIsAllThereIs() {
+        XCTAssertEqual(PeerDiscovery.preferredOwnIPv4(from: ["utun3": "100.101.102.103", "pdp_ip0": "100.80.1.2"]),
+                       "100.101.102.103")
+    }
+
+    /// A phone sharing its connection is reached on its Personal Hotspot bridge.
+    func testAHotspotBridgeBeatsATunnel() {
+        XCTAssertEqual(PeerDiscovery.preferredOwnIPv4(from: ["bridge100": "172.20.10.1", "utun4": "172.16.0.2"]),
+                       "172.20.10.1")
+    }
+
+    func testASelfAssignedOrPublicAddressIsNotOfferedEvenOnWiFi() {
+        XCTAssertNil(PeerDiscovery.preferredOwnIPv4(from: ["en0": "169.254.3.4", "en1": "8.8.8.8"]))
+    }
+}
+
 /// Which addresses are worth *writing down*, which is a narrower question than which are worth
 /// dialling — and conflating the two is what left one pairing pinned to a dead `169.254` address
 /// for months, with only Bonjour able to correct it and Bonjour unable to cross a router.

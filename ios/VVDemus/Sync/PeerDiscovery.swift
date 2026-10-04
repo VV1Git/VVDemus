@@ -158,6 +158,36 @@ extension PeerDiscovery: NetServiceDelegate, NetServiceBrowserDelegate {
         candidates.min { rank(of: $0) < rank(of: $1) }
     }
 
+    /// Which of *this device's own* addresses to hand a peer over Bluetooth, from
+    /// `LocalControlServer.currentIPv4Addresses()`.
+    ///
+    /// Not `preferredIPv4` over the bare values, which is what the beacon did. Ranking by number
+    /// alone ties a Wi-Fi address with a VPN tunnel and a cellular one — WARP's `172.16.0.2` and a
+    /// carrier's `100.115.x.x` are both "private" — and the tie went to whichever the dictionary
+    /// happened to yield first. Found with the Mac advertising WARP's tunnel and the phone its
+    /// cellular address, each dialling the other somewhere it could never answer. The interface
+    /// is the information that settles it, so it is kept: Wi-Fi or Ethernet first, then bridges (a
+    /// phone's Personal Hotspot is `bridge100`), then VPN tunnels — still worth something, since a
+    /// peer on the same Tailscale network really can reach one. Cellular and loopback are never
+    /// offered: no other device can reach either.
+    nonisolated static func preferredOwnIPv4(from addresses: [String: String]) -> String? {
+        addresses
+            .compactMap { name, address -> (rank: Int, name: String, address: String)? in
+                guard let rank = interfaceRank(name), isWorthRemembering(address) else { return nil }
+                return (rank, name, address)
+            }
+            // The name breaks ties so the answer is the same every time it is asked.
+            .min { ($0.rank, $0.name) < ($1.rank, $1.name) }?
+            .address
+    }
+
+    nonisolated private static func interfaceRank(_ name: String) -> Int? {
+        if name.hasPrefix("lo") || name.hasPrefix("pdp_ip") { return nil }
+        if name.hasPrefix("en") { return 0 }
+        if ["utun", "ipsec", "ppp", "tun", "tap", "wg"].contains(where: { name.hasPrefix($0) }) { return 2 }
+        return 1
+    }
+
     nonisolated private static func rank(of address: String) -> Int {
         if address.hasPrefix("169.254.") { return 3 }   // self-assigned, routes nowhere
         if address.hasPrefix("127.") { return 2 }       // same machine only, but real

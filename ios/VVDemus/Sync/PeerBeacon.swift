@@ -101,11 +101,10 @@ final class PeerBeacon: NSObject, ObservableObject {
         // Not `LocalControlServer.localAddress`: that is captured once when the server starts
         // and only ever looks at en0, so it cannot notice this device moving network — which is
         // the one event the beacon exists to survive — and is empty outright on a Mac using
-        // Ethernet. Ranked with the same rule Bonjour's addresses go through.
-        let live = LocalControlServer.currentIPv4Addresses().values.filter(PeerDiscovery.isWorthRemembering)
+        // Ethernet. Ranked by interface as well as by address — see `preferredOwnIPv4`.
         guard let peer = PairedPeerStore.shared.peer,
               let port = advertisedPort,
-              let host = PeerDiscovery.preferredIPv4(from: Array(live)),
+              let host = PeerDiscovery.preferredOwnIPv4(from: LocalControlServer.currentIPv4Addresses()),
               let key = try? PeerIdentity.shared.sharedSecret(
                   with: peer.publicKey,
                   peerId: peer.peerId,
