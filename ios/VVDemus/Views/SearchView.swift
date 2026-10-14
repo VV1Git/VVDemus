@@ -86,6 +86,15 @@ struct SearchView: View {
             coordinator.selectedTab = .home
             #endif
         }
+        // Wherever a single-seed radio goes, and for the same reasons.
+        .environment(\.openMixRadio) { radio in
+            #if os(macOS)
+            path.append(LibraryDestination.mixRadio(radio))
+            #else
+            coordinator.homePath.append(LibraryDestination.mixRadio(radio))
+            coordinator.selectedTab = .home
+            #endif
+        }
         // Lyrics stay on this screen's own stack on both platforms, unlike radio: a radio is a
         // place you go and keep browsing from, so the phone hands it to Home, but reading the
         // words to a search result should leave you one back-swipe from the results.

@@ -27,3 +27,16 @@ extension EnvironmentValues {
         set { self[OpenLyricsKey.self] = newValue }
     }
 }
+
+/// And for a mix radio, installed beside `openRadio` everywhere it is — a mix is reached from
+/// the same row menus, and has to land on the same stack a single-seed radio would.
+private struct OpenMixRadioKey: EnvironmentKey {
+    static let defaultValue: (MixRadio) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var openMixRadio: (MixRadio) -> Void {
+        get { self[OpenMixRadioKey.self] }
+        set { self[OpenMixRadioKey.self] = newValue }
+    }
+}
