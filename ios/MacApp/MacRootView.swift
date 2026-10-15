@@ -229,11 +229,12 @@ struct MacRootView: View {
 
             if !mixSeeds.seeds.isEmpty {
                 Section("Mix Radio") {
-                    // Through `.destination` like every other leaf row. It was its own section
-                    // case first, with an `.id` on the stack built for it, and selecting it
-                    // highlighted the row while the detail pane went on showing Home.
-                    row(.destination(.mixRadio(mixSeeds.radio)), "Mix Radio", "dot.radiowaves.left.and.right")
-                        .badge(mixSeeds.seeds.count)
+                    // Built exactly as the playlist rows are, with the count in the title. With a
+                    // `.badge` on it — the one modifier no working row has — clicking highlighted
+                    // the row but left the selection nil, which the detail pane shows as Home.
+                    row(.destination(.mixRadio(mixSeeds.radio)),
+                        "Mix Radio (\(mixSeeds.seeds.count))",
+                        "dot.radiowaves.left.and.right")
                         .contextMenu {
                             Button("Clear Mix Radio", role: .destructive) {
                                 mixSeeds.clear()
