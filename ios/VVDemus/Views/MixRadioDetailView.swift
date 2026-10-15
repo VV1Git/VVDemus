@@ -93,7 +93,9 @@ struct MixRadioDetailView: View {
                 }
             }
         }
-        .task { await load() }
+        // Keyed on the picks, so a screen kept on through a change of them — the Mac's sidebar
+        // row follows the picks rather than being rebuilt — loads the new station.
+        .task(id: radio.id) { await load() }
     }
 
     private var trackList: some View {
@@ -161,6 +163,7 @@ struct MixRadioDetailView: View {
             return
         }
         isLoading = true
+        tracks = []
         do {
             let built = try await MixRadioService.build(seeds: radio.seeds)
             tracks = built
