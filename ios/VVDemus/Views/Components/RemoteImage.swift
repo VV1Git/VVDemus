@@ -117,8 +117,7 @@ struct RemoteImage: View {
         #if os(macOS)
         // Data Saver is not consulted on the Mac. It exists for a phone paying for bytes on a
         // cellular connection — the setting's own screen says so — and a desktop on wifi shrinking
-        // its artwork by a quarter buys nothing anyone asked for. The clamp in
-        // `resizedThumbnailUrl` still applies, so this asks for more only where more exists.
+        // its artwork by a quarter buys nothing anyone asked for.
         let multiplier = 1.0
         #else
         let dataSaver = UserDefaults.standard.bool(forKey: InnerTubeClient.dataSaverDefaultsKey)
@@ -133,19 +132,18 @@ struct RemoteImage: View {
     /// ~83KB, the same image data just resized server-side). Falls back to the original
     /// URL unchanged if it doesn't match the expected shape.
     ///
-    /// The requested size is clamped to what the URL already advertises. Different
-    /// endpoints hand back very different sizes — search results arrive as 120px, radio
-    /// items as 544px — so a 300pt hero image on a 3x screen would otherwise ask a 120px
-    /// source for 900px and be served a blurry upscale at roughly six times the bytes of
-    /// the original.
+    /// Deliberately *not* clamped to the size the URL arrives with. It used to be, on the
+    /// belief that asking a 120px URL for more got a server-side upscale of those 120 pixels.
+    /// It does not: the resize is from the original artwork. Measured, one cover — the 120px
+    /// URL rewritten to `w544-h544` came back 57.9 KB of real detail, against 5.1 KB for 120px
+    /// and visibly sharp beside a local upscale of it. Search hands back 120px URLs, so with
+    /// the clamp every radio started from a search result, and every song picked from one,
+    /// had a 120px hero image stretched over the header — blurry, while the same screen's
+    /// rows, which come from the radio endpoint at 544px, were sharp.
     static func resizedThumbnailUrl(_ url: String, targetPixels: Int) -> String {
         if let sized = ytimgVariant(url, targetPixels: targetPixels) { return sized }
         guard let range = url.range(of: #"=w\d+-h\d+"#, options: .regularExpression) else { return url }
-        let sourceWidth = url[range]
-            .dropFirst(2)                                    // "=w"
-            .prefix { $0.isNumber }
-        let target = min(targetPixels, Int(sourceWidth) ?? targetPixels)
-        return url.replacingCharacters(in: range, with: "=w\(target)-h\(target)")
+        return url.replacingCharacters(in: range, with: "=w\(targetPixels)-h\(targetPixels)")
     }
 
     /// Radio and watch endpoints hand back `i.ytimg.com/vi/{id}/hq720.jpg?sqp=…` instead of
