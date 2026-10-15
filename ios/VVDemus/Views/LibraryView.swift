@@ -6,6 +6,7 @@ struct LibraryView: View {
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @ObservedObject private var albumHistory = AlbumHistoryStore.shared
     @ObservedObject private var daylist = DaylistStore.shared
+    @ObservedObject private var mixSeeds = MixRadioSeedsStore.shared
     @State private var showNewPlaylist = false
     @State private var showSpotifyImport = false
     @State private var newPlaylistName = ""
@@ -46,6 +47,39 @@ struct LibraryView: View {
                         }
                     }
                     .trackRowMetrics()
+                }
+
+                // Here, and not only behind "Go to Mix Radio" in a track menu, so the picks can
+                // be found — and cleared — without first hunting down a song that was one of them.
+                if !mixSeeds.seeds.isEmpty {
+                    Section("Mix Radio") {
+                        NavigationLink(value: LibraryDestination.mixRadio(mixSeeds.radio)) {
+                            LibraryRow(title: mixSeeds.radio.title,
+                                       subtitle: "Mix Radio · ^[\(mixSeeds.seeds.count) song](inflect: true) picked") {
+                                if let art = mixSeeds.seeds.first?.thumbnailUrl {
+                                    RemoteImage(url: art, size: Theme.ArtSize.row)
+                                } else {
+                                    LibraryRowIcon(systemImage: "dot.radiowaves.left.and.right")
+                                }
+                            }
+                        }
+                        .trackRowMetrics()
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                withAnimation { mixSeeds.clear() }
+                            } label: {
+                                Label("Clear", systemImage: "xmark.circle")
+                            }
+                        }
+                        // Mouse-reachable, for the reason the playlist section below gives.
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                withAnimation { mixSeeds.clear() }
+                            } label: {
+                                Label("Clear Mix Radio", systemImage: "xmark.circle")
+                            }
+                        }
+                    }
                 }
 
                 Section("Your Playlists") {

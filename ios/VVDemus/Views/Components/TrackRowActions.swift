@@ -181,6 +181,15 @@ struct TrackMenuItems: View {
                     Label("Go to Mix Radio (\(mixSeeds.seeds.count) Songs)", systemImage: "dot.radiowaves.left.and.right")
                 }
             }
+            // Wherever the picks can be added to, they can be dropped — without it, starting
+            // over meant opening the station or removing each song from its own row.
+            if !mixSeeds.seeds.isEmpty {
+                Button(role: .destructive) {
+                    mixSeeds.clear()
+                } label: {
+                    Label("Clear Mix Radio", systemImage: "xmark.circle")
+                }
+            }
             if let onLyrics {
                 Button(action: onLyrics) {
                     Label("Show Lyrics", systemImage: "quote.bubble")

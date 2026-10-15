@@ -11,6 +11,10 @@ private enum MacSection: Hashable {
     case search
     case library
     case destination(LibraryDestination)
+    /// The songs picked for a mix radio, as they stand now — not a `LibraryDestination`,
+    /// whose `.mixRadio` carries a fixed set of seeds. This row follows the tray: pick another
+    /// song and the station it opens is built from that one too.
+    case mixRadio
 }
 
 /// The Mac's window shell — the counterpart to `RootView`, which cannot be shared: it is built
@@ -24,6 +28,7 @@ struct MacRootView: View {
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @ObservedObject private var albumHistory = AlbumHistoryStore.shared
     @ObservedObject private var link = PeerLink.shared
+    @ObservedObject private var mixSeeds = MixRadioSeedsStore.shared
     @State private var selection: MacSection? = .home
     /// The push stack for whichever leaf screen the sidebar has selected. One path shared by
     /// all of them, held here rather than inside the `detail` branch so it survives that
@@ -157,6 +162,11 @@ struct MacRootView: View {
         .onChange(of: selection) { _, _ in
             leafPath = NavigationPath()
         }
+        // Clearing the picks — from the row's menu or the station's own — removes the row, and
+        // the selection would otherwise point at a screen the sidebar no longer shows.
+        .onChange(of: mixSeeds.seeds.isEmpty) { _, isEmpty in
+            if isEmpty, selection == .mixRadio { selection = .home }
+        }
         .task {
             // Started unconditionally. The toggle governs the browser remote, not the link to
             // the paired device — which needs this server to answer pairing and sync at all.
@@ -216,6 +226,18 @@ struct MacRootView: View {
                 row(.destination(.daylist), "Daylist", "sun.max.fill")
                 row(.destination(.downloads), "Downloads", "arrow.down.circle.fill")
                 row(.destination(.stats), "Your Stats", "chart.bar.fill")
+            }
+
+            if !mixSeeds.seeds.isEmpty {
+                Section("Mix Radio") {
+                    row(.mixRadio, "Mix Radio", "dot.radiowaves.left.and.right")
+                        .badge(mixSeeds.seeds.count)
+                        .contextMenu {
+                            Button("Clear Mix Radio", role: .destructive) {
+                                mixSeeds.clear()
+                            }
+                        }
+                }
             }
 
             if !playlists.playlists.isEmpty {
@@ -304,37 +326,48 @@ struct MacRootView: View {
             SearchView(player: player, coordinator: coordinator)
         case .library:
             LibraryView(player: player)
+        case .mixRadio:
+            leafStack(.mixRadio(mixSeeds.radio))
+                // A new pick is a new station; without this the screen would keep the one it
+                // first built, under a title and subtitle that had moved on.
+                .id(mixSeeds.radio.id)
         case .destination(let target):
-            // The leaf screens are written to be *pushed*, so they carry no stack of their own
-            // — one is supplied here, along with the same `navigationDestination` the phone's
-            // stacks register, so pushing onward (a track's radio, say) still works.
-            NavigationStack(path: $leafPath) {
-                target.destination(player: player)
-                    .navigationDestination(for: LibraryDestination.self) { pushed in
-                        pushed.destination(player: player)
-                    }
-            }
-            // On the stack, not on the screen inside it.
-            //
-            // The measured symptom: "Go to Radio" works on whatever the sidebar has selected
-            // and is dead one push in. On a radio opened from Home, or a track inside an album
-            // opened from Library, the item runs `openRadio`'s default — a closure that does
-            // nothing — so the menu item is there, highlights, and goes nowhere.
-            //
-            // This was written one line further in, on the root screen, with a comment claiming
-            // that being outside the `navigationDestination` was enough for pushed screens to
-            // inherit it. Whatever else is true, that claim is not: the root screen got the
-            // value and the pushed one did not. A destination is built *for the stack*, so
-            // anything written below the stack is the wrong side of it — the same hoisting
-            // `QueueView` documents for toolbar items, one modifier over. Hence here.
-            //
-            // Not yet confirmed on a pushed screen: this is the placement the framework
-            // documents, but the clearance note in `detail:` above found the pushed screen is
-            // not laid out inside this closure either, and if the split view's own stack is
-            // taking the push then this environment does not reach it and the fix is elsewhere.
-            .environment(\.openRadio) { leafPath.append(LibraryDestination.radio($0)) }
-            // Same placement, same reasons: on the stack, not on the screen inside it.
-            .environment(\.openLyrics) { leafPath.append(LibraryDestination.lyrics($0)) }
+            leafStack(target)
         }
+    }
+
+    private func leafStack(_ target: LibraryDestination) -> some View {
+        // The leaf screens are written to be *pushed*, so they carry no stack of their own
+        // — one is supplied here, along with the same `navigationDestination` the phone's
+        // stacks register, so pushing onward (a track's radio, say) still works.
+        NavigationStack(path: $leafPath) {
+            target.destination(player: player)
+                .navigationDestination(for: LibraryDestination.self) { pushed in
+                    pushed.destination(player: player)
+                }
+        }
+        // On the stack, not on the screen inside it.
+        //
+        // The measured symptom: "Go to Radio" works on whatever the sidebar has selected
+        // and is dead one push in. On a radio opened from Home, or a track inside an album
+        // opened from Library, the item runs `openRadio`'s default — a closure that does
+        // nothing — so the menu item is there, highlights, and goes nowhere.
+        //
+        // This was written one line further in, on the root screen, with a comment claiming
+        // that being outside the `navigationDestination` was enough for pushed screens to
+        // inherit it. Whatever else is true, that claim is not: the root screen got the
+        // value and the pushed one did not. A destination is built *for the stack*, so
+        // anything written below the stack is the wrong side of it — the same hoisting
+        // `QueueView` documents for toolbar items, one modifier over. Hence here.
+        //
+        // Not yet confirmed on a pushed screen: this is the placement the framework
+        // documents, but the clearance note in `detail:` above found the pushed screen is
+        // not laid out inside this closure either, and if the split view's own stack is
+        // taking the push then this environment does not reach it and the fix is elsewhere.
+        .environment(\.openRadio) { leafPath.append(LibraryDestination.radio($0)) }
+        // Same placement, same reasons: on the stack, not on the screen inside it.
+        .environment(\.openLyrics) { leafPath.append(LibraryDestination.lyrics($0)) }
+        // Missing until now, so "Go to Mix Radio" did nothing on any sidebar leaf screen.
+        .environment(\.openMixRadio) { leafPath.append(LibraryDestination.mixRadio($0)) }
     }
 }
