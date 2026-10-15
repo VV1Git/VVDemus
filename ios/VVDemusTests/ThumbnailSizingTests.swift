@@ -23,4 +23,13 @@ final class ThumbnailSizingTests: XCTestCase {
         let url = "https://example.com/cover.jpg"
         XCTAssertEqual(RemoteImage.resizedThumbnailUrl(url, targetPixels: 300), url)
     }
+
+    /// Nearby sizes share a request, and nothing is rounded down.
+    func testPixelSizesAreRoundedUpToABucket() {
+        XCTAssertEqual(RemoteImage.bucketed(700), 768)
+        XCTAssertEqual(RemoteImage.bucketed(768), 768)
+        XCTAssertEqual(RemoteImage.bucketed(769), 1024)
+        XCTAssertEqual(RemoteImage.bucketed(1), 32)
+        XCTAssertEqual(RemoteImage.bucketed(5000), 5000)
+    }
 }

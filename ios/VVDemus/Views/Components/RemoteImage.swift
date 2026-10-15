@@ -32,6 +32,9 @@ struct RemoteImage: View {
     /// be shown for a new URL.
     @State private var loadedImage: PlatformImage?
     @State private var loadedKey: String?
+    /// The artwork `loadedImage` is of, whatever size it was fetched at — so a view that is
+    /// resized can go on showing it while the new size loads, instead of the placeholder.
+    @State private var loadedURL: String?
 
     private var radius: CGFloat { cornerRadius ?? Theme.Radius.art(for: size) }
 
@@ -48,7 +51,10 @@ struct RemoteImage: View {
     @MainActor private var image: PlatformImage? {
         guard let cacheKey else { return nil }
         if let loadedImage, loadedKey == cacheKey { return loadedImage }
-        return ImageCache.shared.image(for: cacheKey)
+        if let cached = ImageCache.shared.image(for: cacheKey) { return cached }
+        // The same artwork at the size this view had a moment ago, until the new one lands.
+        if let loadedImage, loadedURL == url { return loadedImage }
+        return nil
     }
 
     var body: some View {
@@ -71,7 +77,12 @@ struct RemoteImage: View {
         .background(Theme.card)
         .clipShape(Theme.Radius.rect(radius))
         .animation(.easeIn(duration: 0.15), value: image != nil)
-        .task(id: url) {
+        // Keyed on the exact request, not the bare URL. A view's size can change after its
+        // first load — the hero art starts at its maximum and shrinks to the row it lands in
+        // — and keyed on `url` the load stayed the one for the old size. The bitmap was then
+        // filed under a key the view no longer asked for, and the placeholder stayed up for
+        // good: every album and radio header on the phone, once sizes stopped being clamped.
+        .task(id: cacheKey) {
             await load()
         }
         .accessibilityHidden(true)
@@ -86,8 +97,10 @@ struct RemoteImage: View {
             set(cached, for: cacheKey)
             return
         }
-        // Genuinely uncached: only now is it right to drop whatever a recycled cell was showing.
-        loadedImage = nil
+        // Genuinely uncached: only now is it right to drop whatever a recycled cell was
+        // showing — and only if it was other artwork. The same artwork at another size stays
+        // up until this one replaces it.
+        if loadedURL != url { loadedImage = nil }
         loadedKey = cacheKey
 
         if let diskData = await DiskImageCache.shared.data(for: cacheKey), let image = PlatformImage(data: diskData) {
@@ -108,6 +121,7 @@ struct RemoteImage: View {
     private func set(_ image: PlatformImage, for key: String) {
         loadedImage = image
         loadedKey = key
+        loadedURL = url
     }
 
     /// The pixel size to actually request — the on-screen point size scaled for the
@@ -123,7 +137,17 @@ struct RemoteImage: View {
         let dataSaver = UserDefaults.standard.bool(forKey: InnerTubeClient.dataSaverDefaultsKey)
         let multiplier = dataSaver ? 0.75 : 1.0
         #endif
-        return max(1, Int((pointSize * displayScale * multiplier).rounded(.up)))
+        return bucketed(Int((pointSize * displayScale * multiplier).rounded(.up)))
+    }
+
+    /// The sizes actually requested. Every distinct size is its own download and its own cache
+    /// entry, so a size that follows the layout pixel for pixel — a hero sized to the screen's
+    /// width, artwork growing through an animation — would fetch the same cover over and over.
+    /// Rounded *up*, so nothing is ever drawn from fewer pixels than it needs.
+    static let pixelBuckets = [32, 64, 96, 128, 192, 256, 384, 512, 640, 768, 1024, 1280]
+
+    static func bucketed(_ pixels: Int) -> Int {
+        pixelBuckets.first { $0 >= pixels } ?? max(1, pixels)
     }
 
     /// YouTube's `yt3.googleusercontent.com` thumbnail URLs encode the requested pixel
