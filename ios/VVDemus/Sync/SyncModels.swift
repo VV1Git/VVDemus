@@ -197,6 +197,24 @@ extension AlbumRecord {
     }
 }
 
+/// The songs picked for a mix radio, as one ordered list.
+///
+/// Whole-list newest-wins, like an album record, not a playlist's per-entry merge: the picks
+/// are a short-lived tray in pick order, and the station is built from exactly that order, so
+/// a union of two devices' trays would be a station neither of them picked. Clearing is an
+/// edit like any other — an empty list with a fresh stamp — so it reaches the other device
+/// instead of being handed straight back by it.
+struct MixRadioRecord: Codable, Equatable {
+    var seeds: [Track]
+    var stamp: EditStamp
+
+    /// Folds `incoming` into `local`, returning the winner and whether it was `incoming`.
+    /// Equal stamps keep `local`, so re-receiving the same record is a no-op.
+    static func merging(_ local: MixRadioRecord, _ incoming: MixRadioRecord) -> (record: MixRadioRecord, changed: Bool) {
+        incoming.stamp.isNewerThan(local.stamp) ? (incoming, true) : (local, false)
+    }
+}
+
 /// A cache that is generated whole — the daylist, Home's shelves, one station's track list.
 ///
 /// Merged newest-wins rather than unioned: these are single generated artefacts, and half of
@@ -232,6 +250,9 @@ struct SyncPayload: Codable {
     /// The newest event the sender already holds from the recipient, so the reply can skip
     /// everything older.
     var eventsSince: Date?
+    /// Optional for the same wire-compatibility reason as `albums`: a peer on an older build
+    /// sends no picks, which merges as nothing.
+    var mixRadio: MixRadioRecord? = nil
 
     /// The album records, with "the peer is on an older build" folded into "the peer has no
     /// albums" — which is the same thing as far as merging goes.
