@@ -11,6 +11,11 @@ struct MixRadio: Hashable {
     /// Stable for one set of seeds in one order, so the same pick opens the same screen.
     var id: String { seeds.map(\.videoId).joined(separator: "+") }
 
+    /// Where this station's songs live in `RadioCacheStore`, beside the single-seed radios —
+    /// which is what saves them across launches and carries them to the paired device. The
+    /// prefix keeps a one-song mix from sharing a slot with that song's own radio.
+    var cacheKey: String { "mix:" + id }
+
     var title: String {
         switch seeds.count {
         case 0: return "Mix Radio"

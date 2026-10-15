@@ -1,19 +1,17 @@
 import SwiftUI
 
-/// The stations built so far this session, so going back to one does not rebuild it — a
-/// rebuild costs a request per seed and comes back in a different order every time.
-@MainActor
-enum MixRadioCache {
-    static var stations: [String: [Track]] = [:]
-}
-
 /// A radio of several songs: the picked songs first, then songs like the set of them.
 /// The single-seed counterpart is `RadioDetailView`; see `MixRadioBlend` for the difference.
 struct MixRadioDetailView: View {
     let radio: MixRadio
     @ObservedObject var player: PlayerService
     @ObservedObject private var tray = MixRadioSeedsStore.shared
-    @State private var tracks: [Track] = []
+    /// The station's songs live here rather than in this view, exactly as a single-seed
+    /// radio's do. They used to sit in an in-memory dictionary, so the station was rebuilt on
+    /// every launch and on each device separately — and YouTube answers differently every
+    /// time, so it changed constantly and never matched between the phone and the Mac.
+    @ObservedObject private var radioCache = RadioCacheStore.shared
+    private var tracks: [Track] { radioCache.tracks(for: radio.cacheKey) ?? [] }
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var searchText = ""
@@ -157,21 +155,29 @@ struct MixRadioDetailView: View {
 
     private func load() async {
         errorMessage = nil
-        if let cached = MixRadioCache.stations[radio.id], !cached.isEmpty {
-            tracks = cached
+        // Built once, here or on the paired device, and kept until Refresh.
+        guard tracks.isEmpty else {
             isLoading = false
             return
         }
         isLoading = true
-        tracks = []
         do {
             let built = try await MixRadioService.build(seeds: radio.seeds)
-            tracks = built
-            if !built.isEmpty { MixRadioCache.stations[radio.id] = built }
+            // A station that arrived from the paired device while this one was being built
+            // wins: replacing it would put the two devices on different lists again.
+            if tracks.isEmpty, !built.isEmpty { keep(built) }
         } catch {
             errorMessage = "Couldn't load this radio. Check your connection."
         }
         isLoading = false
+    }
+
+    /// Saves the station and tells the paired device straight away. Storing a station is not
+    /// itself a library change, so without the nudge the other device would only hear of it
+    /// at the next sync — and, opening the station before then, build a different one.
+    private func keep(_ built: [Track]) {
+        RadioCacheStore.shared.store(built, for: radio.cacheKey)
+        PeerLink.shared.libraryDidChange()
     }
 
     /// Rebuilds the station with what it showed pushed to the back, so Refresh brings new
@@ -186,8 +192,7 @@ struct MixRadioDetailView: View {
             if built.isEmpty {
                 errorMessage = "No new songs for this radio right now. Try again later."
             } else {
-                tracks = built
-                MixRadioCache.stations[radio.id] = built
+                keep(built)
             }
         } catch {
             errorMessage = "Couldn't refresh this radio. Check your connection."
