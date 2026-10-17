@@ -632,13 +632,6 @@ enum InnerTubeClient {
         var isCopyrightRemoval: Bool { reason.lowercased().contains("copyright") }
     }
 
-    /// Everything known about a gone video, the caller's record first.
-    ///
-    /// A copyright removal comes back as status ERROR with no `videoDetails` at all, so without
-    /// the library's record there is nothing to search for. And where YouTube does describe the
-    /// video, an upload's description is the uploader's — "Drake - Cold Shoulder (Unreleased)"
-    /// by some channel — where the library holds the title and artist search cleaned it into.
-    /// YouTube's length still fills a gap in the record.
     /// The id of a gone video's reissue, or nil if the video plays (or nothing replaces it).
     ///
     /// One player request rather than a whole `stream` resolve: this only needs to know whether
@@ -651,6 +644,13 @@ enum InnerTubeClient {
         return try await reissue(of: original, after: gone)?.videoId
     }
 
+    /// Everything known about a gone video, the caller's record first.
+    ///
+    /// A copyright removal comes back as status ERROR with no `videoDetails` at all, so without
+    /// the library's record there is nothing to search for. And where YouTube does describe the
+    /// video, an upload's description is the uploader's — "Drake - Cold Shoulder (Unreleased)"
+    /// by some channel — where the library holds the title and artist search cleaned it into.
+    /// YouTube's length still fills a gap in the record.
     static func describe(_ gone: GoneVideo, known: Track?) -> Track? {
         guard let known else { return gone.original }
         return Track(
