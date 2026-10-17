@@ -355,12 +355,10 @@ function art(url, cssPixels) {
   if (!match) return url;
   // Capped at 2x: beyond that the extra bytes buy nothing visible on any real display.
   const wanted = Math.ceil(cssPixels * Math.min(window.devicePixelRatio || 1, 2));
-  // Never ask for more than the URL already offers. These come back at wildly different
-  // sizes depending on the endpoint (search gives 120px, radio gives 544px), and asking a
-  // 120px source for 340px doesn't add detail — it upscales server-side and costs six
-  // times the bytes.
-  const target = Math.min(wanted, Number(match[1]));
-  return url.replace(/=w\d+-h\d+/, `=w${target}-h${target}`);
+  // Not clamped to the size the URL arrives with (search gives 120px, radio 544px): the
+  // resize is from the original artwork, not an upscale of those pixels, so a 120px URL
+  // asked for 340px comes back sharp. See `resizedThumbnailUrl` in RemoteImage.swift.
+  return url.replace(/=w\d+-h\d+/, `=w${wanted}-h${wanted}`);
 }
 
 /// Markup for a thumbnail, or a placeholder glyph when the track has none.

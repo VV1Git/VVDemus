@@ -18,6 +18,7 @@ struct TrackRowActions<Extra: View>: ViewModifier {
     // No `DownloadManager` here: the download item lives in `TrackMenuItems`, which observes
     // it itself. Observing it on the modifier re-rendered every row on every progress tick.
     @Environment(\.openRadio) private var openRadio
+    @Environment(\.openMixRadio) private var openMixRadio
     @Environment(\.openLyrics) private var openLyrics
     @State private var showNewPlaylistAlert = false
     @State private var newPlaylistName = ""
@@ -78,6 +79,7 @@ struct TrackRowActions<Extra: View>: ViewModifier {
                     track: track,
                     player: player,
                     onRadio: { openRadio(track) },
+                    onMixRadio: { openMixRadio(MixRadioSeedsStore.shared.radio) },
                     onLyrics: { openLyrics(track) },
                     showNewPlaylistAlert: $showNewPlaylistAlert
                 )
@@ -115,6 +117,9 @@ struct TrackMenuItems: View {
     /// Nil hides "Go to Radio". Now Playing is a full-screen cover presented above every
     /// NavigationStack, so it has nowhere to push a radio to.
     var onRadio: (() -> Void)?
+    /// Nil hides "Go to Mix Radio", for the same reason as `onRadio`. Picking songs for one
+    /// still works without it — that needs nowhere to go.
+    var onMixRadio: (() -> Void)? = nil
     /// Nil hides "Show Lyrics", for the same reason: Now Playing presents the lyrics itself,
     /// as a cover over its own sheet, because there is no stack under it to push onto.
     var onLyrics: (() -> Void)?
@@ -122,6 +127,7 @@ struct TrackMenuItems: View {
     @ObservedObject private var liked = LikedSongsStore.shared
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var downloads = DownloadManager.shared
+    @ObservedObject private var mixSeeds = MixRadioSeedsStore.shared
 
     var body: some View {
         Section {
@@ -157,6 +163,31 @@ struct TrackMenuItems: View {
             if let onRadio {
                 Button(action: onRadio) {
                     Label("Go to Radio", systemImage: "dot.radiowaves.left.and.right")
+                }
+            }
+            // A radio of several songs is picked one song at a time, from wherever each one
+            // is, and opened from any row once there are two — one pick is just "Go to Radio".
+            Button {
+                mixSeeds.toggle(track)
+            } label: {
+                if mixSeeds.contains(track) {
+                    Label("Remove from Mix Radio", systemImage: "minus.circle")
+                } else {
+                    Label("Add to Mix Radio", systemImage: "plus.square.on.square")
+                }
+            }
+            if let onMixRadio, mixSeeds.seeds.count >= 2 {
+                Button(action: onMixRadio) {
+                    Label("Go to Mix Radio (\(mixSeeds.seeds.count) Songs)", systemImage: "dot.radiowaves.left.and.right")
+                }
+            }
+            // Wherever the picks can be added to, they can be dropped — without it, starting
+            // over meant opening the station or removing each song from its own row.
+            if !mixSeeds.seeds.isEmpty {
+                Button(role: .destructive) {
+                    mixSeeds.clear()
+                } label: {
+                    Label("Clear Mix Radio", systemImage: "xmark.circle")
                 }
             }
             if let onLyrics {

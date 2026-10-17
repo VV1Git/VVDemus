@@ -29,7 +29,8 @@ enum SyncEngine {
             recentSearches: RecentSearchStore.shared.searches,
             events: events,
             // What the *sender* wants back, so one round trip carries both directions.
-            eventsSince: ListeningStatsStore.shared.newestEventAt
+            eventsSince: ListeningStatsStore.shared.newestEventAt,
+            mixRadio: MixRadioSeedsStore.shared.record
         )
     }
 
@@ -47,6 +48,7 @@ enum SyncEngine {
         summary.radios = RadioHistoryStore.shared.merge(payload.radios)
         summary.albums = AlbumHistoryStore.shared.merge(payload.openedAlbums)
         summary.searches = RecentSearchStore.merge(payload.recentSearches) ? 1 : 0
+        if let mix = payload.mixRadio, MixRadioSeedsStore.shared.merge(mix) { summary.mixRadio = 1 }
 
         for record in payload.generated {
             let applied: Bool
@@ -86,9 +88,10 @@ struct SyncSummary: Equatable {
     var plays = 0
     var generated = 0
     var searches = 0
+    var mixRadio = 0
 
     var isEmpty: Bool {
-        likes + playlists + radios + albums + plays + generated + searches == 0
+        likes + playlists + radios + albums + plays + generated + searches + mixRadio == 0
     }
 
     /// Human phrasing for the Settings row — "3 liked songs, 1 playlist, 42 plays".
@@ -105,6 +108,7 @@ struct SyncSummary: Equatable {
         add(plays, "play", "plays")
         add(generated, "mix", "mixes")
         add(searches, "search list", "search lists")
+        add(mixRadio, "mix radio", "mix radios")
         return parts.isEmpty ? "Already up to date" : parts.joined(separator: ", ")
     }
 }
