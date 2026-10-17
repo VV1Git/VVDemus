@@ -87,7 +87,10 @@ enum SearchBlend {
     ]
 
     private static func isJunk(_ upload: Upload) -> Bool {
-        if let seconds = upload.durationSeconds, seconds > longestUploadSeconds { return true }
+        // No length is a live stream or a premiere — "🔴 toxic R&B [24/7] | brent faiyaz, drake"
+        // came back for "unreleased drake 24/7". Neither has a file to play.
+        guard let seconds = upload.durationSeconds else { return true }
+        if seconds > longestUploadSeconds { return true }
         let words = TrackMatcher.words(upload.rawTitle)
         // Nothing but hashtags: a short, not a song.
         if !words.isEmpty, upload.rawTitle.split(separator: " ").allSatisfy({ $0.hasPrefix("#") }) { return true }

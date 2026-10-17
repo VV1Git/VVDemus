@@ -38,9 +38,94 @@ final class VideoReissueTests: XCTestCase {
         XCTAssertEqual(InnerTubeClient.reissue(of: original, among: close)?.videoId, "remaster")
     }
 
+    /// Longer is no more acceptable than shorter for a full-length song: an extended mix is not
+    /// the radio edit that was queued.
+    func testALongerRecordingOfAFullLengthSongIsNotAReissue() {
+        let candidates = [track("extended", "Fallen Star", "The Neighbourhood", 260)]
+        XCTAssertNil(InnerTubeClient.reissue(of: original, among: candidates))
+    }
+
+    /// WizTheMc's "Show Me Love" first came out as a 62-second preview single, since taken down;
+    /// a radio saved from it still holds that id. The full release is the song it previewed.
+    func testAGonePreviewPlaysTheFullRelease() {
+        let preview = track("m8lW4eGqIAs", "Show Me Love", "WizTheMc", 62)
+        let candidates = [
+            track("Wx7I4yWJnXI", "Show Me Love", "Robin S", 270),
+            track("sped", "Show Me Love (Sped Up)", "WizTheMc", 140),
+            track("1NqIvsmUR2I", "Show Me Love", "WizTheMc, bees & honey", 177),
+        ]
+        XCTAssertEqual(InnerTubeClient.reissue(of: preview, among: candidates)?.videoId, "1NqIvsmUR2I")
+    }
+
+    /// A short song that is simply re-delivered still gets its own master rather than something
+    /// longer that happens to share the name.
+    func testAShortSongPrefersItsSameLengthCopy() {
+        let interlude = track("old", "Interlude", "The Weeknd", 75)
+        let candidates = [track("long", "Interlude", "The Weeknd", 200), track("same", "Interlude", "The Weeknd", 76)]
+        XCTAssertEqual(InnerTubeClient.reissue(of: interlude, among: candidates)?.videoId, "same")
+    }
+
     func testWithoutALengthToCompareNothingIsSwappedIn() {
         let candidates = [track("hpqpUs70t8g", "Fallen Star", "The Neighbourhood", nil)]
         XCTAssertNil(InnerTubeClient.reissue(of: original, among: candidates))
+    }
+
+    // MARK: - Copyright removals
+
+    /// A 2:32 upload of Drake's "Cold Shoulder", saved as a radio seed and since removed for
+    /// Universal; the release is 3:55. What was gone never was the release, so the length is no
+    /// evidence against it.
+    func testACopyrightRemovalIsReplacedByTheReleaseWhateverItsLength() {
+        let leak = track("fgW8b0_tYkU", "Cold Shoulder", "Drake", 152)
+        let candidates = [
+            track("other", "Cold Shoulder", "Adele", 191),
+            track("bzO58iQM19g", "Cold Shoulder", "Drake, Don Toliver, Yebba", 235),
+        ]
+        XCTAssertNil(InnerTubeClient.reissue(of: leak, among: candidates),
+                     "Without the removal reason the length rule still applies")
+        XCTAssertEqual(InnerTubeClient.reissue(of: leak, among: candidates, anyLength: true)?.videoId, "bzO58iQM19g")
+    }
+
+    func testTheClosestLengthWinsWhenAnyLengthWill() {
+        let leak = track("x", "Cold Shoulder", "Drake", 152)
+        let candidates = [track("far", "Cold Shoulder", "Drake", 300), track("near", "Cold Shoulder", "Drake", 170)]
+        XCTAssertEqual(InnerTubeClient.reissue(of: leak, among: candidates, anyLength: true)?.videoId, "near")
+    }
+
+    func testTheRemovalReasonIsRecognised() {
+        let removed = InnerTubeClient.GoneVideo(
+            reason: "It was removed following a copyright removal request by Universal Music Group", original: nil)
+        XCTAssertTrue(removed.isCopyrightRemoval)
+        XCTAssertFalse(InnerTubeClient.GoneVideo(reason: "This video is not available", original: nil).isCopyrightRemoval)
+    }
+
+    /// A copyright removal comes back with no description at all, so the library's own record
+    /// is the only thing to search with; where YouTube does describe the video, the record still
+    /// wins and YouTube's length only fills the gap.
+    func testTheLibrarysRecordDescribesAGoneVideo() throws {
+        let bare = InnerTubeClient.GoneVideo(reason: "removed", original: nil)
+        let saved = Track(videoId: "fgW8b0_tYkU", title: "Cold Shoulder", artist: "Drake", album: nil,
+                          thumbnailUrl: nil, durationSeconds: nil)
+        XCTAssertEqual(InnerTubeClient.describe(bare, known: saved)?.title, "Cold Shoulder")
+        XCTAssertNil(InnerTubeClient.describe(bare, known: nil))
+
+        let described = InnerTubeClient.GoneVideo(reason: "gone", original: track("fgW8b0_tYkU",
+            "Drake - Cold Shoulder (Unreleased)", "dontolivervault", 152))
+        let merged = try XCTUnwrap(InnerTubeClient.describe(described, known: saved))
+        XCTAssertEqual(merged.artist, "Drake")
+        XCTAssertEqual(merged.durationSeconds, 152)
+    }
+
+    // MARK: - Stub files
+
+    /// "we fell in love in october"'s itag 18, as served: an 86 KB header over 184 seconds.
+    func testAHeaderWithNothingBehindItIsAStub() {
+        let stub = JSON(["contentLength": "86238", "approxDurationMs": "184203", "bitrate": 3747] as [String: Any])
+        let real = JSON(["contentLength": "3680642", "approxDurationMs": "245016", "bitrate": 120203] as [String: Any])
+        XCTAssertTrue(InnerTubeClient.isStubFormat(stub))
+        XCTAssertFalse(InnerTubeClient.isStubFormat(real))
+        XCTAssertTrue(InnerTubeClient.isStubFormat(JSON(["bitrate": 3747])), "The declared bitrate when that is all there is")
+        XCTAssertFalse(InnerTubeClient.isStubFormat(JSON([String: Any]())), "No evidence is not a stub")
     }
 
     // MARK: - Telling "gone" from "refused"

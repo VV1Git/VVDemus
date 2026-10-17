@@ -501,7 +501,10 @@ final class SystemNowPlayingCenter: NowPlayingPublishing {
 
 @MainActor
 protocol StreamResolving: AnyObject {
-    func streamURL(videoId: String) async throws -> String
+    /// The whole track rather than its id: if the video turns out to be gone, the track's own
+    /// title, artist and length are what its replacement is found by — see
+    /// `InnerTubeClient.describe`.
+    func streamURL(for track: Track) async throws -> String
     /// Forget a URL that turned out not to play, so the next resolve actually goes back
     /// to the network instead of returning the same dead one from cache.
     func invalidate(videoId: String)
@@ -509,8 +512,8 @@ protocol StreamResolving: AnyObject {
 
 final class APIStreamResolver: StreamResolving {
     static let shared = APIStreamResolver()
-    func streamURL(videoId: String) async throws -> String {
-        try await APIClient.shared.stream(videoId: videoId).url
+    func streamURL(for track: Track) async throws -> String {
+        try await APIClient.shared.stream(videoId: track.videoId, known: track).url
     }
 
     func invalidate(videoId: String) {

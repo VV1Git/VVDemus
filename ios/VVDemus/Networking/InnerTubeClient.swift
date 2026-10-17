@@ -385,6 +385,18 @@ enum InnerTubeClient {
     static func radioPage(videoId: String, limit: Int = radioLength) async throws -> RadioPage {
         let first = try await fetchRadio(seed: videoId, limit: limit)
 
+        // ...unless the seed is gone. A removed video is missing from its own radio, and what is
+        // left is a loose mix: "Show Me Love"'s 62-second preview, seed of a saved station, came
+        // back as 24 tracks with no "Show Me Love" among them, where its release seeds the song's
+        // own 50. Re-seeded from the reissue, the station is that song's again.
+        if first.entries.first?.track.videoId != videoId,
+           let reissue = try? await reissueOfGoneVideo(videoId), reissue != videoId {
+            let retry = try await fetchRadio(seed: reissue, limit: limit)
+            if !retry.entries.isEmpty {
+                return RadioPage(tracks: keepingAudio(retry.entries, limit: limit), continuation: retry.continuation)
+            }
+        }
+
         // The seed is always the first entry, so its kind is the whole answer.
         if let seed = first.entries.first, seed.isAudio == false,
            let audioSeed = try? await audioCounterpart(of: seed.track), audioSeed != videoId {
@@ -563,12 +575,14 @@ enum InnerTubeClient {
     /// a download still holds the old id and would fail on it forever — "Fallen Star" in a radio
     /// queued before The Neighbourhood's single was re-released. The `StreamInfo` keeps the id
     /// that was asked for, so everything keyed on it carries on as if nothing happened.
-    static func stream(videoId: String) async throws -> StreamInfo {
+    ///
+    /// `known` is the caller's own record of the track, when it has one — see `describe`.
+    static func stream(videoId: String, known: Track? = nil) async throws -> StreamInfo {
         do {
             return try await streamOfThisCopy(videoId: videoId)
         } catch let gone as GoneVideo {
-            guard let original = gone.original,
-                  let reissue = try? await reissue(of: original) else { throw gone }
+            guard let original = describe(gone, known: known?.videoId == videoId ? known : nil),
+                  let reissue = try? await reissue(of: original, after: gone) else { throw gone }
             NSLog("[InnerTubeClient] %@ is gone (%@) — playing its reissue %@",
                   videoId, gone.reason, reissue.videoId)
             let stream = try await streamOfThisCopy(videoId: reissue.videoId)
@@ -609,6 +623,44 @@ enum InnerTubeClient {
         let reason: String
         let original: Track?
         var errorDescription: String? { reason }
+
+        /// "It was removed following a copyright removal request by Universal Music Group." A
+        /// label takes down *someone else's* upload of its music, so what is gone was never the
+        /// release — a leak, a rip — and the release is the honest replacement whatever its
+        /// length. Found on a 2:32 upload of Drake's "Cold Shoulder", saved as a radio seed,
+        /// against the 3:55 release.
+        var isCopyrightRemoval: Bool { reason.lowercased().contains("copyright") }
+    }
+
+    /// Everything known about a gone video, the caller's record first.
+    ///
+    /// A copyright removal comes back as status ERROR with no `videoDetails` at all, so without
+    /// the library's record there is nothing to search for. And where YouTube does describe the
+    /// video, an upload's description is the uploader's — "Drake - Cold Shoulder (Unreleased)"
+    /// by some channel — where the library holds the title and artist search cleaned it into.
+    /// YouTube's length still fills a gap in the record.
+    /// The id of a gone video's reissue, or nil if the video plays (or nothing replaces it).
+    ///
+    /// One player request rather than a whole `stream` resolve: this only needs to know whether
+    /// YouTube still has the video, not to fetch and probe a URL for it.
+    private static func reissueOfGoneVideo(_ videoId: String) async throws -> String? {
+        guard let client = audioOnlyClients.first else { return nil }
+        let token = await VisitorDataProvider.shared.token(for: .cheap)
+        let json = try await send(try playerRequest(videoId: videoId, client: client, visitorData: token))
+        guard let gone = gone(json, videoId: videoId), let original = gone.original else { return nil }
+        return try await reissue(of: original, after: gone)?.videoId
+    }
+
+    static func describe(_ gone: GoneVideo, known: Track?) -> Track? {
+        guard let known else { return gone.original }
+        return Track(
+            videoId: known.videoId,
+            title: known.title,
+            artist: known.artist,
+            album: known.album,
+            thumbnailUrl: known.thumbnailUrl,
+            durationSeconds: known.durationSeconds ?? gone.original?.durationSeconds
+        )
     }
 
     /// A refusal that is about the video rather than the request, or nil for any other kind.
@@ -638,19 +690,49 @@ enum InnerTubeClient {
     /// what was queued is worse than the error.
     static let reissueLengthTolerance = 3
 
-    private static func reissue(of original: Track) async throws -> Track? {
-        let candidates = try await search(query: "\(original.title) \(original.artist)", limit: 10)
-        return reissue(of: original, among: candidates)
+    /// Two leaks of one track are rarely trimmed identically — an intro clipped, a tag added —
+    /// so another upload gets more slack than a re-delivered master does.
+    static let uploadLengthTolerance = 10
+
+    private static func reissue(of original: Track, after gone: GoneVideo) async throws -> Track? {
+        let query = "\(original.title) \(original.artist)"
+        let releases = try await search(query: query, limit: 10)
+        if let release = reissue(of: original, among: releases, anyLength: gone.isCopyrightRemoval) {
+            return release
+        }
+        // An unreleased song has no release to fall back on, only other uploads of it — and a
+        // takedown seldom reaches all of them at once. Read through `UploadTitle` so they compare
+        // as the songs they are rather than as "Drake - … (Unreleased)" against "…".
+        let uploads = try await searchUploads(query: query, limit: 20)
+            .map { UploadTitle.track(from: $0, knownArtists: [original.artist]) }
+        return reissue(of: original, among: uploads, anyLength: gone.isCopyrightRemoval,
+                       tolerance: uploadLengthTolerance)
     }
 
-    static func reissue(of original: Track, among candidates: [Track]) -> Track? {
-        guard let wanted = original.durationSeconds else { return nil }
-        return candidates.first { candidate in
-            guard candidate.videoId != original.videoId,
-                  let length = candidate.durationSeconds,
-                  abs(length - wanted) <= reissueLengthTolerance else { return false }
-            return isSameSong(candidate, as: original)
+    /// The one exception to matching lengths: a release this short was a preview — a minute of a
+    /// song put out ahead of it, then taken down once the whole thing was released. WizTheMc's
+    /// "Show Me Love" went out as a 62-second single in January 2025 and is gone; a radio saved
+    /// from it still holds that id, and the 2:57 release is the song it was a preview of. A real
+    /// song this short that is merely re-delivered still finds its same-length copy first.
+    static let previewLength = 90
+
+    /// `anyLength` is for a copyright removal (`GoneVideo.isCopyrightRemoval`): the length is
+    /// no evidence of being the same recording when the original never was the release, so the
+    /// same song is enough, the closest length preferred.
+    static func reissue(of original: Track, among candidates: [Track], anyLength: Bool = false,
+                        tolerance: Int = reissueLengthTolerance) -> Track? {
+        let sameSong = candidates.filter { candidate in
+            candidate.videoId != original.videoId && candidate.durationSeconds != nil
+                && isSameSong(candidate, as: original)
         }
+        guard let wanted = original.durationSeconds else { return anyLength ? sameSong.first : nil }
+        func gap(_ track: Track) -> Int { abs(track.durationSeconds! - wanted) }
+        if let master = sameSong.first(where: { gap($0) <= tolerance }) {
+            return master
+        }
+        if anyLength { return sameSong.min { gap($0) < gap($1) } }
+        guard wanted <= previewLength else { return nil }
+        return sameSong.first { $0.durationSeconds! > wanted }
     }
 
     /// A player client that hands back direct, un-ciphered audio-only URLs.
@@ -844,11 +926,17 @@ enum InnerTubeClient {
     /// unavailable video would hammer YouTube from a music app that looks stuck.
     static func resolveWithTokenRetry(
         token: (VisitorDataProvider.Source) async -> String?,
+        renew: (() async -> String?)? = nil,
         attempt: (String?) async throws -> StreamInfo
     ) async throws -> StreamInfo {
         let first = await token(.cheap)
         do {
             return try await attempt(first)
+        } catch let capped as CappedStreamURL {
+            // Once, with a new token — see `VisitorDataProvider.renewed`. Capped again, the
+            // error stands and the caller falls back as before.
+            guard let renew, let fresh = await renew(), fresh != first else { throw capped }
+            return try await attempt(fresh)
         } catch let refusal as TokenRefusal {
             // Escalating rather than just refetching: it also rules out the cheap
             // endpoint's shape-match having quietly captured the wrong string.
@@ -867,6 +955,7 @@ enum InnerTubeClient {
     private static func audioOnlyStream(videoId: String, using client: PlayerClient) async throws -> StreamInfo {
         try await resolveWithTokenRetry(
             token: { await VisitorDataProvider.shared.token(for: $0) },
+            renew: { await VisitorDataProvider.shared.renewed() },
             attempt: { try await audioOnlyStream(videoId: videoId, using: client, visitorData: $0) }
         )
     }
@@ -957,8 +1046,32 @@ enum InnerTubeClient {
               let urlString = playable["url"].string else {
             throw APIError.server("No playable format returned")
         }
+        // Refused here rather than handed to the player. Played, a stub fails a few seconds
+        // later as if the network had; downloaded, it passes every size check and is kept as
+        // a "downloaded" song with no audio in it.
+        guard !isStubFormat(playable) else {
+            throw APIError.server("YouTube has no playable copy of this track")
+        }
         let mime = playable["mimeType"].string ?? "video/mp4"
         return StreamInfo(videoId: videoId, url: urlString, expiresAt: expiry(for: urlString), mimeType: mime)
+    }
+
+    /// Whether a muxed format is a header with nothing behind it.
+    ///
+    /// "we fell in love in october" is served as an 86 KB itag 18: an index for 4.8 MB of video
+    /// and audio that is never sent, declared at 3,747 bits/s. The AAC in a real itag 18 is 96
+    /// kbps on its own, so anything under a third of that cannot contain the song, whatever the
+    /// video track weighs. Judged on the bytes per second actually on offer where YouTube gives
+    /// both, falling back to its own declared bitrate.
+    static let smallestPlausibleMuxedBitrate = 32_000
+
+    static func isStubFormat(_ format: JSON) -> Bool {
+        if let bytes = format["contentLength"].string.flatMap(Int.init),
+           let milliseconds = format["approxDurationMs"].string.flatMap(Int.init), milliseconds > 0 {
+            return bytes * 8 * 1000 / milliseconds < smallestPlausibleMuxedBitrate
+        }
+        if let bitrate = format["bitrate"].int { return bitrate < smallestPlausibleMuxedBitrate }
+        return false
     }
 
     /// The URL's real deadline, read from its own `expire=` parameter.

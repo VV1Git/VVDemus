@@ -496,7 +496,9 @@ final class QueueIdentityTests: XCTestCase {
         await harness.settle { self.harness.player.currentTrack?.videoId == "r1" }
 
         XCTAssertEqual(harness.player.currentTrack?.videoId, "r1")
-        XCTAssertEqual(harness.player.queueContextTitle, "c Radio")
+        // Named after the song, as on screen ("Show Me Love Radio") — not its video id. This
+        // expected "c Radio" from the days the fixtures' titles were their ids.
+        XCTAssertEqual(harness.player.queueContextTitle, "\(album[2].title) Radio")
         XCTAssertEqual(harness.radios.requests, ["c"])
     }
 

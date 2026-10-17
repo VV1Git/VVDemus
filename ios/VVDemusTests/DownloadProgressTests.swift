@@ -888,10 +888,13 @@ final class DownloadManagerProgressTests: XCTestCase {
     func testDownloadAllOverACollectionAlreadyFullyInFlightStillMintsAJob() throws {
         let tracks = makeTracks(2, prefix: "dladoptall")
         tapDownload(tracks)
-        XCTAssertNil(manager.downloadJob(for: tracks))
+        // No *batch* yet. Not "no job": single taps have had a loose job of their own since
+        // they were given their progress back (`looseJob`), which this precondition predated.
+        XCTAssertNil(manager.batch(for: tracks))
 
         manager.downloadAll(tracks, title: "All In Flight")
 
+        XCTAssertNotNil(manager.batch(for: tracks), "Download All has to mint a batch even with nothing left to queue")
         let job = try XCTUnwrap(manager.downloadJob(for: tracks))
         XCTAssertEqual(job.progress.active, 2)
 

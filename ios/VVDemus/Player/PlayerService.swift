@@ -810,7 +810,7 @@ final class PlayerService: ObservableObject {
             stopEngineOnGivingUp()
             isPlaying = false
             isLoading = false
-            errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
+            errorMessage = Self.failureMessage(for: track, error: error)
             updateNowPlayingInfo()
             return
         }
@@ -823,7 +823,7 @@ final class PlayerService: ObservableObject {
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let urlString = try await self.streams.streamURL(videoId: track.videoId)
+                let urlString = try await self.streams.streamURL(for: track)
                 guard !Task.isCancelled, self.currentTrack?.videoId == track.videoId else { return }
                 guard let url = URL(string: urlString) else { throw APIError.invalidURL }
                 // Both read now rather than captured before the await, for the same reason:
@@ -840,10 +840,35 @@ final class PlayerService: ObservableObject {
                 self.stopEngineOnGivingUp()
                 self.isLoading = false
                 self.isPlaying = false
-                self.errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
+                self.errorMessage = Self.failureMessage(for: track, error: error)
                 self.updateNowPlayingInfo()
             }
         }
+    }
+
+    /// What to tell someone whose track would not play, pointing at the cause that is actually
+    /// theirs to act on.
+    ///
+    /// Everything used to say "Check your connection", and twice that sent the investigation the
+    /// wrong way: once for a VPN whose exit YouTube was bot-checking, with the connection itself
+    /// fine, and once for a song YouTube had taken down, where no connection would ever help.
+    static func failureMessage(for track: Track, error: Error?) -> String {
+        if error is InnerTubeClient.GoneVideo {
+            return "\"\(track.title)\" isn't available on YouTube anymore."
+        }
+        if case APIError.server(let reason)? = error as? APIError {
+            let lowered = reason.lowercased()
+            if lowered.contains("not a bot") {
+                return "YouTube is refusing to play on this network. If a VPN is on, try turning it off."
+            }
+            if lowered.contains("confirm your age") {
+                return "\"\(track.title)\" is age-restricted on YouTube, so it can't play here."
+            }
+        }
+        if let api = error as? APIError, api.isRateLimit, let description = api.errorDescription {
+            return description
+        }
+        return "Couldn't play \"\(track.title)\". Check your connection and try again."
     }
 
     /// Stops the player when the app gives up on the current track.
@@ -1486,7 +1511,7 @@ final class PlayerService: ObservableObject {
                     if let localURL = self.downloads.localFileURL(for: track) {
                         url = localURL
                     } else {
-                        let urlString = try await self.streams.streamURL(videoId: track.videoId)
+                        let urlString = try await self.streams.streamURL(for: track)
                         guard let resolved = URL(string: urlString) else { throw APIError.invalidURL }
                         url = resolved
                     }
@@ -1834,7 +1859,7 @@ final class PlayerService: ObservableObject {
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let urlString = try await self.streams.streamURL(videoId: track.videoId)
+                let urlString = try await self.streams.streamURL(for: track)
                 guard !Task.isCancelled, self.currentTrack?.videoId == track.videoId else { return }
                 guard let url = URL(string: urlString) else { throw APIError.invalidURL }
                 // `self.progress` rather than the implicit 0. Resolving a stream takes
@@ -1852,7 +1877,7 @@ final class PlayerService: ObservableObject {
                 guard !Task.isCancelled else { return }
                 self.isLoading = false
                 self.isPlaying = false
-                self.errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
+                self.errorMessage = Self.failureMessage(for: track, error: error)
                 self.updateNowPlayingInfo()
             }
         }
@@ -1900,7 +1925,7 @@ final class PlayerService: ObservableObject {
                 guard !Task.isCancelled else { return }
                 self.isLoading = false
                 self.isPlaying = false
-                self.errorMessage = "Couldn't play \"\(track.title)\". Check your connection and try again."
+                self.errorMessage = Self.failureMessage(for: track, error: error)
                 self.updateNowPlayingInfo()
             }
         }
@@ -2041,7 +2066,7 @@ final class PlayerService: ObservableObject {
         if downloads.isDownloaded(track) {
             return "/api/audio/local/\(track.videoId)"
         }
-        return try await streams.streamURL(videoId: track.videoId)
+        return try await streams.streamURL(for: track)
     }
 
     /// Throws away the stream URL the casting browser was given and resolves a fresh one.

@@ -82,9 +82,11 @@ final class APIClient {
         try await InnerTubeClient.home()
     }
 
-    func stream(videoId: String) async throws -> StreamInfo {
+    /// `known` is the caller's record of the track, used only if the video turns out to be gone
+    /// and a replacement has to be searched for — see `InnerTubeClient.describe`.
+    func stream(videoId: String, known: Track? = nil) async throws -> StreamInfo {
         if let cached = cachedStream(videoId: videoId) { return cached }
-        let fresh = try await InnerTubeClient.stream(videoId: videoId)
+        let fresh = try await InnerTubeClient.stream(videoId: videoId, known: known)
         streamCacheLock.lock()
         streamCache[videoId] = fresh
         // Bounded: entries were only ever added, including long-dead ones, so this grew

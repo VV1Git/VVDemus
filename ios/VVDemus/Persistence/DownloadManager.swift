@@ -327,14 +327,13 @@ final class DownloadManager: NSObject, ObservableObject {
         return batchRecords.first { $0.videoIds.contains(where: ids.contains) }
     }
 
-    /// The collection-level job covering `tracks`, or nil when nothing collection-level is
-    /// running over them.
+    /// The job covering `tracks`, or nil when nothing is downloading among them.
     ///
-    /// A job is a *batch* — what `downloadAll` mints — and single-tap downloads deliberately have
-    /// none. Returning nil for those is the whole point: a detail hero used to raise its
-    /// whole-collection strip for any active entry among its tracks, so downloading three songs
-    /// out of a fifty-song playlist drew a bar over all fifty and offered a Stop that would have
-    /// taken the other forty-seven with it.
+    /// Usually a *batch* — what `downloadAll` mints. Single-tap downloads get a loose job scoped
+    /// to just the tapped tracks (`looseJob`), never one over the whole collection: a detail hero
+    /// used to raise its whole-collection strip for any active entry among its tracks, so
+    /// downloading three songs out of a fifty-song playlist drew a bar over all fifty and offered
+    /// a Stop that would have taken the other forty-seven with it.
     func downloadJob(for tracks: [Track]) -> CollectionDownloadJob? {
         let ids = tracks.map(\.videoId)
         // Scored by how much of *this* collection each batch owns rather than taken from the
@@ -498,7 +497,7 @@ final class DownloadManager: NSObject, ObservableObject {
         // guards this before calling; the single-tap path had nowhere to.
         guard active[track.videoId] != nil else { return }
         do {
-            let stream = try await APIClient.shared.stream(videoId: track.videoId)
+            let stream = try await APIClient.shared.stream(videoId: track.videoId, known: track)
             guard let remoteURL = URL(string: stream.url) else { throw APIError.invalidURL }
             let task = session.downloadTask(with: remoteURL)
             task.taskDescription = track.videoId

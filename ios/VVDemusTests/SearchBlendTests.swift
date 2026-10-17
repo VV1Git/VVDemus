@@ -135,6 +135,13 @@ final class SearchBlendTests: XCTestCase {
         XCTAssertEqual(SearchBlend.blend(songs: [], uploads: uploads, query: "drake"), [])
     }
 
+    /// No length means a live stream or a premiere — neither has a file to play.
+    func testALiveStreamIsNotShown() {
+        let live = SearchBlend.Upload(videoId: "h4V4uy0VRQk", rawTitle: "🔴 toxic R&B [24/7] | brent faiyaz, drake, sonder & more",
+                                      channel: "Lost Kids", thumbnailUrl: nil, durationSeconds: nil)
+        XCTAssertEqual(SearchBlend.blend(songs: [], uploads: [live], query: "drake"), [])
+    }
+
     func testAMisspeltWordStillMatchesByPrefix() {
         let wanted = Set(TrackMatcher.words("choosing texas drake"))
         XCTAssertEqual(SearchBlend.coverage(of: wanted, in: ["Drake - Choosin’ Texas"]), 1)

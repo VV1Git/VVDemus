@@ -308,7 +308,8 @@ final class FakeStreamResolver: StreamResolving {
     private(set) var invalidated: [String] = []
     private var continuations: [CheckedContinuation<Void, Never>] = []
 
-    func streamURL(videoId: String) async throws -> String {
+    func streamURL(for track: Track) async throws -> String {
+        let videoId = track.videoId
         resolveCount[videoId, default: 0] += 1
         if isSuspended {
             await withCheckedContinuation { continuations.append($0) }

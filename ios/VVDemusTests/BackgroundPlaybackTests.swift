@@ -301,3 +301,39 @@ final class BackgroundPlaybackTests: XCTestCase {
         XCTAssertEqual(harness.engine.attachedURL?.absoluteString, "https://stream.test/c.m4a")
     }
 }
+
+/// What a failed track says. "Check your connection" for everything twice sent the diagnosis the
+/// wrong way: once for a VPN exit YouTube was bot-checking, once for a song YouTube had removed.
+@MainActor
+final class FailureMessageTests: XCTestCase {
+    private let track = Fixtures.track("x", title: "Fallen Star")
+
+    func testARemovedSongSaysSo() {
+        let gone = InnerTubeClient.GoneVideo(reason: "This video is not available", original: nil)
+        XCTAssertEqual(PlayerService.failureMessage(for: track, error: gone),
+                       "\"Fallen Star\" isn't available on YouTube anymore.")
+    }
+
+    func testTheBotCheckPointsAtTheVPN() {
+        let message = PlayerService.failureMessage(for: track, error: APIError.server("Sign in to confirm you’re not a bot"))
+        XCTAssertTrue(message.contains("VPN"), message)
+    }
+
+    /// Also a "Sign in…" refusal, but nothing to do with the network.
+    func testAnAgeRestrictionIsNotBlamedOnTheVPN() {
+        let message = PlayerService.failureMessage(for: track, error: APIError.server("Sign in to confirm your age"))
+        XCTAssertTrue(message.contains("age-restricted"), message)
+    }
+
+    func testARateLimitSaysWhenToTryAgain() {
+        let message = PlayerService.failureMessage(for: track, error: APIError.rateLimited(retryAfter: 30))
+        XCTAssertTrue(message.contains("30s"), message)
+    }
+
+    func testAnythingElseIsStillAConnectionProblem() {
+        XCTAssertTrue(PlayerService.failureMessage(for: track, error: URLError(.notConnectedToInternet))
+            .contains("Check your connection"))
+        XCTAssertTrue(PlayerService.failureMessage(for: track, error: nil).contains("Check your connection"))
+    }
+}
+

@@ -80,6 +80,32 @@ final class PlaybackSmokeTest: XCTestCase {
         XCTAssertTrue(stream.mimeType.hasPrefix("audio/"), "Got \(stream.mimeType)")
     }
 
+    /// A taken-down 62-second preview single, still the seed of a saved radio. It has to play
+    /// the full release it previewed.
+    func testAGonePreviewPlaysTheFullRelease() async throws {
+        let stream = try await InnerTubeClient.stream(videoId: "m8lW4eGqIAs") // Show Me Love, Jan 2025 preview
+        XCTAssertEqual(stream.videoId, "m8lW4eGqIAs")
+        XCTAssertTrue(stream.mimeType.hasPrefix("audio/"), "Got \(stream.mimeType)")
+    }
+
+    /// A saved station whose seed has been removed: re-seeded from the reissue, it is the song's
+    /// own radio again — led by the song — rather than a loose mix without it.
+    func testARadioSeededFromAGoneVideoIsReseededFromItsReissue() async throws {
+        let page = try await InnerTubeClient.radioPage(videoId: "m8lW4eGqIAs") // Show Me Love preview
+        XCTAssertEqual(page.tracks.first?.videoId, "1NqIvsmUR2I", "Led by \(page.tracks.first?.title ?? "nothing")")
+        XCTAssertGreaterThan(page.tracks.count, 30)
+    }
+
+    /// Removed for copyright, so YouTube says nothing about it: only the saved record can find
+    /// the release, which is a different length from the leak that was saved.
+    func testACopyrightRemovedUploadPlaysTheReleaseFromTheSavedRecord() async throws {
+        let saved = Track(videoId: "fgW8b0_tYkU", title: "Cold Shoulder", artist: "Drake", album: nil,
+                          thumbnailUrl: nil, durationSeconds: 152)
+        let stream = try await InnerTubeClient.stream(videoId: saved.videoId, known: saved)
+        XCTAssertEqual(stream.videoId, "fgW8b0_tYkU")
+        XCTAssertTrue(stream.mimeType.hasPrefix("audio/"), "Got \(stream.mimeType)")
+    }
+
     /// Measures the difference rather than trusting it: the audio-only format has to be
     /// materially smaller than the muxed one, or the whole exercise bought nothing.
     func testAudioOnlyIsSubstantiallySmallerThanTheFallback() async throws {

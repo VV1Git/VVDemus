@@ -279,6 +279,63 @@ final class VisitorDataTests: XCTestCase {
         XCTAssertEqual(stream.url, "https://example.com/fresh")
     }
 
+    // MARK: - Capped URLs
+
+    /// A capped URL gets one more go under a renewed token, which is what fixed the cap in the
+    /// sweep that found it.
+    func testACappedURLIsRetriedOnceWithARenewedToken() async throws {
+        var tokensTried: [String?] = []
+        let stream = try await InnerTubeClient.resolveWithTokenRetry(
+            token: { _ in "worn" },
+            renew: { "renewed" },
+            attempt: { token in
+                tokensTried.append(token)
+                if token == "worn" { throw InnerTubeClient.CappedStreamURL(servedBytes: 1 << 20) }
+                return self.sampleStream(token)
+            }
+        )
+        XCTAssertEqual(tokensTried, ["worn", "renewed"])
+        XCTAssertEqual(stream.url, "https://example.com/renewed")
+    }
+
+    /// Where the cap is the network's, the renewed token is capped too and the error has to
+    /// reach the caller — which is what sends it to the next client and then to muxed.
+    func testCappedAgainStillFallsBack() async {
+        var attempts = 0
+        do {
+            _ = try await InnerTubeClient.resolveWithTokenRetry(
+                token: { _ in "worn" },
+                renew: { "renewed" },
+                attempt: { _ in attempts += 1; throw InnerTubeClient.CappedStreamURL(servedBytes: 1 << 20) }
+            )
+            XCTFail("Expected the cap to propagate")
+        } catch {
+            XCTAssertTrue(error is InnerTubeClient.CappedStreamURL)
+            XCTAssertEqual(attempts, 2, "One retry, not a loop")
+        }
+    }
+
+    /// Renewal is rationed: a token that was itself only just fetched is not thrown away again,
+    /// so a network that caps everything costs nothing extra per track.
+    func testRenewalIsRationedToOncePerInterval() async throws {
+        let counter = FetchCounter()
+        let clock = MutableClock(now: Date(timeIntervalSince1970: 1_000_000))
+        let provider = VisitorDataProvider(
+            defaults: try makeDefaults(),
+            now: { clock.value },
+            fetch: { _ in await counter.next() }
+        )
+        _ = try await provider.current()
+        clock.value = clock.value.addingTimeInterval(60)
+        let tooSoon = await provider.renewed()
+        XCTAssertNil(tooSoon, "A token fetched a minute ago is not worn out")
+        clock.value = clock.value.addingTimeInterval(VisitorDataProvider.renewalInterval)
+        let renewed = await provider.renewed()
+        XCTAssertEqual(renewed, "token-2")
+        let count = await counter.count
+        XCTAssertEqual(count, 2)
+    }
+
     /// A video that is genuinely unavailable must not send the app round again.
     func testNonCredentialFailureIsNotRetried() async {
         var attempts = 0

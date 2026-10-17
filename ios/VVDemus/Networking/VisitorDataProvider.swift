@@ -90,6 +90,23 @@ actor VisitorDataProvider {
         }
     }
 
+    /// How long a token has to have been in use before a capped stream URL may replace it.
+    static let renewalInterval: TimeInterval = 10 * 60
+
+    /// A new token from the cheap source, for a stream URL that came back capped.
+    ///
+    /// Evidence that the cap can follow the token rather than the network, not proof: a sweep
+    /// of 350 tracks got whole files under four tokens in a row and capped files from the very
+    /// request the fifth was fetched for, while fresh tokens a minute later were whole again. A
+    /// token is otherwise kept for a day, which would be a day of muxed video and of stub-only
+    /// tracks not playing at all. Rationed, because where the cap is the network's no token
+    /// helps, and renewing per track would only add requests: nil inside `renewalInterval`.
+    func renewed() async -> String? {
+        if let fetchedAt, now().timeIntervalSince(fetchedAt) < Self.renewalInterval { return nil }
+        invalidate()
+        return try? await refresh(from: .cheap)
+    }
+
     /// Throws the token away after YouTube refused a request carrying it.
     func invalidate() {
         cached = nil
