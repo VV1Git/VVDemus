@@ -14,6 +14,16 @@ struct SettingsView: View {
     @ObservedObject private var pairedStore = PairedPeerStore.shared
     @State private var imageCacheBytes: Int64 = 0
 
+    /// The one device's name, or how many there are once there is more than one.
+    private var linkedDevicesSummary: String {
+        let peers = pairedStore.peers
+        switch peers.count {
+        case 0: return "Not set up"
+        case 1: return peers[0].name
+        default: return "\(peers.count) devices"
+        }
+    }
+
     var body: some View {
         // A `List` is the phone's settings container; the Mac's is a grouped `Form`, and the
         // difference is not cosmetic. Under `.listStyle(.inset)` every footer here truncated
@@ -104,8 +114,8 @@ struct SettingsView: View {
             NavigationLink {
                 PairingView()
             } label: {
-                LabeledContent("Paired Device") {
-                    Text(pairedStore.peer?.name ?? "Not set up")
+                LabeledContent("Linked Devices") {
+                    Text(linkedDevicesSummary)
                         .foregroundStyle(.secondary)
                 }
             }

@@ -9,7 +9,7 @@ import XCTest
 /// devices each holding a queue is the state in which neither can be told it is mirroring, so
 /// handing over was a one-way trip.
 ///
-/// `PeerLink.handOffToPeer()` composes that from four steps: capture the checkpoint, pause, send,
+/// `PeerLink.handOff(to:)` composes that from four steps: capture the checkpoint, pause, send,
 /// and on the ack concede and release. The send is the static `PeerClient.handOff`, which nothing
 /// can stand in for, so the sequence as a whole is out of reach from a test — see the report
 /// accompanying this file. Each step it is made of is not, and they are what is asserted here: the
@@ -197,7 +197,7 @@ final class HandoffHandshakeTests: XCTestCase {
         await harness.startPlaying(list[0], context: list)
         harness.engine.tick(to: 30)
 
-        // What `handOffToPeer` does before it sends, and what it undoes when the send fails.
+        // What `handOff(to:)` does before it sends, and what it undoes when the send fails.
         harness.player.setPlayback(playing: false)
         harness.player.setPlayback(playing: true)
 

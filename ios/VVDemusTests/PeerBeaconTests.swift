@@ -87,4 +87,48 @@ final class PeerBeaconTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - One value for the whole group
+
+    /// One member: the value is the bare copy it always was, so a member on an older build — which
+    /// can only open a single copy — still finds this device.
+    func testASingleMemberGetsTheOldFormat() throws {
+        let sealed = try payload().sealed(using: key)
+        XCTAssertEqual(PeerBeaconPayload.combine([sealed]), sealed)
+        XCTAssertNotNil(PeerBeaconPayload.open(PeerBeaconPayload.combine([sealed]), using: key, expecting: mac))
+    }
+
+    /// Several members: each opens the copy sealed with its own key, and only that one.
+    func testEachMemberOpensItsOwnCopy() throws {
+        let keys = [SymmetricKey(size: .bits256), SymmetricKey(size: .bits256), SymmetricKey(size: .bits256)]
+        let value = PeerBeaconPayload.combine(try keys.map { try payload().sealed(using: $0) })
+        for key in keys {
+            XCTAssertEqual(PeerBeaconPayload.open(anyOf: value, using: key, expecting: mac), payload())
+        }
+        XCTAssertNil(PeerBeaconPayload.open(anyOf: value, using: SymmetricKey(size: .bits256), expecting: mac))
+    }
+
+    /// An attribute value tops out at 512 bytes. The most copies the beacon ever carries, with the
+    /// longest address and a full-length id, have to fit.
+    func testTheLargestValueFitsInOneAttribute() throws {
+        let longest = PeerBeaconPayload(
+            peerId: UUID().uuidString,
+            host: "255.255.255.255",
+            port: 65535,
+            sentAt: Date(timeIntervalSince1970: 1_757_000_000)
+        )
+        let copies = try (0..<PeerBeaconPayload.maximumCopies).map { _ in try longest.sealed(using: SymmetricKey(size: .bits256)) }
+        XCTAssertLessThanOrEqual(PeerBeaconPayload.combine(copies).count, 512)
+    }
+
+    /// A read cut short ends the list where it breaks rather than handing back a short copy.
+    func testATruncatedFrameIsNotReadShort() throws {
+        let first = SymmetricKey(size: .bits256)
+        let second = SymmetricKey(size: .bits256)
+        let value = PeerBeaconPayload.combine([try payload().sealed(using: first), try payload().sealed(using: second)])
+        let cut = value.dropLast(10)
+        XCTAssertNotNil(PeerBeaconPayload.open(anyOf: cut, using: first, expecting: mac))
+        XCTAssertNil(PeerBeaconPayload.open(anyOf: cut, using: second, expecting: mac))
+        XCTAssertEqual(PeerBeaconPayload.copies(in: Data(cut)).count, 1)
+    }
 }

@@ -1,11 +1,15 @@
 import Foundation
 
-/// Keeps the two devices showing the same session, and lets either one drive it.
+/// Keeps every device in the group showing the same session, and lets any of them drive it.
 ///
-/// The model is the web remote's, extended to a second full app. One device *owns* the session —
-/// it holds the queue, decides what plays next, and makes the sound — and the other mirrors it: a
-/// remote with an empty player of its own, exactly as a browser tab is. Ownership is recorded
-/// rather than guessed (see `OwnershipClaim`), and the only thing that moves it is a handoff.
+/// The model is the web remote's, extended to other full apps. One device *owns* the session — it
+/// holds the queue, decides what plays next, and makes the sound — and every other device mirrors
+/// it: a remote with an empty player of its own, exactly as a browser tab is. Ownership is
+/// recorded rather than guessed (see `OwnershipClaim`), and the only thing that moves it is a
+/// handoff or someone starting something of their own.
+///
+/// Every paired device is polled, not just the owner: a claim made anywhere has to be seen
+/// everywhere, and the owner itself has nobody else to hear it from.
 ///
 /// The emptiness of the mirror's player is the invariant everything rests on. It is what makes
 /// "pause" unambiguous, what stops two queues drifting apart, and what `enforceOwnership` exists
@@ -14,12 +18,28 @@ import Foundation
 final class PeerPlayback: ObservableObject, SessionOwning {
     static let shared = PeerPlayback()
 
-    /// The peer's playback, refreshed while both are connected. `nil` when the peer is
-    /// unreachable.
-    @Published private(set) var peerState: StateSnapshot?
-    @Published private(set) var isPeerReachable = false
+    /// The owner's playback, while this device is mirroring it — what every `displayed…`
+    /// accessor reads. Published only for the owner: the other peers are polled just as often,
+    /// but nothing on screen shows them, and republishing every row on every one of their polls
+    /// would double and triple the work the transport already costs.
+    @Published private(set) var ownerState: StateSnapshot?
 
-    /// Whether the peer holds the session, so this device is a remote for it.
+    /// The peers that answered their last poll.
+    @Published private(set) var reachablePeerIds: Set<String> = []
+
+    func isReachable(_ peerId: String) -> Bool { reachablePeerIds.contains(peerId) }
+    var anyPeerReachable: Bool { !reachablePeerIds.isEmpty }
+
+    /// Every peer's last snapshot, kept after it goes away: it is exactly what "continue from
+    /// where it stopped" needs, and what tells a meeting whether the owner has a session.
+    private var lastSnapshots: [String: StateSnapshot] = [:]
+
+    /// The device whose session this one is mirroring, if any.
+    var ownerPeer: PairedPeer? {
+        isMirroring ? PairedPeerStore.shared.peer(id: SessionOwnership.shared.current.ownerPeerId) : nil
+    }
+
+    /// Whether another device holds the session, so this one is a remote for it.
     ///
     /// Published rather than computed on demand because it gates what every transport control
     /// shows and does, and it changes from three unrelated places — a poll, a handoff, and this
@@ -37,16 +57,17 @@ final class PeerPlayback: ObservableObject, SessionOwning {
 
     /// The rules themselves, as a value — see `PlaybackMirror`.
     private var mirror: PlaybackMirror {
-        PlaybackMirror(
-            pairedPeerId: PairedPeerStore.shared.peer?.peerId,
-            isPeerReachable: isPeerReachable,
-            ownerPeerId: SessionOwnership.shared.current.ownerPeerId,
+        let owner = SessionOwnership.shared.current.ownerPeerId
+        return PlaybackMirror(
+            pairedPeerIds: Set(PairedPeerStore.shared.peers.map(\.peerId)),
+            reachablePeerIds: reachablePeerIds,
+            ownerPeerId: owner,
             localPeerId: SessionOwnership.shared.localPeerId,
             // Safe to read straight off the snapshot: `currentTrack` is cleared in exactly one
             // place — `releaseSession()`, i.e. only when a device gives the session up — and
             // `beginLoad` sets it synchronously, so a live session always reports a track and
             // this cannot flicker mid-song.
-            ownerHasSession: peerState?.currentTrack != nil
+            ownerHasSession: lastSnapshots[owner]?.currentTrack != nil
         )
     }
 
@@ -55,7 +76,7 @@ final class PeerPlayback: ObservableObject, SessionOwning {
     /// What the transport should show: the peer's session when mirroring, otherwise this
     /// device's own.
     var displayedTrack: Track? {
-        isMirroring ? peerState?.currentTrack : PlayerService.shared.currentTrack
+        isMirroring ? ownerState?.currentTrack : PlayerService.shared.currentTrack
     }
 
     /// Play/pause as the user should see it — what they last asked for, until the owner is seen to
@@ -74,43 +95,43 @@ final class PeerPlayback: ObservableObject, SessionOwning {
     @Published private(set) var mirroredIsPlaying = false
 
     var displayedProgress: Double {
-        isMirroring ? (peerState?.progress ?? 0) : PlayerService.shared.progress
+        isMirroring ? (ownerState?.progress ?? 0) : PlayerService.shared.progress
     }
 
     var displayedDuration: Double {
-        isMirroring ? (peerState?.duration ?? 0) : PlayerService.shared.duration
+        isMirroring ? (ownerState?.duration ?? 0) : PlayerService.shared.duration
     }
 
     var displayedIsShuffling: Bool {
-        isMirroring ? (peerState?.isShuffling ?? false) : PlayerService.shared.isShuffling
+        isMirroring ? (ownerState?.isShuffling ?? false) : PlayerService.shared.isShuffling
     }
 
     var displayedIsLoading: Bool {
-        isMirroring ? (peerState?.isLoading ?? false) : PlayerService.shared.isLoading
+        isMirroring ? (ownerState?.isLoading ?? false) : PlayerService.shared.isLoading
     }
 
     /// The volume trim of the device actually making the sound — which is the only one a slider
     /// here can meaningfully move.
     var displayedVolume: Double {
-        isMirroring ? (peerState?.volume ?? 1) : PlayerService.shared.volume
+        isMirroring ? (ownerState?.volume ?? 1) : PlayerService.shared.volume
     }
 
     var displayedManualQueue: [Track] {
-        isMirroring ? (peerState?.manualQueue ?? []) : PlayerService.shared.manualQueue
+        isMirroring ? (ownerState?.manualQueue ?? []) : PlayerService.shared.manualQueue
     }
 
     var displayedContextQueue: [Track] {
-        isMirroring ? (peerState?.contextQueue ?? []) : PlayerService.shared.contextQueue
+        isMirroring ? (ownerState?.contextQueue ?? []) : PlayerService.shared.contextQueue
     }
 
     var displayedContextTitle: String? {
-        isMirroring ? peerState?.queueContextTitle : PlayerService.shared.queueContextTitle
+        isMirroring ? ownerState?.queueContextTitle : PlayerService.shared.queueContextTitle
     }
 
     /// The name of the device actually playing, when it isn't this one — for the "Playing on …"
     /// line the mirroring device shows.
     var owningDeviceName: String? {
-        isMirroring ? PairedPeerStore.shared.peer?.name : nil
+        ownerPeer?.name
     }
 
     // MARK: - Lifecycle
@@ -130,10 +151,31 @@ final class PeerPlayback: ObservableObject, SessionOwning {
         timer = nil
     }
 
-    private var isRefreshing = false
-    /// When the next attempt is allowed. Backs off while the peer is away.
-    private var nextAttemptAt = Date.distantPast
-    private var backoff: TimeInterval = 0
+    /// What this device knows about its link to one peer.
+    private struct Link {
+        var isRefreshing = false
+        /// When the next attempt is allowed. Backs off while the peer is away.
+        var nextAttemptAt = Date.distantPast
+        var backoff: TimeInterval = 0
+        /// True once the two have agreed who owns the session on this connection.
+        var hasSettled = false
+        /// The newest `(playbackEpoch, trackLoadEpoch)` already applied from this peer, and when.
+        var appliedEpoch: Int?
+        var appliedTrackLoadEpoch: Int?
+        var lastAppliedAt: Date?
+        var seenServerInstanceId: String?
+    }
+
+    /// Per peer, because every one of these is about one conversation: a backoff earned by a
+    /// phone that is asleep must not delay the Mac's next poll, and one device's epochs say
+    /// nothing about another's.
+    private var links: [String: Link] = [:]
+
+    private func updateLink(_ peerId: String, _ change: (inout Link) -> Void) {
+        var link = links[peerId] ?? Link()
+        change(&link)
+        links[peerId] = link
+    }
 
     /// A failed poll is expensive — a 2s probe of the cached address, then a 3s Bonjour browse —
     /// so retrying every second while the other device is asleep or elsewhere means the radio is
@@ -141,7 +183,7 @@ final class PeerPlayback: ObservableObject, SessionOwning {
     /// exceptional one, so it has to be the cheap path. Success drops straight back to 1s.
     private static let maximumBackoff: TimeInterval = 30
 
-    /// Polls the peer.
+    /// Polls every paired device, all at once.
     ///
     /// `force` skips the backoff, and the callers that need it are the ones that just did
     /// something and want to know the result. The backoff exists for the idle case — a peer that
@@ -151,51 +193,67 @@ final class PeerPlayback: ObservableObject, SessionOwning {
     /// nothing at all, because the failure that lost the reply had already pushed the next attempt
     /// 5 to 30 seconds out.
     func refresh(force: Bool = false) async {
-        // Not folded into the guard below. Unpairing does not arrive on a poll, so returning here
-        // without recomputing left `isMirroring` latched true for the rest of the process: every
-        // press was then relayed to a device that no longer existed and silently swallowed, and
-        // the app could not play a note until it was relaunched.
-        guard PairedPeerStore.shared.peer != nil else {
-            forgetPeer()
+        let peers = PairedPeerStore.shared.peers
+        // Not folded into the loop. Leaving the group does not arrive on a poll, so returning
+        // here without recomputing left `isMirroring` latched true for the rest of the process:
+        // every press was then relayed to a device that no longer existed and silently swallowed,
+        // and the app could not play a note until it was relaunched.
+        guard !peers.isEmpty else {
+            forgetAll()
             return
         }
-        guard !isRefreshing, force || Date() >= nextAttemptAt else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
+        await withTaskGroup(of: Void.self) { group in
+            for peer in peers {
+                group.addTask { @MainActor in await self.refresh(peer, force: force) }
+            }
+        }
+    }
+
+    /// Polls one device.
+    func refresh(_ peer: PairedPeer, force: Bool = false) async {
+        let link = links[peer.peerId] ?? Link()
+        guard !link.isRefreshing, force || Date() >= link.nextAttemptAt else { return }
+        updateLink(peer.peerId) { $0.isRefreshing = true }
+        defer { if links[peer.peerId] != nil { updateLink(peer.peerId) { $0.isRefreshing = false } } }
         do {
-            let state = try await PeerClient.peerState()
-            isPeerReachable = true
-            backoff = 0
-            nextAttemptAt = .distantPast
-            apply(state)
+            let state = try await PeerClient.peerState(of: peer)
+            // Removed from the group while the request was out: its answer is about a
+            // relationship that has just ended.
+            guard PairedPeerStore.shared.peer(id: peer.peerId) != nil else { return }
+            if !reachablePeerIds.contains(peer.peerId) { reachablePeerIds.insert(peer.peerId) }
+            updateLink(peer.peerId) {
+                $0.backoff = 0
+                $0.nextAttemptAt = .distantPast
+            }
+            apply(state, from: peer)
         } catch {
+            guard PairedPeerStore.shared.peer(id: peer.peerId) != nil else { return }
             // Not logged on every tick: a peer that is asleep or away is the normal case for a
             // LAN link, and a line a second about it would bury everything else.
-            let wasReachable = isPeerReachable
+            let wasReachable = reachablePeerIds.contains(peer.peerId)
             if wasReachable {
-                PairLog.info("peer went away — \(error.localizedDescription)")
+                PairLog.info("\(peer.name) went away — \(error.localizedDescription)")
+                // Its last snapshot is deliberately kept. Clearing it used to leave the remaining
+                // device showing nothing at all the moment the one making the sound quit or slept
+                // — the music stopped and the screen went blank, with no way to pick it back up.
+                // The last snapshot is exactly what "continue from where it stopped" needs, so it
+                // is retained and reachability alone says the peer is gone.
+                reachablePeerIds.remove(peer.peerId)
             }
-            // `peerState` is deliberately kept. It used to be cleared, which left the remaining
-            // device showing nothing at all the moment the one making the sound quit or slept —
-            // the music stopped and the screen went blank, with no way to pick it back up. The
-            // last snapshot is exactly what "continue from where it stopped" needs, so it is
-            // retained and `isPeerReachable` alone says the peer is gone.
-            isPeerReachable = false
-            // The next connection is a fresh meeting: both sides may have moved on separately
-            // while they were out of touch, so the rule has to run again.
-            hasSettledWithPeer = false
+            updateLink(peer.peerId) {
+                // The next connection is a fresh meeting: both sides may have moved on separately
+                // while they were out of touch, so the rule has to run again.
+                $0.hasSettled = false
+                $0.backoff = $0.backoff == 0 ? 5 : min($0.backoff * 2, Self.maximumBackoff)
+                $0.nextAttemptAt = Date().addingTimeInterval($0.backoff)
+            }
             recomputeMirroring()
             // Only on the edge. Offered on every failed poll it was rebuilt a second after being
             // dismissed, and again a second after that, for as long as the peer stayed away — so
             // the ✕ did nothing and the bar sat over the screen indefinitely.
-            if wasReachable { offerToContinueFromLastSeen() }
-            backoff = backoff == 0 ? 5 : min(backoff * 2, Self.maximumBackoff)
-            nextAttemptAt = Date().addingTimeInterval(backoff)
+            if wasReachable { offerToContinueFromLastSeen(peer) }
         }
     }
-
-    /// True once the two have agreed who owns the session on this connection.
-    private var hasSettledWithPeer = false
 
     /// Settles the first poll of a connection, which the claim counters cannot.
     ///
@@ -208,16 +266,24 @@ final class PeerPlayback: ObservableObject, SessionOwning {
     /// `enforceOwnership`. Both devices evaluate the same rule on the same two facts, so they
     /// cannot both conclude they won — which is the only outcome that would leave two sessions
     /// running.
-    private func settleFirstMeeting(with state: StateSnapshot) {
+    private func settleFirstMeeting(with peer: PairedPeer, state: StateSnapshot) {
         guard PlayerService.shared.currentTrack != nil else {
             // Nothing of ours to defend. If the peer has a session its claim makes us the mirror;
             // if neither has one there is nothing to settle.
             return
         }
         guard state.currentTrack != nil else {
-            // Ours is the only session there is, so make sure it is the one named as owner —
-            // the peer may still be holding a stale record from before it went away.
-            SessionOwnership.shared.claimLocally()
+            // Ours may be the only session there is — but with more than one other device, an
+            // empty peer is not evidence of that. See `EmptyPeerMeeting`.
+            let owner = SessionOwnership.shared.current.ownerPeerId
+            let meeting = EmptyPeerMeeting(
+                ownerPeerId: owner,
+                localPeerId: SessionOwnership.shared.localPeerId,
+                ownerHasSession: reachablePeerIds.contains(owner) ? lastSnapshots[owner]?.currentTrack != nil : nil,
+                ownerIsPaired: PairedPeerStore.shared.peer(id: owner) != nil,
+                higherClaimSeen: SessionOwnership.shared.lastSeenPeerClaim > SessionOwnership.shared.current.claim
+            )
+            if meeting.claims { SessionOwnership.shared.claimLocally() }
             return
         }
 
@@ -226,53 +292,87 @@ final class PeerPlayback: ObservableObject, SessionOwning {
             localIsPlaying: PlayerService.shared.isPlaying,
             peerIsPlaying: state.isPlaying,
             localIsDesktop: localIsDesktop,
-            peerIsDesktop: PairedPeerStore.shared.peer?.isDesktop ?? !localIsDesktop,
+            peerIsDesktop: peer.isDesktop,
             localPeerId: SessionOwnership.shared.localPeerId,
-            peerPeerId: PairedPeerStore.shared.peer?.peerId ?? ""
+            peerPeerId: peer.peerId
         )
 
-        PairLog.info("first meeting: local playing=\(meeting.localIsPlaying) desktop=\(localIsDesktop), peer playing=\(state.isPlaying) — \(meeting.localKeepsSession ? "keeping the session here" : "yielding to the peer")")
+        PairLog.info("first meeting with \(peer.name): local playing=\(meeting.localIsPlaying) desktop=\(localIsDesktop), peer playing=\(state.isPlaying) — \(meeting.localKeepsSession ? "keeping the session here" : "yielding to the peer")")
         if meeting.localKeepsSession { SessionOwnership.shared.claimLocally() }
     }
 
-    private func apply(_ state: StateSnapshot) {
-        guard !isStale(state) else { return }
-        appliedEpoch = state.playbackEpoch
-        appliedTrackLoadEpoch = state.trackLoadEpoch
-        lastAppliedAt = Date()
-        let previous = peerState
-        peerState = state
-        logTransition(from: previous, to: state)
+    private func apply(_ state: StateSnapshot, from peer: PairedPeer) {
+        guard !isStale(state, from: peer.peerId) else { return }
+        updateLink(peer.peerId) {
+            $0.appliedEpoch = state.playbackEpoch
+            $0.appliedTrackLoadEpoch = state.trackLoadEpoch
+            $0.lastAppliedAt = Date()
+        }
+        let previous = lastSnapshots[peer.peerId]
+        lastSnapshots[peer.peerId] = state
+        logTransition(from: previous, to: state, peer: peer)
         if let ownership = state.ownership {
-            SessionOwnership.shared.adoptIfNewer(ownership)
+            adopt(ownership, reportedBy: peer)
         }
         // The two have just met, and the counters alone cannot settle it — both may have been
         // playing separately, each legitimately the owner of its own session, with neither record
         // newer than the other. See `settleFirstMeeting`.
         //
-        // Tracked with a flag rather than `previous == nil`, because the last snapshot is now kept
-        // when the peer goes away (it is what the "continue from…" offer is built from), so
-        // `peerState` is no longer nil between connections.
-        if !hasSettledWithPeer {
-            hasSettledWithPeer = true
-            settleFirstMeeting(with: state)
+        // Tracked with a flag rather than "no snapshot yet", because the last snapshot is kept
+        // when a peer goes away (it is what the "continue from…" offer is built from), so it is
+        // no longer nil between connections.
+        if links[peer.peerId]?.hasSettled != true {
+            updateLink(peer.peerId) { $0.hasSettled = true }
+            settleFirstMeeting(with: peer, state: state)
         }
         recomputeMirroring()
         enforceOwnership()
         // Once per snapshot, after ownership is settled: whether a press is still outstanding is
-        // only meaningful once we know whether we are still the one waiting on it.
-        if isMirroring { _ = settlePlayState(reported: state.isPlaying) }
+        // only meaningful once we know whether we are still the one waiting on it — and only the
+        // owner's snapshot says what playback is doing.
+        if isMirroring, ownerPeer?.peerId == peer.peerId {
+            ownerState = state
+            _ = settlePlayState(reported: state.isPlaying)
+        }
     }
+
+    /// Takes a peer's word on who owns the session — unless it is hearsay that would cost this
+    /// device the session it is holding.
+    ///
+    /// With two devices every claim arrived from the device that made it, and `settleFirstMeeting`
+    /// ran on that same snapshot to defend a session worth defending. With three, a claim also
+    /// arrives second-hand: the iPad reports that the phone owns the session, before this device
+    /// has met the phone at all. Adopting that while playing would make this device a mirror and
+    /// stop it mid-song, with the one rule that decides between two live sessions never run. So a
+    /// second-hand claim is only *counted* here while there is a session to lose — the next poll
+    /// of the claimant itself, a second away, brings it first-hand with the meeting attached.
+    private func adopt(_ ownership: OwnershipClaim, reportedBy peer: PairedPeer) {
+        let secondHand = ownership.ownerPeerId != peer.peerId
+            && ownership.ownerPeerId != SessionOwnership.shared.localPeerId
+        if secondHand, PlayerService.shared.currentTrack != nil {
+            SessionOwnership.shared.noteClaim(ownership)
+        } else {
+            SessionOwnership.shared.adoptIfNewer(ownership)
+        }
+    }
+
+    /// Which device `ownerState` was taken from.
+    private var mirroredOwnerId: String?
 
     private func recomputeMirroring() {
         let next = mirror.isMirroring
-        guard next != isMirroring else { return }
-        isMirroring = next
+        let ownerId = next ? SessionOwnership.shared.current.ownerPeerId : nil
+        // On the owner as well as on the flag: the session can move from one remote device to
+        // another while this one stays a mirror throughout, and the screen has to follow it.
+        guard next != isMirroring || ownerId != mirroredOwnerId else { return }
+        mirroredOwnerId = ownerId
+        ownerState = ownerId.flatMap { lastSnapshots[$0] }
+        if next != isMirroring { isMirroring = next }
         // A press waiting on the old owner means nothing now, and neither does the answer it was
         // waiting for — the session on screen has changed underneath both.
         pendingPlayIntent = nil
-        mirroredIsPlaying = next ? (peerState?.isPlaying ?? false) : false
-        // An offer to "continue from…" the peer, while its session is right there on screen with
+        mirroredIsPlaying = ownerState?.isPlaying ?? false
+        // An offer to "continue from…" a peer, while the session is right there on screen with
         // working controls, is a bar offering the thing directly beneath it — and accepting it
         // takes the session back using a checkpoint that may be minutes old.
         if next { PeerLink.shared.dismissResumeOffer() }
@@ -281,30 +381,24 @@ final class PeerPlayback: ObservableObject, SessionOwning {
     /// A device that does not own the session must not be holding one.
     ///
     /// The backstop for every path that moves ownership — a handoff this device sent, a "continue
-    /// from…" the peer accepted, or a claim that simply arrived on a poll. Without it the loser of
+    /// from…" another accepted, or a claim that simply arrived on a poll. Without it the loser of
     /// a claim keeps its queue and carries on playing, which is two sessions and two songs at
     /// once; and because it still has a `currentTrack`, it is exactly the state the old inferred
     /// rule could never recover from.
     private func enforceOwnership() {
         guard isMirroring, PlayerService.shared.currentTrack != nil else { return }
-        PairLog.info("the peer owns the session now — releasing the one held here")
+        PairLog.info("\(owningDeviceName ?? "another device") owns the session now — releasing the one held here")
         PlayerService.shared.releaseSession()
     }
 
     // MARK: - Refusing to go backwards
-
-    /// The newest `(playbackEpoch, trackLoadEpoch)` already applied, and when.
-    private var appliedEpoch: Int?
-    private var appliedTrackLoadEpoch: Int?
-    private var lastAppliedAt: Date?
-    private var seenServerInstanceId: String?
 
     /// How long with nothing applied before a snapshot is taken whatever its epoch says. Polls
     /// arrive at 1 Hz, so four seconds of silence means something is wrong with the ordering
     /// itself — and no ordering guard is worth a permanently frozen screen.
     private static let staleBypass: TimeInterval = 4
 
-    /// Whether this snapshot describes a moment the mirror has already moved past.
+    /// Whether this snapshot from `peerId` describes a moment the mirror has already moved past.
     ///
     /// Snapshots do not arrive in order. The 1 Hz poll runs alongside the immediate `refresh()`
     /// chased after every command, so a poll issued *before* a press can land *after* the reply
@@ -312,23 +406,26 @@ final class PeerPlayback: ObservableObject, SessionOwning {
     /// and drags the epoch backwards, so everything sent for the next second is rejected by the
     /// owner as stale. This is the browser's `isStaleSnapshot`, which was written for exactly the
     /// same race against exactly the same counters.
-    func isStale(_ state: StateSnapshot) -> Bool {
+    func isStale(_ state: StateSnapshot, from peerId: String) -> Bool {
+        let link = links[peerId] ?? Link()
         // A relaunched peer restarts its counters at zero. Without noticing that, a mirror
         // holding a high epoch rejects everything it sends, forever — a screen that looks
         // perfectly healthy and never updates again.
-        if seenServerInstanceId != state.serverInstanceId {
-            seenServerInstanceId = state.serverInstanceId
-            appliedEpoch = nil
-            appliedTrackLoadEpoch = nil
+        if link.seenServerInstanceId != state.serverInstanceId {
+            updateLink(peerId) {
+                $0.seenServerInstanceId = state.serverInstanceId
+                $0.appliedEpoch = nil
+                $0.appliedTrackLoadEpoch = nil
+            }
             return false
         }
-        if let lastAppliedAt, Date().timeIntervalSince(lastAppliedAt) > Self.staleBypass { return false }
-        guard let appliedEpoch else { return false }
+        if let lastAppliedAt = link.lastAppliedAt, Date().timeIntervalSince(lastAppliedAt) > Self.staleBypass { return false }
+        guard let appliedEpoch = link.appliedEpoch else { return false }
         if state.playbackEpoch > appliedEpoch { return false }
         if state.playbackEpoch < appliedEpoch { return true }
         // Same playback epoch: a lower load epoch is still from before the current track was
         // (re)started, which is the one change a videoId alone cannot show.
-        guard let appliedTrackLoadEpoch else { return false }
+        guard let appliedTrackLoadEpoch = link.appliedTrackLoadEpoch else { return false }
         return state.trackLoadEpoch < appliedTrackLoadEpoch
     }
 
@@ -337,19 +434,19 @@ final class PeerPlayback: ObservableObject, SessionOwning {
     /// The poll runs at 1 Hz, so logging a snapshot per tick buries everything; but a handoff that
     /// goes wrong is a sequence of *transitions*, and without them the log said only that the
     /// sound had ended up somewhere unexpected, never through which steps.
-    private func logTransition(from previous: StateSnapshot?, to state: StateSnapshot) {
+    private func logTransition(from previous: StateSnapshot?, to state: StateSnapshot, peer: PairedPeer) {
         guard let previous else {
-            PairLog.info("peer state first seen: owner=\(state.sessionOwnerId?.prefix(8) ?? "none") playing=\(state.isPlaying) track=\(state.currentTrack?.title ?? "none")")
+            PairLog.info("\(peer.name) first seen: owner=\(state.sessionOwnerId?.prefix(8) ?? "none") playing=\(state.isPlaying) track=\(state.currentTrack?.title ?? "none")")
             return
         }
         if previous.sessionOwnerId != state.sessionOwnerId {
-            PairLog.info("peer says the owner is now \(state.sessionOwnerId?.prefix(8) ?? "none") (claim \(state.sessionClaim ?? 0))")
+            PairLog.info("\(peer.name) says the owner is now \(state.sessionOwnerId?.prefix(8) ?? "none") (claim \(state.sessionClaim ?? 0))")
         }
         if previous.isPlaying != state.isPlaying {
-            PairLog.info("peer is now \(state.isPlaying ? "playing" : "paused") — epoch=\(state.playbackEpoch)")
+            PairLog.info("\(peer.name) is now \(state.isPlaying ? "playing" : "paused") — epoch=\(state.playbackEpoch)")
         }
         if previous.currentTrack?.videoId != state.currentTrack?.videoId {
-            PairLog.info("peer track: \(state.currentTrack?.title ?? "none")")
+            PairLog.info("\(peer.name) track: \(state.currentTrack?.title ?? "none")")
         }
     }
 
@@ -451,20 +548,32 @@ final class PeerPlayback: ObservableObject, SessionOwning {
         recomputeMirroring()
     }
 
-    /// Asks the device holding the session to hand it over.
-    ///
-    /// The picker's "play here" row. There is no pull handshake: this tells the owner to run the
-    /// push it already has, so the session arrives through the one acked path — capture, pause,
-    /// send, and release only once this device has confirmed it took it.
+    /// Asks the device holding the session to hand it to this one — the picker's "play here".
     func requestSessionFromPeer() async {
-        guard isMirroring else { return }
+        await moveSession(to: SessionOwnership.shared.localPeerId)
+    }
+
+    /// Moves playback to `targetPeerId`, which may be this device, the owner, or any other member.
+    ///
+    /// Only the owner can move the session, because only the owner has it: the move is the acked
+    /// push in `PeerLink.handOff`, which captures, pauses, sends, and releases only once the
+    /// receiver confirms. So the owner pushes directly, and anyone else asks the owner to push —
+    /// to itself, or on to a third device. There is no pull handshake to keep correct beside it.
+    func moveSession(to targetPeerId: String) async {
+        let local = SessionOwnership.shared.localPeerId
+        guard isMirroring, let owner = ownerPeer else {
+            guard targetPeerId != local, let target = PairedPeerStore.shared.peer(id: targetPeerId) else { return }
+            await PeerLink.shared.handOff(to: target)
+            return
+        }
+        guard owner.peerId != targetPeerId else { return }
         do {
-            try await PeerClient.send(PeerCommand(action: "pullSession"))
+            try await PeerClient.send(PeerCommand(action: "pullSession", targetPeerId: targetPeerId), to: owner)
             // Its reply is only "I heard you"; the session arrives on `/api/peer/handoff` a moment
             // later. Poll straight away so the change shows without waiting out the tick.
             await refresh(force: true)
         } catch {
-            PairLog.error("could not ask the peer for the session — \(error.localizedDescription)")
+            PairLog.error("could not ask \(owner.name) to move the session — \(error.localizedDescription)")
         }
     }
 
@@ -475,21 +584,26 @@ final class PeerPlayback: ObservableObject, SessionOwning {
         recomputeMirroring()
     }
 
-    /// There is no paired device any more, so there is nothing to mirror and nothing to relay to.
+    /// A device has left the group, so there is nothing of it to mirror or relay to.
+    func forget(peerId: String) {
+        links[peerId] = nil
+        lastSnapshots[peerId] = nil
+        if reachablePeerIds.contains(peerId) { reachablePeerIds.remove(peerId) }
+        recomputeMirroring()
+    }
+
+    /// There is no paired device any more.
     ///
     /// Idempotent, and that matters more than it looks. An unpaired device reaches this from the
     /// poll once a second, forever, and `@Published` sends on every *assignment* — not on every
-    /// change — so writing the same nils back was republishing to every observer at 1 Hz. Rows
+    /// change — so writing the same empties back was republishing to every observer at 1 Hz. Rows
     /// observe this object to know which track the session is on, so an idle phone parked on a
     /// list was re-evaluating every visible row once a second for nothing.
-    func forgetPeer() {
-        guard peerState != nil || isPeerReachable || hasSettledWithPeer else { return }
-        peerState = nil
-        isPeerReachable = false
-        hasSettledWithPeer = false
-        appliedEpoch = nil
-        appliedTrackLoadEpoch = nil
-        seenServerInstanceId = nil
+    func forgetAll() {
+        guard !links.isEmpty || !lastSnapshots.isEmpty || !reachablePeerIds.isEmpty else { return }
+        links = [:]
+        lastSnapshots = [:]
+        reachablePeerIds = []
         recomputeMirroring()
     }
 
@@ -501,11 +615,12 @@ final class PeerPlayback: ObservableObject, SessionOwning {
     /// existing "continue from…" bar needs.
     ///
     /// Only when the peer was the one playing. A peer that was merely idle when it went away has
-    /// nothing worth continuing, and an offer to resume a paused song nobody asked for is noise.
-    private func offerToContinueFromLastSeen() {
-        guard let state = peerState, let track = state.currentTrack, state.isPlaying else { return }
-        PairLog.info("peer vanished while playing \(track.title) — offering to continue here")
-        PeerLink.shared.offerToContinue(from: state)
+    /// nothing worth continuing, and an offer to resume a paused song nobody asked for is noise —
+    /// which also keeps the mirrors in a group quiet, since a mirror never plays anything.
+    private func offerToContinueFromLastSeen(_ peer: PairedPeer) {
+        guard let state = lastSnapshots[peer.peerId], let track = state.currentTrack, state.isPlaying else { return }
+        PairLog.info("\(peer.name) vanished while playing \(track.title) — offering to continue here")
+        PeerLink.shared.offerToContinue(from: state, peer: peer)
     }
 
     /// Turns an intent into the absolute instruction that goes on the wire.
@@ -582,14 +697,17 @@ final class PeerPlayback: ObservableObject, SessionOwning {
     }
 
     private func deliver(_ command: PeerCommand) {
+        // Addressed when the press is made, not when it lands: the owner it was made against is
+        // the one it means, even if a poll in between says the session has moved.
+        guard let owner = ownerPeer else { return }
         Task {
             do {
-                try await PeerClient.send(command)
+                try await PeerClient.send(command, to: owner)
                 // Pull straight away rather than waiting up to a second, so a press feels
                 // immediate instead of laggy.
-                await refresh(force: true)
+                await refresh(owner, force: true)
             } catch {
-                PairLog.error("command \(command.action) to peer failed: \(error.localizedDescription)")
+                PairLog.error("command \(command.action) to \(owner.name) failed: \(error.localizedDescription)")
             }
         }
     }

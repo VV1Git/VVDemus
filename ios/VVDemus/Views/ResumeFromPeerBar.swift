@@ -21,7 +21,7 @@ struct ResumeFromPeerBar: View {
                     // Clamped like the two lines under it. A device name is whatever its owner
                     // typed into Settings and routinely runs long ("MacBook Pro (14-inch, 2023)"),
                     // and this was the one line still free to wrap the bar taller than a row.
-                    Text("Continue from \(pairedStore.peer?.name ?? (offer.isDesktop ? "your computer" : "your phone"))")
+                    Text("Continue from \(pairedStore.peer(id: offer.peerId)?.name ?? (offer.isDesktop ? "your computer" : "your phone"))")
                         .font(.miniSubtitle)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

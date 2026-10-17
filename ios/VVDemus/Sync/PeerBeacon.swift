@@ -58,7 +58,7 @@ final class PeerBeacon: NSObject, ObservableObject {
 
     // MARK: - Advertising
 
-    /// Publishes this device's address for the paired peer to read.
+    /// Publishes this device's address for the other members to read.
     ///
     /// Does nothing at all when there is no paired peer — which is what keeps an unpaired install
     /// from ever seeing a Bluetooth permission prompt. The managers are allocated lazily below,
@@ -76,6 +76,22 @@ final class PeerBeacon: NSObject, ObservableObject {
         peripheralManager?.removeAllServices()
         sealedPayload = nil
         advertisedHost = nil
+    }
+
+    /// Someone joined or left the group: the value has to be resealed for whoever is in it now,
+    /// and taken down entirely once nobody is.
+    func groupDidChange() {
+        guard wantsAdvertise else { return }
+        let wasAdvertising = sealedPayload != nil
+        refreshPayload()
+        if sealedPayload == nil {
+            if wasAdvertising {
+                peripheralManager?.stopAdvertising()
+                peripheralManager?.removeAllServices()
+            }
+            return
+        }
+        beginAdvertising()
     }
 
     /// Re-seals if this device's address has moved since it last advertised.
@@ -102,14 +118,13 @@ final class PeerBeacon: NSObject, ObservableObject {
         // and only ever looks at en0, so it cannot notice this device moving network — which is
         // the one event the beacon exists to survive — and is empty outright on a Mac using
         // Ethernet. Ranked by interface as well as by address — see `preferredOwnIPv4`.
-        guard let peer = PairedPeerStore.shared.peer,
+        //
+        // One sealed copy per member, since each holds a different key. The newest pairings are
+        // the ones kept when there are more than fit — see `PeerBeaconPayload.maximumCopies`.
+        let members = PairedPeerStore.shared.peers.suffix(PeerBeaconPayload.maximumCopies)
+        guard !members.isEmpty,
               let port = advertisedPort,
-              let host = PeerDiscovery.preferredOwnIPv4(from: LocalControlServer.currentIPv4Addresses()),
-              let key = try? PeerIdentity.shared.sharedSecret(
-                  with: peer.publicKey,
-                  peerId: peer.peerId,
-                  info: PeerBeaconPayload.keyInfo
-              )
+              let host = PeerDiscovery.preferredOwnIPv4(from: LocalControlServer.currentIPv4Addresses())
         else {
             sealedPayload = nil
             advertisedHost = nil
@@ -121,7 +136,15 @@ final class PeerBeacon: NSObject, ObservableObject {
             port: port,
             sentAt: Date()
         )
-        sealedPayload = try? payload.sealed(using: key)
+        let copies = members.compactMap { member -> Data? in
+            guard let key = try? PeerIdentity.shared.sharedSecret(
+                with: member.publicKey,
+                peerId: member.peerId,
+                info: PeerBeaconPayload.keyInfo
+            ) else { return nil }
+            return try? payload.sealed(using: key)
+        }
+        sealedPayload = copies.isEmpty ? nil : PeerBeaconPayload.combine(copies)
         advertisedHost = sealedPayload == nil ? nil : host
     }
 
@@ -319,7 +342,7 @@ extension PeerBeacon: CBPeripheralDelegate {
             guard let data = characteristic.value,
                   let key = beaconKey,
                   let peer = expectedPeer,
-                  let payload = PeerBeaconPayload.open(data, using: key, expecting: peer.peerId)
+                  let payload = PeerBeaconPayload.open(anyOf: data, using: key, expecting: peer.peerId)
             else {
                 giveUp(on: peripheral)
                 return

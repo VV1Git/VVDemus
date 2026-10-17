@@ -89,7 +89,7 @@ struct MacNowPlayingBar: View {
     ///
     /// "Nothing to show" also covers a state the user did not cause. While this Mac mirrors the
     /// phone its own `PlayerService` is deliberately empty (`PeerPlayback.enforceOwnership`
-    /// releases it), so one failed poll clears `isPeerReachable`, `recomputeMirroring` clears
+    /// releases it), so one failed poll of the owner clears it from `reachablePeerIds`, `recomputeMirroring` clears
     /// `isMirroring`, and `displayedTrack` falls straight through to that nil — taking the whole
     /// bar, and with it `DevicePicker`, off screen for the length of the backoff, 5 seconds
     /// doubling to 30. That picker is the only way to get the session back.

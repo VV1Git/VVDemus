@@ -41,6 +41,9 @@ final class PeerSnapshotOrderingTests: XCTestCase {
     /// back where it found it.
     private func freshInstanceId() -> String { "instance-\(UUID().uuidString)" }
 
+    /// Bookkeeping is per peer, so a peer id no other test has used starts from nothing too.
+    private let peer = "peer-\(UUID().uuidString)"
+
     /// A peer that has been relaunched restarts `playbackEpoch` and `trackLoadEpoch` at zero.
     ///
     /// Without recognising the new `serverInstanceId`, a mirror holding anything higher rejects
@@ -52,16 +55,16 @@ final class PeerSnapshotOrderingTests: XCTestCase {
         let mirror = PeerPlayback.shared
 
         XCTAssertFalse(
-            mirror.isStale(PeerFixtures.snapshot(playbackEpoch: 400, trackLoadEpoch: 90, serverInstanceId: before))
+            mirror.isStale(PeerFixtures.snapshot(playbackEpoch: 400, trackLoadEpoch: 90, serverInstanceId: before), from: peer)
         )
         XCTAssertFalse(
-            mirror.isStale(PeerFixtures.snapshot(playbackEpoch: 0, trackLoadEpoch: 0, serverInstanceId: after)),
+            mirror.isStale(PeerFixtures.snapshot(playbackEpoch: 0, trackLoadEpoch: 0, serverInstanceId: after), from: peer),
             "A relaunched peer counts from zero again; rejecting it freezes the mirror for good"
         )
         // And it stays believed — the reset is not a one-snapshot amnesty that the next tick
         // undoes.
         XCTAssertFalse(
-            mirror.isStale(PeerFixtures.snapshot(playbackEpoch: 1, trackLoadEpoch: 1, serverInstanceId: after))
+            mirror.isStale(PeerFixtures.snapshot(playbackEpoch: 1, trackLoadEpoch: 1, serverInstanceId: after), from: peer)
         )
     }
 
@@ -78,7 +81,7 @@ final class PeerSnapshotOrderingTests: XCTestCase {
 
         for epoch in [0, 7, 2, 0] {
             XCTAssertFalse(
-                mirror.isStale(PeerFixtures.snapshot(playbackEpoch: epoch, trackLoadEpoch: epoch, serverInstanceId: instance)),
+                mirror.isStale(PeerFixtures.snapshot(playbackEpoch: epoch, trackLoadEpoch: epoch, serverInstanceId: instance), from: peer),
                 "A mirror with nothing applied has nothing to call this older than (epoch \(epoch))"
             )
         }

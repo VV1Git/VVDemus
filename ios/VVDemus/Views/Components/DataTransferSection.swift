@@ -93,7 +93,7 @@ struct DataTransferSection: View {
         // `eventsSince: nil` is the whole log. The field it fills on the returned payload is a
         // live peer's "only send me what I don't have"; `BackupFile` clears it, because in a
         // file it is an instruction to nobody.
-        let payload = SyncEngine.snapshot(eventsSince: nil)
+        let payload = SyncEngine.backupSnapshot()
         let file = BackupFile(
             exportedAt: Date(),
             exportedBy: .init(peerId: PeerIdentity.shared.peerId, deviceName: PeerIdentity.shared.name),
@@ -148,7 +148,7 @@ struct DataTransferSection: View {
             // there; it is never adopted as this device's identity. Two devices sharing a peer
             // id would break `EditStamp`'s deterministic tiebreak, which is the thing that
             // makes two copies of a playlist converge.
-            let summary = SyncEngine.merge(file.payload)
+            let summary = SyncEngine.merge(file.payload, from: nil)
             // Applied after the merge for no reason other than order of reading — the
             // preference is a plain scalar with no stamp to compare, so the file's value simply
             // wins. `preferences` holds exactly what import applies; Connect's key is not in it.

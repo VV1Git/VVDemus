@@ -7,18 +7,62 @@ import Foundation
 /// rules testable without two devices, a network, or any real audio.
 @MainActor
 enum SyncEngine {
-    /// What this device is prepared to send, given what the peer says it already has.
-    static func snapshot(eventsSince: Date?) -> SyncPayload {
+    /// Which of this device's plays go into a payload, and what that choice claims.
+    @MainActor
+    struct EventSelection {
+        var events: [PlayEvent]
+        /// See `SyncPayload.eventBase`.
+        var base: EventMarks.Marks?
+
+        /// The whole log, claiming nothing is missing — a backup, or a first round with a peer.
+        static var everything: EventSelection {
+            EventSelection(events: ListeningStatsStore.shared.events, base: [:])
+        }
+
+        /// Everything a device holding `marks` lacks — a reply, or a push to a peer whose marks
+        /// are known.
+        static func after(_ marks: EventMarks.Marks, legacySince: Date?) -> EventSelection {
+            EventSelection(
+                events: EventMarks.select(ListeningStatsStore.shared.events, after: marks, legacySince: legacySince),
+                base: marks
+            )
+        }
+
+        /// By date alone, the way every round chose before marks existed. Still right for a
+        /// peer on an older build; claims nothing, because a date can skip a play.
+        static func since(_ date: Date?) -> EventSelection {
+            guard let date else { return everything }
+            return EventSelection(events: ListeningStatsStore.shared.events(since: date), base: nil)
+        }
+
+        /// What to push to `peerId` unasked, at the start of a round with it.
+        static func push(to peerId: String) -> EventSelection {
+            let since = SyncCursor.eventsSince(peerId: peerId)
+            if let marks = SyncCursor.confirmedMarks(peerId: peerId) {
+                return .after(marks, legacySince: since)
+            }
+            return .since(since)
+        }
+
+        /// What to answer `request` with: everything it says it lacks.
+        static func reply(to request: SyncPayload) -> EventSelection {
+            guard let marks = request.eventMarks else { return .since(request.eventsSince) }
+            return .after(marks, legacySince: request.eventsSince)
+        }
+    }
+
+    /// What this device sends to `recipient`: its whole library, the plays `selection` picked,
+    /// and the devices it is linked to, signed for that recipient. No recipient means a file,
+    /// which carries no devices at all.
+    static func snapshot(events selection: EventSelection, for recipient: PairedPeer?) -> SyncPayload {
         var generated: [GeneratedRecord] = []
         if let daylist = DaylistStore.shared.syncRecord() { generated.append(daylist) }
         if let feed = HomeFeedStore.shared.syncRecord() { generated.append(feed) }
         generated.append(contentsOf: RadioCacheStore.shared.syncRecords())
         generated.append(contentsOf: AlbumCacheStore.shared.syncRecords())
 
-        let events = eventsSince
-            .map { ListeningStatsStore.shared.events(since: $0) }
-            ?? ListeningStatsStore.shared.events
-
+        let stats = ListeningStatsStore.shared
+        let devices = recipient.map { _ in PairedPeerStore.shared.deviceRecords() }
         return SyncPayload(
             peerId: PeerIdentity.shared.peerId,
             likes: LikedSongsStore.shared.records,
@@ -27,20 +71,36 @@ enum SyncEngine {
             albums: AlbumHistoryStore.shared.records,
             generated: generated,
             recentSearches: RecentSearchStore.shared.searches,
-            events: events,
-            // What the *sender* wants back, so one round trip carries both directions.
-            eventsSince: ListeningStatsStore.shared.newestEventAt,
-            mixRadio: MixRadioSeedsStore.shared.record
+            events: selection.events,
+            // What the *sender* wants back, so one round trip carries both directions. A peer on
+            // this build reads it only for plays with no origin; a peer on an older build reads
+            // it for everything, and has to keep getting what it always got. Nil here would ask
+            // that peer for its whole log every round.
+            eventsSince: stats.newestEventAt,
+            mixRadio: MixRadioSeedsStore.shared.record,
+            devices: devices,
+            devicesSignature: devices.flatMap { list in recipient.flatMap { PairedPeerStore.shared.signature(of: list, for: $0) } },
+            eventMarks: stats.eventMarks,
+            eventBase: selection.base
         )
     }
 
+    /// The whole library and log, for a backup file.
+    static func backupSnapshot() -> SyncPayload {
+        snapshot(events: .everything, for: nil)
+    }
+
     /// Folds `payload` into the local stores, reporting what actually moved.
+    ///
+    /// `sender` is the paired device the payload came from, already authenticated, or nil for a
+    /// backup file. Only a peer moves the sync bookkeeping or introduces devices: a file is
+    /// nobody's word about what anyone holds, nor about who belongs in the group.
     ///
     /// Counts rather than a bare "something changed": a sync that silently succeeds is
     /// indistinguishable from one that silently does nothing, and the whole point of the
     /// feature is that your library arrives.
     @discardableResult
-    static func merge(_ payload: SyncPayload) -> SyncSummary {
+    static func merge(_ payload: SyncPayload, from sender: String?) -> SyncSummary {
         var summary = SyncSummary()
 
         summary.likes = LikedSongsStore.shared.merge(payload.likes)
@@ -70,8 +130,23 @@ enum SyncEngine {
             // from the events that just arrived rather than shipped separately.
             let played = payload.events.map { PlayedTrack(track: $0.track, playedAt: $0.playedAt) }
             PlayHistoryStore.shared.merge(played)
-            if let newest = payload.events.map(\.playedAt).max() {
-                SyncCursor.setEventsSince(newest, peerId: payload.peerId)
+        }
+
+        guard let sender else { return summary }
+
+        if let newest = payload.events.map(\.playedAt).max() {
+            SyncCursor.setEventsSince(newest, peerId: sender)
+        }
+        // After the merge, so the plays the marks vouch for are already here.
+        ListeningStatsStore.shared.advanceMarks(senderMarks: payload.eventMarks, base: payload.eventBase)
+        if let marks = payload.eventMarks {
+            SyncCursor.setConfirmedMarks(marks, peerId: sender)
+        }
+        if let devices = payload.devices, let member = PairedPeerStore.shared.peer(id: sender) {
+            if PairedPeerStore.shared.verify(payload.devicesSignature, of: devices, from: member) {
+                summary.devices = PairedPeerStore.shared.merge(devices, from: sender)
+            } else {
+                PairLog.error("\(member.name)'s list of devices did not verify — ignored")
             }
         }
 
@@ -89,9 +164,24 @@ struct SyncSummary: Equatable {
     var generated = 0
     var searches = 0
     var mixRadio = 0
+    /// Devices that joined or left the group by way of this round.
+    var devices = 0
 
     var isEmpty: Bool {
-        likes + playlists + radios + albums + plays + generated + searches + mixRadio == 0
+        likes + playlists + radios + albums + plays + generated + searches + mixRadio + devices == 0
+    }
+
+    /// Folds in another member's round, for the one line that describes them all.
+    mutating func add(_ other: SyncSummary) {
+        likes += other.likes
+        playlists += other.playlists
+        radios += other.radios
+        albums += other.albums
+        plays += other.plays
+        generated += other.generated
+        searches += other.searches
+        mixRadio += other.mixRadio
+        devices += other.devices
     }
 
     /// Human phrasing for the Settings row — "3 liked songs, 1 playlist, 42 plays".
@@ -109,6 +199,7 @@ struct SyncSummary: Equatable {
         add(generated, "mix", "mixes")
         add(searches, "search list", "search lists")
         add(mixRadio, "mix radio", "mix radios")
+        add(devices, "linked device", "linked devices")
         return parts.isEmpty ? "Already up to date" : parts.joined(separator: ", ")
     }
 }

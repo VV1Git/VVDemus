@@ -46,6 +46,8 @@ extension LocalControlServer {
                 }
 
                 let identity = PeerIdentity.shared
+                // Added to the group, not in place of it: every device this one is already
+                // linked to stays linked, and hears about the newcomer at its next round.
                 PairedPeerStore.shared.save(
                     PairedPeer(
                         peerId: body.peerId,
@@ -60,6 +62,7 @@ extension LocalControlServer {
                     )
                 )
                 session.recordSuccess()
+                PeerLink.shared.groupDidChange()
                 PairLog.info("accepted pair from \(body.name) — now paired")
 
                 return self.jsonResponse(
@@ -81,7 +84,7 @@ extension LocalControlServer {
 
         server.POST["/api/sync"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.authorizePeer(request) }) else {
+            guard let sender = self.onMain({ self.authorizePeer(request) }) else {
                 PairLog.error("rejected /api/sync — bearer token missing or wrong")
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
@@ -89,12 +92,20 @@ extension LocalControlServer {
                 PairLog.error("rejected /api/sync — payload did not decode")
                 return .badRequest(.text("bad sync payload"))
             }
+            // The token says who is asking; the payload says who it is from. They must be the
+            // same device, or one member could file its library — and its view of the group —
+            // under another's name.
+            guard payload.peerId == sender.peerId else {
+                PairLog.error("rejected /api/sync — \(sender.name) sent a payload naming \(payload.peerId.prefix(8))")
+                return .badRequest(.text("payload is not from the device that sent it"))
+            }
             return self.onMain {
                 // Merge first, then answer — so the reply already reflects anything the peer
                 // just taught us and a second round is not needed to converge.
-                let merged = SyncEngine.merge(payload)
-                PairLog.info("served /api/sync — merged \(merged.description)")
-                let reply = SyncEngine.snapshot(eventsSince: payload.eventsSince)
+                let merged = SyncEngine.merge(payload, from: sender.peerId)
+                PairLog.info("served /api/sync for \(sender.name) — merged \(merged.description)")
+                if merged.devices > 0 { PeerLink.shared.groupDidChange() }
+                let reply = SyncEngine.snapshot(events: .reply(to: payload), for: sender)
                 guard let data = try? Self.peerEncoder.encode(reply) else { return .internalServerError }
                 return .ok(.data(data, contentType: "application/json"))
             }
@@ -108,7 +119,7 @@ extension LocalControlServer {
         // path that touches playback.
         server.GET["/api/peer/state"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.authorizePeer(request) }) else {
+            guard self.onMain({ self.authorizePeer(request) }) != nil else {
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
             return self.onMain {
@@ -123,7 +134,7 @@ extension LocalControlServer {
         // session: pressing pause on the Mac while the phone is the one playing sends this.
         server.POST["/api/peer/command"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.authorizePeer(request) }) else {
+            guard let sender = self.onMain({ self.authorizePeer(request) }) else {
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
             guard let body = try? Self.peerDecoder.decode(PeerCommand.self, from: Data(request.body)) else {
@@ -218,9 +229,22 @@ extension LocalControlServer {
                     }
                 // "Play on this device" pressed over there: the picker cannot pull a session, so
                 // it asks the device that has one to push it. That reuses the acked handoff
-                // rather than inventing a second, opposite handshake to keep correct.
+                // rather than inventing a second, opposite handshake to keep correct. A member
+                // can also ask for it to go to a third device, which is the same push aimed
+                // elsewhere — but only ever to a member of the group.
                 case "pullSession":
-                    Task { await PeerLink.shared.handOffToPeer() }
+                    // Only the owner has a session to move. Asked a poll too late — the session
+                    // has just gone elsewhere — a push from here would hand over nothing, and the
+                    // device receiving it would claim a session that does not exist above the
+                    // one that does, leaving every remote pointed at an empty player.
+                    guard SessionOwnership.shared.isOwnedLocally else {
+                        return .badRequest(.text("this device isn't the one playing any more"))
+                    }
+                    let targetId = body.targetPeerId ?? sender.peerId
+                    guard let target = PairedPeerStore.shared.peer(id: targetId) else {
+                        return .badRequest(.text("that device isn't linked to this one"))
+                    }
+                    Task { await PeerLink.shared.handOff(to: target) }
                 default: return .badRequest(.text("unknown action"))
                 }
                 return .ok(.text("ok"))
@@ -230,7 +254,7 @@ extension LocalControlServer {
         // Downloads requested by the other device — the receiving end of "Download to Phone".
         server.POST["/api/peer/download"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.authorizePeer(request) }) else {
+            guard self.onMain({ self.authorizePeer(request) }) != nil else {
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
             guard let tracks = try? Self.peerDecoder.decode([Track].self, from: Data(request.body)) else {
@@ -250,9 +274,25 @@ extension LocalControlServer {
         // position of its own to report, and there is no output to pull back off it. The browser
         // keeps its own reporting path untouched.
 
+        // A member leaving the group, telling this one on its way out. Recorded as a removal, so
+        // it reaches the rest of the group at their next rounds rather than being reintroduced by
+        // whichever of them has not heard yet.
+        server.POST["/api/peer/leave"] = { [weak self] request in
+            guard let self else { return .internalServerError }
+            guard let sender = self.onMain({ self.authorizePeer(request) }) else {
+                return .raw(401, "Unauthorized", nil, { _ in })
+            }
+            return self.onMain {
+                PairLog.info("\(sender.name) is leaving the group")
+                PairedPeerStore.shared.remove(peerId: sender.peerId)
+                PeerLink.shared.groupDidChange()
+                return .ok(.text("ok"))
+            }
+        }
+
         server.GET["/api/peer/checkpoint"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.authorizePeer(request) }) else {
+            guard self.onMain({ self.authorizePeer(request) }) != nil else {
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
             return self.onMain {
@@ -265,7 +305,7 @@ extension LocalControlServer {
 
         server.POST["/api/peer/handoff"] = { [weak self] request in
             guard let self else { return .internalServerError }
-            guard self.onMain({ self.authorizePeer(request) }) else {
+            guard self.onMain({ self.authorizePeer(request) }) != nil else {
                 return .raw(401, "Unauthorized", nil, { _ in })
             }
             guard let body = try? Self.peerDecoder.decode(HandoffRequest.self, from: Data(request.body)) else {
@@ -307,10 +347,10 @@ extension LocalControlServer {
     /// that *initiated* it; the device that accepted stored `lastKnownHost: nil` and could find
     /// its peer by Bonjour alone ever after. Two devices on different subnets then had no way to
     /// learn anything about each other, even while one was successfully talking to the other.
-    func authorizePeer(_ request: HttpRequest) -> Bool {
-        guard isAuthorizedPeer(request) else { return false }
-        learnPeerAddress(from: request)
-        return true
+    func authorizePeer(_ request: HttpRequest) -> PairedPeer? {
+        guard let peer = authorizedPeer(request) else { return nil }
+        learnPeerAddress(of: peer, from: request)
+        return peer
     }
 
     /// Records where an authenticated request came from.
@@ -320,11 +360,10 @@ extension LocalControlServer {
     /// has to be told to us, in `x-vvdemus-port`. Absent that, the port already on file is kept
     /// rather than guessed: overwriting a correct port with 51825 would break the very address
     /// this is trying to repair, since a second copy of the app on one machine listens on 51826.
-    private func learnPeerAddress(from request: HttpRequest) {
+    private func learnPeerAddress(of peer: PairedPeer, from request: HttpRequest) {
         // Swifter's `address` defaults to the empty string rather than nil, so an absent address
         // arrives as "" and would otherwise be written down as the peer's location.
         guard let host = request.address, !host.isEmpty else { return }
-        guard let peer = PairedPeerStore.shared.peer else { return }
         let advertised = (request.headers["x-vvdemus-port"] ?? request.headers["X-VVDemus-Port"])
             .flatMap(Int.init)
             .flatMap { (1...65535).contains($0) ? $0 : nil }
@@ -336,23 +375,19 @@ extension LocalControlServer {
         if peer.lastKnownHost != host || peer.lastKnownPort != port {
             PairLog.info("learned \(peer.name) is at \(host):\(port) from an authenticated request")
         }
-        PairedPeerStore.shared.rememberAddress(host: host, port: port)
+        PairedPeerStore.shared.rememberAddress(host: host, port: port, for: peer.peerId)
     }
 
-    /// Constant-time check of the bearer token both devices derived from the pairing.
+    /// The member whose bearer token this request carries — the token that member and this
+    /// device derived from their pairing — or nil.
     ///
     /// The token is never transmitted during pairing — only public keys are — so it cannot be
-    /// recovered by watching the exchange.
-    func isAuthorizedPeer(_ request: HttpRequest) -> Bool {
-        guard let expected = PairedPeerStore.shared.sessionToken() else { return false }
+    /// recovered by watching the exchange. Which member it belongs to matters as much as whether
+    /// it is valid: it is what a sync is filed under, and where "play it here" sends the session.
+    func authorizedPeer(_ request: HttpRequest) -> PairedPeer? {
         let header = request.headers["authorization"] ?? request.headers["Authorization"]
-        guard let provided = header?.replacingOccurrences(of: "Bearer ", with: ""),
-              provided.count == expected.count else { return false }
-        // Compared byte by byte with no early exit, so a wrong token cannot be narrowed down by
-        // timing the rejection.
-        var difference: UInt8 = 0
-        for (lhs, rhs) in zip(provided.utf8, expected.utf8) { difference |= lhs ^ rhs }
-        return difference == 0
+        guard let provided = header?.replacingOccurrences(of: "Bearer ", with: "") else { return nil }
+        return PairedPeerStore.shared.peer(presenting: provided)
     }
 
     static var peerEncoder: JSONEncoder {

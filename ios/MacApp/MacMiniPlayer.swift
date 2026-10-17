@@ -55,7 +55,7 @@ struct MacMiniPlayerView: View {
     ///
     /// Not zero, and the reason is written down in `MacNowPlayingBar.leading`: `displayedTrack`
     /// falls to nil when the *peer link* drops, not only when playback ends. One failed poll
-    /// clears `isPeerReachable`, `recomputeMirroring` clears `isMirroring`, and this device's own
+    /// clears the owner from `reachablePeerIds`, `recomputeMirroring` clears `isMirroring`, and this device's own
     /// `PlayerService` is deliberately empty while mirroring — so a phone that is still playing
     /// reads as nothing playing for the length of the backoff, 5 seconds doubling to 30.
     ///

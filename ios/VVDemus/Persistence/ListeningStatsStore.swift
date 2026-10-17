@@ -24,12 +24,18 @@ final class ListeningStatsStore: ObservableObject {
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         fileURL = base.appendingPathComponent("listening_history.json")
         writer = HistoryWriter(fileURL: fileURL)
+        storedMarks = DefaultsSnapshot.load(EventMarks.Marks.self, forKey: Self.marksKey) ?? [:]
         load()
     }
 
     func record(_ track: Track, secondsPlayed: Int) {
         guard secondsPlayed >= 5 else { return } // ignore accidental taps/quick skips
-        events.append(PlayEvent(track: track, playedAt: Date(), secondsPlayed: secondsPlayed))
+        events.append(PlayEvent(
+            track: track,
+            playedAt: Date(),
+            secondsPlayed: secondsPlayed,
+            origin: PeerIdentity.shared.peerId
+        ))
         prune()
         save()
     }
@@ -38,8 +44,35 @@ final class ListeningStatsStore: ObservableObject {
         events.filter { $0.playedAt >= date }
     }
 
-    /// The newest thing in the log, which is what the peer is asked to send from.
+    /// The newest thing in the log.
     var newestEventAt: Date? { events.map(\.playedAt).max() }
+
+    /// How far each device's plays are held here without a gap — see `EventMarks`.
+    ///
+    /// This device's own entry is not stored: every play it made is in the log by construction,
+    /// so its mark is simply the newest of them.
+    var eventMarks: EventMarks.Marks {
+        var marks = storedMarks
+        let me = PeerIdentity.shared.peerId
+        marks[me] = events.lazy.filter { $0.origin == me }.map(\.playedAt).max().map(EventMarks.second)
+        return marks
+    }
+
+    /// Moves the marks on for a payload that has just been merged. See `EventMarks.advance`.
+    func advanceMarks(senderMarks: EventMarks.Marks?, base: EventMarks.Marks?) {
+        let next = EventMarks.advance(
+            storedMarks,
+            senderMarks: senderMarks,
+            base: base,
+            localPeerId: PeerIdentity.shared.peerId
+        )
+        guard next != storedMarks else { return }
+        storedMarks = next
+        DefaultsSnapshot.save(next, forKey: Self.marksKey)
+    }
+
+    private var storedMarks: EventMarks.Marks
+    private static let marksKey = "listening_event_marks_v1"
 
     /// What makes two `PlayEvent`s the same play: a video id and the whole second it happened in.
     ///
@@ -53,7 +86,7 @@ final class ListeningStatsStore: ObservableObject {
     /// Peer sync never showed it, because the requester asks for events after
     /// `newestEventAt` and its own truncated echoes sort below that cursor, so they are filtered
     /// out before they reach this function. A backup file is the entire log with no cursor at all
-    /// — `SyncEngine.snapshot(eventsSince: nil)` — so importing a file this device exported, or
+    /// — `SyncEngine.backupSnapshot()` — so importing a file this device exported, or
     /// one exported by a paired Mac that already holds this device's plays in truncated form,
     /// duplicated every event in a single pass. `prune()` is age-based and would never have taken
     /// them back out: the Stats screen's play counts and every top-artist weighting derived from

@@ -31,7 +31,7 @@ struct PeerBeaconPayload: Equatable, Codable {
 
     /// The HKDF info string that separates the beacon key from the session key.
     ///
-    /// Deliberately *not* the session key. `PairedPeerStore.sessionToken()` base64-encodes that
+    /// Deliberately *not* the session key. `PairedPeerStore.sessionToken(for:)` base64-encodes that
     /// key verbatim and `PeerClient` puts it in an `Authorization` header over plain HTTP, so
     /// anything that can watch one LAN request already holds it. Re-deriving here — same X25519
     /// secret, same sorted-id salt, different `sharedInfo` — keeps the key that protects the
@@ -59,6 +59,63 @@ struct PeerBeaconPayload: Equatable, Codable {
     /// reader needs no long-read or chunking scheme to get it.
     func sealed(using key: SymmetricKey) throws -> Data {
         try ChaChaPoly.seal(Self.encoder().encode(self), using: key).combined
+    }
+
+    /// How many sealed copies one characteristic value carries.
+    ///
+    /// Each member of the group holds a different key, so the value is one copy per member. A
+    /// copy is about 150 bytes, an attribute value can be at most 512, and three copies with
+    /// their framing come to about 450 — so a device in a group of four reaches every other
+    /// member, and in a larger one reaches its three newest. Beyond one copy the value is longer
+    /// than one ATT packet, which CoreBluetooth reads in pieces on its own (Read Blob) for a
+    /// characteristic with a static value.
+    static let maximumCopies = 3
+
+    /// Marks a value holding several copies. A single copy is sent bare, exactly as before groups,
+    /// so a member on an older build — which can only open one — still can.
+    private static let framedMarker: UInt8 = 0xB2
+
+    /// One characteristic value carrying `copies`: bare when there is one, otherwise the marker
+    /// followed by each copy behind a two-byte big-endian length.
+    static func combine(_ copies: [Data]) -> Data {
+        guard copies.count > 1 else { return copies.first ?? Data() }
+        var value = Data([framedMarker])
+        for copy in copies {
+            let length = UInt16(clamping: copy.count)
+            value.append(UInt8(length >> 8))
+            value.append(UInt8(length & 0xFF))
+            value.append(copy.prefix(Int(length)))
+        }
+        return value
+    }
+
+    /// The copies in a characteristic value — the value itself when it is not framed. A frame
+    /// that runs past the end ends the list rather than being read short.
+    static func copies(in value: Data) -> [Data] {
+        let bytes = [UInt8](value)
+        guard bytes.first == framedMarker else { return [value] }
+        var copies: [Data] = []
+        var index = 1
+        while index + 2 <= bytes.count {
+            let length = Int(bytes[index]) << 8 | Int(bytes[index + 1])
+            index += 2
+            guard length > 0, index + length <= bytes.count else { break }
+            copies.append(Data(bytes[index..<index + length]))
+            index += length
+        }
+        return copies
+    }
+
+    /// Opens whichever copy in a characteristic value is sealed for `key`, or `nil`.
+    ///
+    /// The whole value is tried as one copy first: a bare copy happens to begin with the marker
+    /// byte one time in 256, since its first byte is the random nonce's.
+    static func open(anyOf value: Data, using key: SymmetricKey, expecting peerId: String) -> PeerBeaconPayload? {
+        if let single = open(value, using: key, expecting: peerId) { return single }
+        for copy in copies(in: value) {
+            if let payload = open(copy, using: key, expecting: peerId) { return payload }
+        }
+        return nil
     }
 
     /// Opens a characteristic value, or `nil` if it was not sealed by the expected peer.

@@ -120,6 +120,10 @@ struct PeerCommand: Codable {
     /// which is what keeps the indices the fallback for one — "the end of the queue" and "did not
     /// say" want opposite answers, and a bare `false` cannot tell them apart.
     var dropsAtQueueEnd: Bool?
+    /// For `"pullSession"`: which device the owner should hand the session to. Nil means the
+    /// device asking, which is all a two-device link could ever mean — and what an older peer,
+    /// which never sends this, still means.
+    var targetPeerId: String?
 }
 
 // There is no peer progress report. It existed while a paired device could act as the other's

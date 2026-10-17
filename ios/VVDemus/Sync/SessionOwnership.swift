@@ -75,7 +75,7 @@ final class SessionOwnership: ObservableObject {
 
     var isOwnedLocally: Bool { current.ownerPeerId == localPeerId }
 
-    /// The highest claim the peer has been seen holding, whether or not it won.
+    /// The highest claim any peer has been seen holding, whether or not it won.
     ///
     /// Kept because a claim has to beat the peer's, and the peer's is only ever learned from a
     /// poll. Without it a device that owns the session at claim 3 while the peer sits at claim 7
@@ -115,6 +115,13 @@ final class SessionOwnership: ObservableObject {
         apply(OwnershipClaim.resolve(local: current, remote: remote))
     }
 
+    /// Counts a claim without acting on it — one heard second-hand, which may not take a session
+    /// from this device until its claimant has been met (see `PeerPlayback.adopt`). Still worth
+    /// counting, for the same reason a losing claim is: the next claim made here has to beat it.
+    func noteClaim(_ remote: OwnershipClaim) {
+        lastSeenPeerClaim = max(lastSeenPeerClaim, remote.claim)
+    }
+
     /// Hands the session over, having been told by the peer that it has taken it.
     ///
     /// Deliberately not `adoptIfNewer`: the peer has already adopted the checkpoint and is
@@ -123,7 +130,7 @@ final class SessionOwnership: ObservableObject {
         apply(remote)
     }
 
-    /// The peer is gone for good, so there is nobody to mirror and nobody to hand back to.
+    /// The owner has left the group, so there is nobody to mirror and nobody to hand back to.
     func resetToLocal() {
         apply(OwnershipClaim(ownerPeerId: localPeerId, claim: current.claim + 1))
     }

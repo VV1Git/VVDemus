@@ -16,7 +16,8 @@ enum PeerError: LocalizedError {
     }
 }
 
-/// The outbound half of the peer link: pairing, syncing, and handing playback over.
+/// The outbound half of the peer link: pairing, syncing, and handing playback over — each call
+/// to one named member of the group.
 @MainActor
 enum PeerClient {
     /// One session for the life of the process, not one per request.
@@ -38,7 +39,11 @@ enum PeerClient {
     // MARK: - Pairing
 
     /// Pairs with `peer` using the six digits shown on *its* screen.
-    static func pair(with peer: DiscoveredPeer, code: String) async throws {
+    ///
+    /// Joins its group, too: the first sync round after this carries its list of devices, and
+    /// this device meets each of them from there — see `PairedPeerStore.merge`.
+    @discardableResult
+    static func pair(with peer: DiscoveredPeer, code: String) async throws -> PairedPeer {
         PairLog.info("pair() starting — peer=\(peer.name) host=\(peer.host):\(peer.port) code=\(code.count) digits")
         guard let base = peer.baseURL else {
             PairLog.error("pair() aborted — could not build a URL for \(peer.host):\(peer.port)")
@@ -61,7 +66,7 @@ enum PeerClient {
         let response: PairResponse = try await post(
             to: base.appendingPathComponent("api/pair/begin"),
             body: request,
-            authorized: false
+            for: nil
         )
 
         PairLog.info("pair() got a response from \(response.name) (peerId \(response.peerId.prefix(8)))")
@@ -82,76 +87,96 @@ enum PeerClient {
             throw PeerError.rejected("That code didn't match. Check the digits on your other device.")
         }
 
-        PairedPeerStore.shared.save(
-            PairedPeer(
-                peerId: response.peerId,
-                name: response.name,
-                publicKey: peerKey,
-                isDesktop: response.isDesktop,
-                lastKnownHost: peer.host,
-                lastKnownPort: peer.port,
-                pairedAt: Date()
-            )
+        let paired = PairedPeer(
+            peerId: response.peerId,
+            name: response.name,
+            publicKey: peerKey,
+            isDesktop: response.isDesktop,
+            lastKnownHost: peer.host,
+            lastKnownPort: peer.port,
+            pairedAt: Date()
         )
+        PairedPeerStore.shared.save(paired)
         PairLog.info("pair() succeeded — now paired with \(response.name) at \(peer.host)")
+        return paired
     }
 
     // MARK: - Sync
 
-    /// One round trip: send what we have, merge what comes back.
+    /// One round trip with `peer`: send what we have, merge what comes back.
     @discardableResult
-    static func sync() async throws -> SyncSummary {
-        guard let peer = PairedPeerStore.shared.peer else { throw PeerError.notPaired }
+    static func sync(with peer: PairedPeer) async throws -> SyncSummary {
         let base = try await resolveBase(for: peer)
         PairLog.info("sync() starting with \(peer.name)")
-        let payload = SyncEngine.snapshot(eventsSince: SyncCursor.eventsSince(peerId: peer.peerId))
+        let payload = SyncEngine.snapshot(events: .push(to: peer.peerId), for: peer)
         PairLog.info("sync() sending \(payload.likes.count) likes, \(payload.playlists.count) playlists, \(payload.radios.count) radios, \(payload.events.count) events, \(payload.generated.count) caches")
         let reply: SyncPayload = try await post(
             to: base.appendingPathComponent("api/sync"),
             body: payload,
-            authorized: true
+            for: peer
         )
+        // The payload names its sender, and it has to be the device that was asked. That is a
+        // consistency check, not authentication: nothing about a reply proves who sent it — the
+        // device list inside is signed for that (`PairedPeerStore.signature`).
+        guard reply.peerId == peer.peerId else {
+            PairLog.error("sync() reply claims to come from \(reply.peerId.prefix(8)), not \(peer.name) — ignored")
+            throw PeerError.badResponse
+        }
+        // And it has to still be a member, under the key it was asked with. The round is slow —
+        // a member that is away costs it seconds — and the group can change underneath it: a
+        // reply that lands after this device left, or after the sender was removed, would
+        // otherwise re-introduce everyone it lists.
+        guard PairedPeerStore.shared.peer(id: peer.peerId)?.publicKey == peer.publicKey else {
+            PairLog.info("sync() reply from \(peer.name) arrived after it left the group — discarded")
+            throw PeerError.notPaired
+        }
         PairLog.info("sync() received \(reply.likes.count) likes, \(reply.playlists.count) playlists, \(reply.radios.count) radios, \(reply.events.count) events, \(reply.generated.count) caches")
-        let summary = SyncEngine.merge(reply)
+        let summary = SyncEngine.merge(reply, from: peer.peerId)
         PairLog.info("sync() merged — \(summary.description)")
         return summary
     }
 
-    // MARK: - Playback
-
-    /// The peer's live playback, polled by `PeerPlayback` so both devices show one session.
-    static func peerState() async throws -> StateSnapshot {
-        guard let peer = PairedPeerStore.shared.peer else { throw PeerError.notPaired }
+    /// Tells `peer` this device is leaving the group, so it can pass that on to everyone else.
+    static func leave(_ peer: PairedPeer) async throws {
         let base = try await resolveBase(for: peer)
-        return try await get(base.appendingPathComponent("api/peer/state"))
+        let _: EmptyReply = try await post(
+            to: base.appendingPathComponent("api/peer/leave"),
+            body: EmptyReply(),
+            for: peer
+        )
     }
 
-    /// A transport action for the device that owns the session.
-    static func send(_ command: PeerCommand) async throws {
-        guard let peer = PairedPeerStore.shared.peer else { throw PeerError.notPaired }
+    // MARK: - Playback
+
+    /// A peer's live playback, polled by `PeerPlayback` so every device shows one session.
+    static func peerState(of peer: PairedPeer) async throws -> StateSnapshot {
+        let base = try await resolveBase(for: peer)
+        return try await get(base.appendingPathComponent("api/peer/state"), from: peer)
+    }
+
+    /// A transport action for `peer`, which should be the device that owns the session.
+    static func send(_ command: PeerCommand, to peer: PairedPeer) async throws {
         let base = try await resolveBase(for: peer)
         let _: EmptyReply = try await post(
             to: base.appendingPathComponent("api/peer/command"),
             body: command,
-            authorized: true
+            for: peer
         )
     }
 
-    /// Asks the paired device to download these tracks onto itself.
-    static func requestDownloads(_ tracks: [Track]) async throws {
-        guard let peer = PairedPeerStore.shared.peer else { throw PeerError.notPaired }
+    /// Asks `peer` to download these tracks onto itself.
+    static func requestDownloads(_ tracks: [Track], on peer: PairedPeer) async throws {
         let base = try await resolveBase(for: peer)
         let _: EmptyReply = try await post(
             to: base.appendingPathComponent("api/peer/download"),
             body: tracks,
-            authorized: true
+            for: peer
         )
     }
 
-    static func fetchCheckpoint() async throws -> NowPlayingCheckpoint {
-        guard let peer = PairedPeerStore.shared.peer else { throw PeerError.notPaired }
+    static func fetchCheckpoint(from peer: PairedPeer) async throws -> NowPlayingCheckpoint {
         let base = try await resolveBase(for: peer)
-        return try await get(base.appendingPathComponent("api/peer/checkpoint"))
+        return try await get(base.appendingPathComponent("api/peer/checkpoint"), from: peer)
     }
 
     /// Hands the session over, and reports back whether the other device actually took it.
@@ -159,13 +184,12 @@ enum PeerClient {
     /// The reply matters: the sender only lets go of its queue once this returns, so a handoff
     /// that never lands leaves the music exactly where it was rather than nowhere at all.
     @discardableResult
-    static func handOff(_ request: HandoffRequest) async throws -> HandoffAck {
-        guard let peer = PairedPeerStore.shared.peer else { throw PeerError.notPaired }
+    static func handOff(_ request: HandoffRequest, to peer: PairedPeer) async throws -> HandoffAck {
         let base = try await resolveBase(for: peer)
         return try await post(
             to: base.appendingPathComponent("api/peer/handoff"),
             body: request,
-            authorized: true
+            for: peer
         )
     }
 
@@ -185,22 +209,28 @@ enum PeerClient {
     /// handlers hop to the main queue via `DispatchQueue.main.sync`, so a saturated main actor
     /// turned *every* route — including the browser's — into a 503. Resolving is the expensive
     /// exception, not the per-request norm.
-    private static var cachedBase: (url: URL, at: Date)?
+    ///
+    /// One per peer. A single shared slot was right while there was only ever one peer; with
+    /// two, every request to the second would be sent to wherever the first was last found.
+    private static var cachedBases: [String: (url: URL, at: Date)] = [:]
     private static let baseCacheLifetime: TimeInterval = 30
 
-    /// Dropped whenever a request fails, so a peer that moved is re-found immediately rather
-    /// than after the cache happens to age out.
-    static func invalidateCachedBase() { cachedBase = nil }
+    /// Dropped whenever a request to that peer fails, so a peer that moved is re-found
+    /// immediately rather than after the cache happens to age out.
+    static func invalidateCachedBase(for peerId: String) { cachedBases[peerId] = nil }
+
+    /// A device that has left the group: nothing about where it was is worth keeping.
+    static func forget(peerId: String) { invalidateCachedBase(for: peerId) }
 
     private static func resolveBase(for peer: PairedPeer) async throws -> URL {
-        if let cached = cachedBase, Date().timeIntervalSince(cached.at) < baseCacheLifetime {
+        if let cached = cachedBases[peer.peerId], Date().timeIntervalSince(cached.at) < baseCacheLifetime {
             return cached.url
         }
         if let host = peer.lastKnownHost,
            let url = URL(string: "http://\(host):\(peer.lastKnownPort ?? Int(LocalControlServer.shared.port))") {
             if await answers(url, as: peer.peerId) {
-                PairLog.info("resolveBase: cached address \(host) answered")
-                cachedBase = (url, Date())
+                PairLog.info("resolveBase: cached address \(host) answered for \(peer.name)")
+                cachedBases[peer.peerId] = (url, Date())
                 return url
             }
             PairLog.info("resolveBase: cached address \(host) did not answer — falling back to Bonjour")
@@ -215,9 +245,9 @@ enum PeerClient {
         for _ in 0..<10 {
             if let found = PeerDiscovery.shared.peers.first(where: { $0.peerId == peer.peerId }),
                let url = found.baseURL {
-                PairedPeerStore.shared.rememberAddress(host: found.host, port: found.port)
+                PairedPeerStore.shared.rememberAddress(host: found.host, port: found.port, for: peer.peerId)
                 PairLog.info("resolveBase: Bonjour found \(found.name) at \(found.host):\(found.port)")
-                cachedBase = (url, Date())
+                cachedBases[peer.peerId] = (url, Date())
                 return url
             }
             try? await Task.sleep(nanoseconds: 300_000_000)
@@ -233,9 +263,9 @@ enum PeerClient {
             // have moved since it sealed one — and this is the cheap way to tell, so the payload
             // carries no expiry of its own.
             if await answers(url, as: peer.peerId) {
-                PairedPeerStore.shared.rememberAddress(host: found.host, port: found.port)
+                PairedPeerStore.shared.rememberAddress(host: found.host, port: found.port, for: peer.peerId)
                 PairLog.info("resolveBase: Bluetooth found \(peer.name) at \(found.host):\(found.port)")
-                cachedBase = (url, Date())
+                cachedBases[peer.peerId] = (url, Date())
                 return url
             }
             PairLog.error("resolveBase: Bluetooth offered \(found.host):\(found.port) for \(peer.name), but nothing answered there")
@@ -271,20 +301,20 @@ enum PeerClient {
     private static func post<Body: Encodable, Reply: Decodable>(
         to url: URL,
         body: Body,
-        authorized: Bool
+        for peer: PairedPeer?
     ) async throws -> Reply {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if authorized { try authorize(&request) }
+        if let peer { try authorize(&request, for: peer) }
         request.httpBody = try encoder.encode(body)
-        return try await send(request)
+        return try await send(request, to: peer?.peerId)
     }
 
-    private static func get<Reply: Decodable>(_ url: URL) async throws -> Reply {
+    private static func get<Reply: Decodable>(_ url: URL, from peer: PairedPeer) async throws -> Reply {
         var request = URLRequest(url: url)
-        try authorize(&request)
-        return try await send(request)
+        try authorize(&request, for: peer)
+        return try await send(request, to: peer.peerId)
     }
 
     /// Both peer headers in one place: who we are, and where to call us back.
@@ -294,13 +324,13 @@ enum PeerClient {
     /// without this header a peer holds a host it can trust beside a port it has to guess, and
     /// 51825 is only the right guess until two copies of the app on one machine push the second
     /// to 51826.
-    private static func authorize(_ request: inout URLRequest) throws {
-        guard let token = PairedPeerStore.shared.sessionToken() else { throw PeerError.notPaired }
+    private static func authorize(_ request: inout URLRequest, for peer: PairedPeer) throws {
+        guard let token = PairedPeerStore.shared.sessionToken(for: peer) else { throw PeerError.notPaired }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue(String(LocalControlServer.shared.port), forHTTPHeaderField: "x-vvdemus-port")
     }
 
-    private static func send<Reply: Decodable>(_ request: URLRequest) async throws -> Reply {
+    private static func send<Reply: Decodable>(_ request: URLRequest, to peerId: String?) async throws -> Reply {
         let data: Data
         let response: URLResponse
         let target = request.url?.absoluteString ?? "?"
@@ -310,7 +340,7 @@ enum PeerClient {
             // The failure that mattered: a `.local` name resolves to an IPv6 link-local address
             // the IPv4-only server never answers on, and the connection is refused here.
             PairLog.error("request to \(target) failed at the transport: \(error.localizedDescription)")
-            invalidateCachedBase()
+            if let peerId { invalidateCachedBase(for: peerId) }
             throw PeerError.unreachable
         }
         guard let http = response as? HTTPURLResponse else { throw PeerError.badResponse }

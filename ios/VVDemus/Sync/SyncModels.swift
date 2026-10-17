@@ -232,8 +232,8 @@ struct GeneratedRecord: Codable, Equatable {
 ///
 /// Full state for the small stores — likes and playlists are a few hundred records at most, and
 /// exchanging them whole removes a whole class of "we disagree about what you already have"
-/// bugs. The listening log is the one that grows without bound, so it is asked for by time:
-/// events are immutable and append-only, which makes "everything after T" exact.
+/// bugs. The listening log is the one that grows without bound, so it is asked for by how far
+/// each device's plays are already held — see `EventMarks`.
 struct SyncPayload: Codable {
     var peerId: String
     var likes: [LikeRecord]
@@ -247,12 +247,25 @@ struct SyncPayload: Codable {
     var generated: [GeneratedRecord]
     var recentSearches: [String]
     var events: [PlayEvent]
-    /// The newest event the sender already holds from the recipient, so the reply can skip
-    /// everything older.
+    /// The sender's newest play: the date the reply sends plays from, for plays that carry no
+    /// `origin` — and, for a peer on a build that predates `eventMarks`, for every play.
     var eventsSince: Date?
     /// Optional for the same wire-compatibility reason as `albums`: a peer on an older build
     /// sends no picks, which merges as nothing.
     var mixRadio: MixRadioRecord? = nil
+    /// The sender's view of the group, so the recipient can meet the devices it has not been
+    /// paired with — see `PairedPeerStore.merge`. Nil from an older build, and in a backup file:
+    /// a file is not a device anyone has vouched for.
+    var devices: [DeviceRecord]? = nil
+    /// `devices`, signed for the recipient — see `PairedPeerStore.signature(of:for:)`. A list
+    /// that does not verify is ignored and the rest of the payload merged as usual.
+    var devicesSignature: String? = nil
+    /// How far the sender holds each device's plays without a gap. Doubles as the request — the
+    /// reply sends everything after these — and as the report the recipient pushes by next time.
+    var eventMarks: EventMarks.Marks? = nil
+    /// What `events` was chosen after, as `EventMarks.advance` reads it. Nil when the plays were
+    /// picked by date and say nothing about gaps.
+    var eventBase: EventMarks.Marks? = nil
 
     /// The album records, with "the peer is on an older build" folded into "the peer has no
     /// albums" — which is the same thing as far as merging goes.

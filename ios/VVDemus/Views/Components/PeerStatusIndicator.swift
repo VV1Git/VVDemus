@@ -1,6 +1,10 @@
 import SwiftUI
 
-/// Whether the paired device is reachable right now, shown at the top of Home on both platforms.
+/// Whether the linked devices are reachable right now, shown at the top of Home on both platforms.
+///
+/// One device reads as it always did — its name, its kind, a dot. Several collapse to a count,
+/// "2 of 3 devices", with each one's state in the help text: a row of names would crowd the
+/// toolbar it sits in, and the count answers the question this exists for.
 ///
 /// The link is silent by design — a peer that is asleep, on cellular or in another room is the
 /// normal case for a LAN-only setup, not an error worth interrupting anyone over. That silence
@@ -12,7 +16,8 @@ struct PeerStatusIndicator: View {
     @ObservedObject private var link = PeerLink.shared
 
     var body: some View {
-        if let paired = pairedStore.peer {
+        let members = pairedStore.peers
+        if !members.isEmpty {
             // Tappable, because "it says disconnected and it isn't" needs somewhere to go.
             //
             // A failed poll arms a backoff that doubles to 30s (`PeerPlayback.refresh`), which is
@@ -29,15 +34,15 @@ struct PeerStatusIndicator: View {
             } label: {
                 HStack(spacing: Theme.Space.xs) {
                     Circle()
-                        .fill(peer.isPeerReachable ? Theme.accent : Color.secondary.opacity(0.5))
+                        .fill(peer.anyPeerReachable ? Theme.accent : Color.secondary.opacity(0.5))
                         .frame(width: 8, height: 8)
-                    Image(systemName: paired.isDesktop ? "desktopcomputer" : "iphone")
+                    Image(systemName: symbol(for: members))
                         .font(.caption)
-                    Text(paired.name)
+                    Text(title(for: members))
                         .font(.caption)
                         .lineLimit(1)
                 }
-                .foregroundStyle(peer.isPeerReachable ? .primary : .secondary)
+                .foregroundStyle(peer.anyPeerReachable ? .primary : .secondary)
             }
             // Plain, so becoming a button changes what it *does* and not how it looks — the
             // system toolbar pill is still the only background here.
@@ -50,19 +55,35 @@ struct PeerStatusIndicator: View {
             // padding; a bare custom view does not, so with this removed as well the status dot
             // sat hard against the pill's left edge with the glyph crowding after it.
             .padding(.horizontal, Theme.Space.sm)
-            .help(helpText(paired.name))
+            .help(helpText(members))
             // Reachability is carried entirely by the dot's fill colour, which VoiceOver cannot
             // read, so `helpText` has to stand in for it — and a label on a multi-child `HStack`
             // is ignored while the children stay separately focusable. Combining first is what
             // makes this one element the label actually applies to.
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(helpText(paired.name))
+            .accessibilityLabel(helpText(members))
         }
     }
 
-    private func helpText(_ name: String) -> String {
-        guard peer.isPeerReachable else { return "\(name) isn't reachable right now — click to check again" }
-        if let synced = link.lastSyncedAt {
+    private func symbol(for members: [PairedPeer]) -> String {
+        guard members.count == 1, let only = members.first else { return "laptopcomputer.and.iphone" }
+        return only.isDesktop ? "desktopcomputer" : "iphone"
+    }
+
+    private func title(for members: [PairedPeer]) -> String {
+        guard members.count > 1 else { return members.first?.name ?? "" }
+        let reachable = members.filter { peer.isReachable($0.peerId) }.count
+        return "\(reachable) of \(members.count) devices"
+    }
+
+    private func helpText(_ members: [PairedPeer]) -> String {
+        members.map(helpText).joined(separator: "\n")
+    }
+
+    private func helpText(_ member: PairedPeer) -> String {
+        let name = member.name
+        guard peer.isReachable(member.peerId) else { return "\(name) isn't reachable right now — click to check again" }
+        if let synced = link.memberStatus[member.peerId]?.lastSyncedAt {
             let formatter = RelativeDateTimeFormatter()
             formatter.unitsStyle = .short
             return "\(name) is connected · synced \(formatter.localizedString(for: synced, relativeTo: Date()))"

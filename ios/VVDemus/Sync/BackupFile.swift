@@ -54,7 +54,7 @@ struct BackupFile: Codable {
     var exportedAt: Date
     var exportedBy: Exporter
     var appVersion: String
-    /// A whole `SyncPayload`, exactly as `SyncEngine.snapshot(eventsSince: nil)` produces it —
+    /// A whole `SyncPayload`, exactly as `SyncEngine.backupSnapshot()` produces it —
     /// unfiltered by construction, so a store that joins sync later joins the backup with it and
     /// there is nothing here to keep in step.
     var payload: SyncPayload

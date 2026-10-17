@@ -17,7 +17,7 @@ struct NowPlayingView: View {
     /// belongs in the transport row rather than down beside it: on the far more common unpaired
     /// phone that would leave the queue stranded alone in a corner, and the transport row has the
     /// width for it precisely because the picker is not there to take 44pt of it.
-    private var hasPairedDevice: Bool { pairedStore.peer != nil }
+    private var hasPairedDevice: Bool { pairedStore.hasPeers }
     @Environment(\.dismiss) private var dismiss
     @State private var showQueue = false
     @State private var showLyrics = false

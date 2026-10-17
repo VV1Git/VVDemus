@@ -18,8 +18,8 @@ import XCTest
 /// **What is not covered here, and why.** The play-intent latch itself — `pendingPlayIntent`, its
 /// 5s expiry and its single retry at 2.5s, consumed by `displayedIsPlaying` — is not reachable
 /// from a test. It is armed inside `PeerPlayback.command(for:)`, which `relay` only reaches while
-/// `isMirroring`; that is computed from `isPeerReachable`, which is `private(set)` and is raised
-/// only by a successful `PeerClient.peerState()` against a real paired device. Its timing
+/// `isMirroring`; that is computed from `reachablePeerIds`, which is `private(set)` and is raised
+/// only by a successful `PeerClient.peerState(of:)` against a real paired device. Its timing
 /// constants are `private static`, so they cannot be shortened either, and firing the retry would
 /// mean a real 2.5-second sleep in the suite. There is no honest test of it short of a refactor;
 /// see the report accompanying this file. What is asserted below is everything up to the latch's

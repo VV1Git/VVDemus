@@ -70,7 +70,7 @@ final class PeerMirroredNowPlaying: MirroredNowPlayingSource {
     /// Subscribed from `init`, which runs when `PlayerService.shared` is first built and hands
     /// this to itself — there is no separate start to forget.
     private init() {
-        // `objectWillChange` rather than `$peerState`, because a snapshot is not the only thing
+        // `objectWillChange` rather than `$ownerState`, because a snapshot is not the only thing
         // that decides what belongs on the lock screen: the peer going unreachable and ownership
         // moving are both changes to *other* published properties, and each of them ends the
         // mirrored session as surely as an empty snapshot would.
@@ -85,7 +85,7 @@ final class PeerMirroredNowPlaying: MirroredNowPlayingSource {
 
     var nowPlaying: MirroredNowPlaying? {
         let peer = PeerPlayback.shared
-        // `isMirroring` first, and not merely `peerState`: when this device owns the session the
+        // `isMirroring` first, and not merely `ownerState`: when this device owns the session the
         // `displayed…` accessors answer with *this* device's own player, and publishing that
         // here would be `PlayerService` republishing itself through a second path.
         guard peer.isMirroring, let track = peer.displayedTrack else { return nil }
@@ -104,7 +104,7 @@ final class PeerMirroredNowPlaying: MirroredNowPlayingSource {
 
     /// One delivery per poll, rather than one per published property.
     ///
-    /// A single successful poll writes `isPeerReachable` and `peerState` — and sometimes
+    /// A single successful poll writes `reachablePeerIds` and `ownerState` — and sometimes
     /// `isMirroring` — and each of those is an `objectWillChange` of its own, so the same second
     /// of news arrives two or three times with identical values. Comparing against the last
     /// delivery also means a peer that is paused and unmoving stops republishing altogether

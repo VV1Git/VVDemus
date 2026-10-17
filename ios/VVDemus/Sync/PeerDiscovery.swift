@@ -75,7 +75,16 @@ final class PeerDiscovery: NSObject, ObservableObject {
 
     // MARK: - Browsing
 
+    /// How many callers currently want the browse running.
+    ///
+    /// Counted because they overlap. With one peer, the pairing screen and one address lookup
+    /// were the only users and rarely met; with several, lookups for two devices routinely run
+    /// at once, and the first to finish used to stop the browse out from under the other — which
+    /// then reported its device missing after a search that had already been called off.
+    private var browseHolds = 0
+
     func startBrowsing() {
+        browseHolds += 1
         guard browser == nil else { return }
         peers = []
         let browser = NetServiceBrowser()
@@ -86,6 +95,8 @@ final class PeerDiscovery: NSObject, ObservableObject {
     }
 
     func stopBrowsing() {
+        browseHolds = max(0, browseHolds - 1)
+        guard browseHolds == 0 else { return }
         browser?.stop()
         browser = nil
     }

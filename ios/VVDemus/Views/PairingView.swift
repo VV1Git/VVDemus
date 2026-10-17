@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Connecting this device to the other one, on a screen of its own.
+/// Linking this device to others, and seeing the group it is part of, on a screen of its own.
 ///
 /// Deliberately not rows in the Settings `List`. It started that way and the controls there were
 /// unreliable in a way that resisted every fix: the button took neither a click nor a tap, the
@@ -14,6 +14,7 @@ struct PairingView: View {
     @ObservedObject private var session = PairingSession.shared
     @ObservedObject private var discovery = PeerDiscovery.shared
     @ObservedObject private var link = PeerLink.shared
+    @ObservedObject private var playback = PeerPlayback.shared
 
     @State private var enteredCode = ""
     @State private var selectedPeerId: String?
@@ -22,15 +23,19 @@ struct PairingView: View {
     /// The code the last automatic attempt used, so the sixth digit fires once rather than on
     /// every keystroke that keeps the length at six.
     @State private var lastAttemptedCode = ""
+    /// The member whose removal is waiting on a confirmation.
+    @State private var pendingRemoval: PairedPeer?
+    @State private var confirmingLeave = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.xl) {
-                if let peer = pairedStore.peer {
-                    paired(peer)
-                } else {
-                    unpaired
+                if pairedStore.hasPeers {
+                    group
+                    Divider()
+                    Text("Link Another Device").font(.title3.weight(.semibold))
                 }
+                linkNewDevice
             }
             .padding(Theme.Metrics.gutter)
             .transportClearance()
@@ -38,7 +43,7 @@ struct PairingView: View {
         }
         .frame(maxWidth: .infinity)
         .background(Theme.screenBackground)
-        .navigationTitle("Connect a Device")
+        .navigationTitle(pairedStore.hasPeers ? "Linked Devices" : "Connect a Device")
         .compactNavigationTitle()
         .task {
             session.beginDisplaying()
@@ -52,23 +57,47 @@ struct PairingView: View {
             session.stopDisplaying()
             discovery.stopBrowsing()
         }
+        .confirmationDialog(
+            "Remove \(pendingRemoval?.name ?? "this device") from the group?",
+            isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingRemoval
+        ) { member in
+            Button("Remove", role: .destructive) {
+                Task { await link.remove(member) }
+            }
+        } message: { member in
+            Text("Every device in the group stops syncing with \(member.name). To bring it back, pair it again with a code.")
+        }
+        .confirmationDialog(
+            "Leave the group?",
+            isPresented: $confirmingLeave,
+            titleVisibility: .visible
+        ) {
+            Button("Leave Group", role: .destructive) {
+                Task { await link.leaveGroup() }
+                status = nil
+                enteredCode = ""
+            }
+        } message: {
+            Text("This device stops syncing with all of them. Your library stays on every device.")
+        }
     }
 
-    // MARK: - Paired
+    // MARK: - The group
 
     @ViewBuilder
-    private func paired(_ peer: PairedPeer) -> some View {
-        if link.justPairedWith != nil {
-            Label("Paired with \(peer.name)", systemImage: "checkmark.circle.fill")
+    private var group: some View {
+        if let name = link.justPairedWith {
+            Label("Paired with \(name)", systemImage: "checkmark.circle.fill")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Theme.accent)
         }
 
-        VStack(alignment: .leading, spacing: Theme.Space.sm) {
-            Text(peer.isDesktop ? "Your computer" : "Your phone")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(peer.name).font(.title3.weight(.medium))
+        VStack(alignment: .leading, spacing: Theme.Space.lg) {
+            ForEach(pairedStore.peers) { member in
+                memberRow(member)
+            }
         }
 
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
@@ -93,25 +122,60 @@ struct PairingView: View {
                 .tint(Theme.accent)
         }
 
-        if let error = link.lastError {
-            Text(error).font(.footnote).foregroundStyle(Theme.warning)
-        }
+        Button("Leave Group", role: .destructive) { confirmingLeave = true }
 
-        Button("Unpair", role: .destructive) {
-            pairedStore.unpair()
-            status = nil
-            enteredCode = ""
-        }
-
-        Text("Your likes, playlists, radios and listening history merge across both devices whenever they're on the same WiFi. Neither one needs the other to work.")
+        Text("Your likes, playlists, radios and listening history merge across every linked device whenever they're on the same WiFi. None of them needs the others to work.")
             .font(.footnote)
             .foregroundStyle(.secondary)
     }
 
-    // MARK: - Not yet paired
+    private func memberRow(_ member: PairedPeer) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.md) {
+            Circle()
+                .fill(playback.isReachable(member.peerId) ? Theme.accent : Color.secondary.opacity(0.5))
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                Label(member.name, systemImage: member.isDesktop ? "desktopcomputer" : "iphone")
+                    .font(.body.weight(.medium))
+                Text(statusLine(for: member))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if let error = link.memberStatus[member.peerId]?.lastError {
+                    Text(error).font(.footnote).foregroundStyle(Theme.warning)
+                }
+            }
+            Spacer(minLength: Theme.Space.md)
+            Button("Remove", role: .destructive) { pendingRemoval = member }
+                .buttonStyle(.borderless)
+        }
+    }
+
+    private func statusLine(for member: PairedPeer) -> String {
+        var parts: [String] = []
+        if let synced = link.memberStatus[member.peerId]?.lastSyncedAt {
+            parts.append("Synced \(Self.relative(synced))")
+        } else {
+            parts.append(playback.isReachable(member.peerId) ? "Connected" : "Not reached yet")
+        }
+        // Said, because a device that turns up here without anyone typing its code is otherwise
+        // a surprise. It is the group working as intended, and this is where to find out why.
+        if let introducer = member.introducedBy {
+            parts.append("added through \(pairedStore.peer(id: introducer)?.name ?? "another device")")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: - Linking a new device
+
+    /// Devices on the network worth offering: those not in the group yet, and members that are
+    /// on the network but not answering — which, for a device Bonjour can see, usually means
+    /// its key no longer matches, and pairing it again by code is the way to mend that.
+    private var candidates: [DiscoveredPeer] {
+        discovery.peers.filter { pairedStore.peer(id: $0.peerId) == nil || !playback.isReachable($0.peerId) }
+    }
 
     @ViewBuilder
-    private var unpaired: some View {
+    private var linkNewDevice: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
             Text("This device's code").font(.caption).foregroundStyle(.secondary)
             Text(session.code)
@@ -124,24 +188,25 @@ struct PairingView: View {
 
         VStack(alignment: .leading, spacing: Theme.Space.sm) {
             Text("Other device").font(.caption).foregroundStyle(.secondary)
-            if discovery.peers.isEmpty {
+            if candidates.isEmpty {
                 HStack(spacing: Theme.Space.sm) {
                     ProgressView().controlSize(.small)
-                    Text("Looking for your other device…").foregroundStyle(.secondary)
+                    Text(pairedStore.hasPeers ? "Looking for a new device…" : "Looking for your other device…")
+                        .foregroundStyle(.secondary)
                 }
             } else {
                 Picker("Other device", selection: $selectedPeerId) {
-                    ForEach(discovery.peers) { peer in
+                    ForEach(candidates) { peer in
                         Text(peer.name).tag(Optional(peer.peerId))
                     }
                 }
                 .labelsHidden()
-                .onChange(of: discovery.peers) { _, peers in
+                .onChange(of: candidates) { _, peers in
                     if selectedPeerId == nil || !peers.contains(where: { $0.peerId == selectedPeerId }) {
                         selectedPeerId = peers.first?.peerId
                     }
                 }
-                .onAppear { selectedPeerId = selectedPeerId ?? discovery.peers.first?.peerId }
+                .onAppear { selectedPeerId = selectedPeerId ?? candidates.first?.peerId }
             }
         }
 
@@ -188,7 +253,9 @@ struct PairingView: View {
             Text(status).font(.footnote).foregroundStyle(Theme.warning)
         }
 
-        Text("Open this screen on your other device and type the six digits it shows. You only do this once — after that they find each other on their own.")
+        Text(pairedStore.hasPeers
+            ? "Open this screen on the new device and type the six digits it shows, or type this device's code over there. Linking with any one device links it with the whole group."
+            : "Open this screen on your other device and type the six digits it shows. You only do this once — after that they find each other on their own. To add a third device later, pair it with either one.")
             .font(.footnote)
             .foregroundStyle(.secondary)
     }
@@ -197,20 +264,20 @@ struct PairingView: View {
     /// saves making someone pick from a list of one.
     private var resolvedPeer: DiscoveredPeer? {
         if let selectedPeerId {
-            return discovery.peers.first { $0.peerId == selectedPeerId }
+            return candidates.first { $0.peerId == selectedPeerId }
         }
-        return discovery.peers.count == 1 ? discovery.peers.first : nil
+        return candidates.count == 1 ? candidates.first : nil
     }
 
     private func pair() async {
         let digits = enteredCode.trimmingCharacters(in: .whitespacesAndNewlines)
-        PairLog.info("UI: pair requested — \(digits.count) digits, \(discovery.peers.count) peer(s) discovered, selected=\(selectedPeerId ?? "none")")
+        PairLog.info("UI: pair requested — \(digits.count) digits, \(candidates.count) candidate(s) discovered, selected=\(selectedPeerId ?? "none")")
         guard digits.count == 6 else {
             status = "Enter the six digits shown on your other device."
             return
         }
         guard let peer = resolvedPeer else {
-            status = discovery.peers.isEmpty
+            status = candidates.isEmpty
                 ? "Haven't found your other device yet. Make sure it's on the same WiFi with the app open."
                 : "Pick which device to pair with."
             return
@@ -221,8 +288,8 @@ struct PairingView: View {
         do {
             try await PeerClient.pair(with: peer, code: digits)
             enteredCode = ""
-            discovery.stopBrowsing()
             link.confirmPaired(with: peer.name)
+            link.groupDidChange()
             await link.syncNow()
         } catch {
             PairLog.error("UI: pairing failed — \(error.localizedDescription)")

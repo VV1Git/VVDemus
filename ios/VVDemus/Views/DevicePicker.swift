@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// "Playing on <device> ▾" — the one control that moves playback between the paired devices.
+/// "Playing on <device> ▾" — the one control that moves playback between the linked devices.
 ///
 /// It replaced a handoff button that only pushed, and only from the device that happened to hold
 /// the session. A picker says the true thing instead: here are the devices, this is the one making
-/// the sound, choose another. Both devices show the same two rows and either can move playback,
-/// which is what makes the pair feel like one player rather than two apps that can talk.
+/// the sound, choose another. Every device in the group shows the same rows and any of them can
+/// move playback anywhere — including between two others — which is what makes the group feel
+/// like one player rather than several apps that can talk.
 ///
 /// Deliberately not a `PlaybackDevice` control. That enum is the browser's `.iphone`/`.computer`
 /// cast switch and means something else entirely; this moves the whole session between two paired
@@ -20,22 +21,26 @@ struct DevicePicker: View {
     var opensUpward = true
 
     var body: some View {
-        if let paired = pairedStore.peer {
+        if pairedStore.hasPeers {
             Menu {
                 deviceRow(
                     name: thisDeviceName,
                     systemImage: PeerIdentity.shared.isDesktop ? "desktopcomputer" : "iphone",
                     isActive: !peer.isMirroring,
-                    action: playHere
+                    isReachable: true,
+                    action: { move(to: SessionOwnership.shared.localPeerId) }
                 )
-                deviceRow(
-                    name: paired.name,
-                    systemImage: paired.isDesktop ? "desktopcomputer" : "iphone",
-                    isActive: peer.isMirroring,
-                    action: playOnPeer
-                )
+                ForEach(pairedStore.peers) { member in
+                    deviceRow(
+                        name: member.name,
+                        systemImage: member.isDesktop ? "desktopcomputer" : "iphone",
+                        isActive: peer.ownerPeer?.peerId == member.peerId,
+                        isReachable: peer.isReachable(member.peerId),
+                        action: { move(to: member.peerId) }
+                    )
+                }
             } label: {
-                label(paired: paired)
+                label
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -49,9 +54,9 @@ struct DevicePicker: View {
             #endif
             // Visible but inert while a move is in flight, rather than vanishing: this is the only
             // way to move playback now, and a control that disappears mid-press reads as broken.
-            .disabled(link.isHandingOff || !peer.isPeerReachable)
-            .help(peer.isPeerReachable ? "Choose where the music plays" : "\(paired.name) isn't reachable")
-            .accessibilityLabel("Playing on \(activeDeviceName(paired: paired))")
+            .disabled(link.isHandingOff || !peer.anyPeerReachable)
+            .help(peer.anyPeerReachable ? "Choose where the music plays" : "No other device is reachable")
+            .accessibilityLabel("Playing on \(activeDeviceName)")
         }
     }
 
@@ -61,8 +66,8 @@ struct DevicePicker: View {
         PeerIdentity.shared.isDesktop ? "This Computer" : "This iPhone"
     }
 
-    private func activeDeviceName(paired: PairedPeer) -> String {
-        peer.isMirroring ? paired.name : thisDeviceName
+    private var activeDeviceName: String {
+        peer.ownerPeer?.name ?? thisDeviceName
     }
 
     @ViewBuilder
@@ -70,6 +75,7 @@ struct DevicePicker: View {
         name: String,
         systemImage: String,
         isActive: Bool,
+        isReachable: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -77,15 +83,16 @@ struct DevicePicker: View {
             // this menu exists to state, and colour alone does not state it to everyone.
             Label(name, systemImage: isActive ? "checkmark" : systemImage)
         }
-        .disabled(isActive)
+        // A member that is asleep or elsewhere stays listed, so the group reads the same on every
+        // device, but cannot be chosen — the move would only fail a few seconds later.
+        .disabled(isActive || !isReachable)
     }
 
-    private func label(paired: PairedPeer) -> some View {
+    private var label: some View {
         HStack(spacing: Theme.Space.xs) {
-            Image(systemName: peer.isMirroring
-                ? (paired.isDesktop ? "desktopcomputer" : "iphone")
-                : "hifispeaker.fill")
-            Text(activeDeviceName(paired: paired))
+            Image(systemName: peer.ownerPeer.map { $0.isDesktop ? "desktopcomputer" : "iphone" }
+                ?? "hifispeaker.fill")
+            Text(activeDeviceName)
                 .font(.miniSubtitle)
                 .lineLimit(1)
                 // Truncated rather than allowed to set the row's width: device names are whatever
@@ -104,18 +111,14 @@ struct DevicePicker: View {
 
     // MARK: - Moving playback
 
-    /// Pull: this device cannot take a session, so it asks the one that has it to push.
+    /// Sends the session to `peerId`, wherever it is now.
     ///
-    /// The push is already an acked handshake that releases the sender only once this device has
-    /// the queue (`PeerLink.handOffToPeer`), so routing "play here" through it means there is one
-    /// path to keep correct rather than two opposite ones.
-    private func playHere() {
-        guard peer.isMirroring else { return }
-        Task { await PeerPlayback.shared.requestSessionFromPeer() }
-    }
-
-    private func playOnPeer() {
-        guard !peer.isMirroring else { return }
-        Task { await link.handOffToPeer() }
+    /// Only the owner can push it, so anything else asks the owner to — for this device or for a
+    /// third. The push is already an acked handshake that releases the sender only once the
+    /// receiver has the queue (`PeerLink.handOff`), so routing every move through it means there
+    /// is one path to keep correct rather than several opposite ones. See
+    /// `PeerPlayback.moveSession`.
+    private func move(to peerId: String) {
+        Task { await PeerPlayback.shared.moveSession(to: peerId) }
     }
 }

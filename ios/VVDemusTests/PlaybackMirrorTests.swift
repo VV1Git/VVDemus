@@ -160,4 +160,85 @@ final class PlaybackMirrorTests: XCTestCase {
         ownership.claimFromHandoff(supersedingSenderClaim: taken)
         XCTAssertFalse(now().isMirroring, "taking the session back must put the transport on this device again")
     }
+
+    // MARK: - More than two devices
+
+    private let ipad = "peer-ipad"
+
+    private func group(owner: String, reachable: Set<String>, ownerHasSession: Bool = true) -> PlaybackMirror {
+        PlaybackMirror(
+            pairedPeerIds: [remote, ipad],
+            reachablePeerIds: reachable,
+            ownerPeerId: owner,
+            localPeerId: local,
+            ownerHasSession: ownerHasSession
+        )
+    }
+
+    /// Any member can own the session, and every other one mirrors it — not just "the" peer.
+    func testMirrorsWhicheverMemberOwnsTheSession() {
+        XCTAssertTrue(group(owner: remote, reachable: [remote, ipad]).isMirroring)
+        XCTAssertTrue(group(owner: ipad, reachable: [remote, ipad]).isMirroring)
+        XCTAssertFalse(group(owner: local, reachable: [remote, ipad]).isMirroring)
+    }
+
+    /// Reachability is the owner's, not anyone's. The iPad answering says nothing about whether
+    /// presses would reach the phone that is actually playing.
+    func testAnotherMemberAnsweringDoesNotMakeAnUnreachableOwnerDrivable() {
+        XCTAssertFalse(group(owner: remote, reachable: [ipad]).isMirroring)
+    }
+
+    /// A record naming a device that has left the group protects nobody, however many members
+    /// are reachable.
+    func testAnOwnerOutsideTheGroupIsNotMirrored() {
+        XCTAssertFalse(group(owner: "peer-removed", reachable: [remote, ipad]).isMirroring)
+    }
+
+    // MARK: - Meeting a member with nothing playing
+
+    /// Holding a session and meeting an empty mirror used to mean "claim", because the mirror was
+    /// the only other device there was. With three, the owner may be playing in the next room.
+    func testAnEmptyMemberIsNoReasonToTakeTheSessionFromAPlayingOwner() {
+        let meeting = EmptyPeerMeeting(ownerPeerId: ipad, localPeerId: local, ownerHasSession: true, ownerIsPaired: true)
+        XCTAssertFalse(meeting.claims)
+    }
+
+    /// Not heard from is not the same as having nothing — and unreachable from here is not
+    /// unreachable from everyone. Either way its own meeting decides.
+    func testAnOwnerNotAnsweringIsLeftToItsOwnMeeting() {
+        let meeting = EmptyPeerMeeting(ownerPeerId: ipad, localPeerId: local, ownerHasSession: nil, ownerIsPaired: true)
+        XCTAssertFalse(meeting.claims)
+    }
+
+    func testAnOwnerWithNothingToDefendIsOverruled() {
+        let meeting = EmptyPeerMeeting(ownerPeerId: ipad, localPeerId: local, ownerHasSession: false, ownerIsPaired: true)
+        XCTAssertTrue(meeting.claims)
+    }
+
+    /// The two-device behaviour, kept: this device already owns it, so it renews its claim over
+    /// whatever stale record the peer is holding.
+    func testAnOwnerRenewsItsClaimOnMeetingAnEmptyPeer() {
+        let meeting = EmptyPeerMeeting(ownerPeerId: local, localPeerId: local, ownerHasSession: nil, ownerIsPaired: false)
+        XCTAssertTrue(meeting.claims)
+    }
+
+    func testARecordNamingADeviceOutsideTheGroupIsOverruled() {
+        let meeting = EmptyPeerMeeting(ownerPeerId: "peer-removed", localPeerId: local, ownerHasSession: nil, ownerIsPaired: false)
+        XCTAssertTrue(meeting.claims)
+    }
+
+    /// The review's case. This device came back with a paused session and a stale record naming
+    /// itself; an empty member reported that the Mac, playing, holds a higher claim. Renewing over
+    /// that from the empty member's word put this device above the Mac, which then adopted the
+    /// higher claim and stopped mid-song for a session that was only paused.
+    func testAHigherClaimHeardSecondHandIsNotRenewedOver() {
+        let meeting = EmptyPeerMeeting(
+            ownerPeerId: local,
+            localPeerId: local,
+            ownerHasSession: nil,
+            ownerIsPaired: false,
+            higherClaimSeen: true
+        )
+        XCTAssertFalse(meeting.claims)
+    }
 }
