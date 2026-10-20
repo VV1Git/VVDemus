@@ -216,10 +216,12 @@ final class StayAwake: ObservableObject {
 
     // MARK: - Permission
 
+    /// Looks for this app's own rule rather than asking `sudo -l` whether the command is allowed.
+    /// `sudo -l` answers yes for any administrator — `(ALL) ALL` matches every command — and when
+    /// any NOPASSWD rule exists it answers without a password, so it reported permission that a
+    /// real `sudo -n` then refused. The file is only ever written after `visudo` accepts it.
     private func refreshAuthorization() async {
-        lidAuthorized = await Task.detached {
-            Self.run("/usr/bin/sudo", ["-n", "-l", StayAwakePolicy.pmsetPath, "-a", "disablesleep", "1"]).status == 0
-        }.value
+        lidAuthorized = FileManager.default.fileExists(atPath: StayAwakePolicy.sudoersPath)
     }
 
     /// Writes the sudoers rule through the administrator prompt. Returns why it did not, or `nil`.

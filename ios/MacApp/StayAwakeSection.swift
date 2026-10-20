@@ -23,6 +23,14 @@ struct StayAwakeSection: View {
                         .foregroundStyle(stayAwake.lidError != nil ? Theme.warning : .secondary)
                 }
             }
+
+            // Switched on, but the permission is not there — refused, never asked, or removed by
+            // hand. Asking again should not take turning the setting off and back on.
+            if lidClosed, !stayAwake.lidAuthorized, !stayAwake.isAsking {
+                Button("Give Permission…") {
+                    Task { await stayAwake.lidClosedChanged(true) }
+                }
+            }
         } footer: {
             Text("Stay awake while playing stops your Mac from going to sleep in the middle of a song — including in clamshell mode with an external display. Keep playing with the lid closed goes further and keeps music going with the lid shut and no display attached; turning it on asks for your administrator password once. Either one lets the Mac sleep again two minutes after playback stops. A closed laptop playing in a bag will still get warm.")
                 .fixedSize(horizontal: false, vertical: true)
@@ -32,7 +40,7 @@ struct StayAwakeSection: View {
     private var statusText: String {
         if stayAwake.isAsking { return "Waiting for permission…" }
         if let error = stayAwake.lidError { return error }
-        if !stayAwake.lidAuthorized { return "Permission missing — switch this off and on again" }
+        if !stayAwake.lidAuthorized { return "Needs permission" }
         if stayAwake.lidSleepDisabled { return "On — you can close the lid" }
         return "Ready — takes effect while music plays"
     }
