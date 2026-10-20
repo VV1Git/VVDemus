@@ -124,6 +124,7 @@ struct SettingsView: View {
         DataTransferSection()
 
         #if os(macOS)
+        StayAwakeSection()
         DiscordPresenceSection()
         #endif
 

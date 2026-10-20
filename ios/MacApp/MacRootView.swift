@@ -179,6 +179,8 @@ struct MacRootView: View {
             PeerPlayback.shared.start()
             // Does nothing until switched on in Settings.
             DiscordPresence.shared.start()
+            // Also restores lid sleep if the last run quit without putting it back.
+            StayAwake.shared.start()
             await PeerLink.shared.refreshResumeOffer()
         }
     }
