@@ -26,8 +26,13 @@ final class BackgroundKeepAlive {
     /// from by consulting this rather than by assuming the clip is still running.
     private var shouldBeRunning = false
     private var observersRegistered = false
+    private let session: AudioSessionControlling
 
-    private init() {}
+    /// - Parameter session: injected so a test can see how the clip claims the route; there is no
+    ///   other way to observe it short of a pair of AirPods and a second device.
+    init(session: AudioSessionControlling = SystemAudioSession.shared) {
+        self.session = session
+    }
 
     func start() {
         shouldBeRunning = true
@@ -55,10 +60,19 @@ final class BackgroundKeepAlive {
               let url = Bundle.main.url(forResource: "silence", withExtension: "m4a") else { return }
         // The session can have been deactivated while the app sat paused in the
         // background; without reactivating it here `play()` silently does nothing and the
-        // app is suspended anyway. Reasserted through PlayerService so the mixing option
-        // used while casting is preserved — otherwise this clip would grab the output
-        // route back and pull AirPods away from the computer.
-        PlayerService.configureAudioSession(casting: PlayerService.shared.activeDevice == .computer)
+        // app is suspended anyway.
+        //
+        // Always mixing. `BackgroundAudioPolicy` only runs this clip while the sound is coming
+        // from somewhere else — a browser this phone casts to, or the paired Mac this phone
+        // mirrors — and a session that takes the route is exactly the cue iOS uses to move
+        // AirPods to this phone. It used to mix only for the browser (`activeDevice ==
+        // .computer`). Mirroring the Mac took the route, so locking the phone while the Mac
+        // played pulled the AirPods across, and the Mac paused when it lost them.
+        //
+        // The cost is the lock screen: a mixing session cannot hold the Now Playing slot, so a
+        // locked mirror shows no controls for the Mac. With the AirPods staying on the Mac, their
+        // presses reach the Mac directly, which is what those controls were standing in for.
+        session.activate(casting: true)
         guard let audioPlayer = try? AVAudioPlayer(contentsOf: url) else { return }
         audioPlayer.numberOfLoops = -1
         audioPlayer.volume = 0.01

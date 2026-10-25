@@ -97,4 +97,51 @@ final class BackgroundAudioPolicyTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Mirroring the Mac
+
+    /// Locked phone, Mac playing: the phone keeps itself alive to stay in the group.
+    func testKeepAliveRunsWhileMirroringAPlayingMac() {
+        let decision = BackgroundAudioPolicy.decide(.init(
+            isBackgrounded: true, isPlaying: true, activeDevice: .iphone,
+            isConnectServerRunning: true, isMirroringPeer: true
+        ))
+        XCTAssertTrue(decision.runKeepAlive)
+    }
+
+    /// `BackgroundKeepAlive` always mixes on the strength of this: the clip only ever runs while
+    /// the sound is coming from somewhere else, so there is never a reason for it to take the route.
+    func testKeepAliveOnlyEverRunsWhileTheSoundIsElsewhere() {
+        for backgrounded in [true, false] {
+            for playing in [true, false] {
+                for device in [PlaybackDevice.iphone, .computer] {
+                    for server in [true, false] {
+                        for mirroring in [true, false] {
+                            let decision = BackgroundAudioPolicy.decide(.init(
+                                isBackgrounded: backgrounded, isPlaying: playing, activeDevice: device,
+                                isConnectServerRunning: server, isMirroringPeer: mirroring
+                            ))
+                            if decision.runKeepAlive {
+                                XCTAssertTrue(device == .computer || mirroring,
+                                              "b=\(backgrounded) p=\(playing) d=\(device) s=\(server) m=\(mirroring)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The reported bug: Mac playing to AirPods, phone locked, AirPods jump to the phone and the Mac
+    /// pauses. The clip took the route whenever it was not casting to a browser — including while
+    /// mirroring the Mac — and a route-taking session is what iOS reads as "you have moved back to
+    /// the phone".
+    @MainActor
+    func testTheKeepAliveClipNeverTakesTheRoute() {
+        let session = FakeAudioSession()
+        let keepAlive = BackgroundKeepAlive(session: session)
+        keepAlive.start()
+        defer { keepAlive.stop() }
+        XCTAssertEqual(session.activations, [.init(casting: true)])
+    }
 }
