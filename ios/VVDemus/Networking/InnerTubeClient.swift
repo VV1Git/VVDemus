@@ -231,7 +231,38 @@ enum InnerTubeClient {
             origin: "https://music.youtube.com",
             body: body
         )
-        return try parseAlbumPage(json, browseId: browseId)
+        return await withAlbumAudio(try parseAlbumPage(json, browseId: browseId))
+    }
+
+    /// Video rows left on the page after the album-wide search that get a search of their own.
+    /// Enough for an album's stragglers ("Intro", the interludes the album search ranks below
+    /// other records); a page that is all videos past this keeps the rest as videos rather than
+    /// spend twenty requests on one tap.
+    static let maximumTrackSearchesPerAlbum = 6
+
+    /// The page with its music-video rows swapped for the album's audio — see `AlbumAudio`.
+    ///
+    /// One search for the record first: "Honestly, Nevermind Drake" returns eleven of its
+    /// fourteen songs as `- Topic` uploads in a single request. Whatever that leaves gets a
+    /// search by title. Every search is allowed to fail, and failing leaves the row as the
+    /// page gave it: a video plays, and a page that does not open does not.
+    private static func withAlbumAudio(_ page: AlbumPage) async -> AlbumPage {
+        guard !page.videoCuts.isEmpty else { return page }
+        let albumQuery = "\(page.album.title) \(page.album.artist)"
+        let fromAlbum = (try? await search(query: albumQuery, limit: 25)) ?? []
+        var tracks = AlbumAudio.swappingInAudio(page.tracks, videoCuts: page.videoCuts, candidates: fromAlbum)
+
+        let stragglers = tracks.filter { page.videoCuts.contains($0.videoId) }.prefix(maximumTrackSearchesPerAlbum)
+        if !stragglers.isEmpty {
+            let fromTitles = await withTaskGroup(of: [Track].self) { group in
+                for track in stragglers {
+                    group.addTask { (try? await search(query: "\(track.title) \(track.artist)", limit: 5)) ?? [] }
+                }
+                return await group.reduce(into: []) { $0 += $1 }
+            }
+            tracks = AlbumAudio.swappingInAudio(tracks, videoCuts: page.videoCuts, candidates: fromTitles)
+        }
+        return AlbumPage(album: page.album, tracks: tracks, videoCuts: page.videoCuts)
     }
 
     /// What an album page came back with: the release as the page describes it, and its
@@ -241,6 +272,9 @@ enum InnerTubeClient {
     struct AlbumPage {
         let album: Album
         let tracks: [Track]
+        /// The video ids of rows the page typed as something other than audio — a music video
+        /// (`OMV`) or an upload (`UGC`) standing in for the album cut.
+        var videoCuts: Set<String> = []
     }
 
     static func parseAlbumPage(_ json: JSON, browseId: String) throws -> AlbumPage {
@@ -267,14 +301,21 @@ enum InnerTubeClient {
             .first { $0["musicShelfRenderer"]["contents"].array?.isEmpty == false }?["musicShelfRenderer"]["contents"].array ?? []
 
         var tracks: [Track] = []
+        var videoCuts: Set<String> = []
         var playlistId: String?
         for item in items {
             let row = item["musicResponsiveListItemRenderer"]
+            let watch = row["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]
             if playlistId == nil {
-                playlistId = row["overlay"]["musicItemThumbnailOverlayRenderer"]["content"]["musicPlayButtonRenderer"]["playNavigationEndpoint"]["watchEndpoint"]["playlistId"].string
+                playlistId = watch["playlistId"].string
             }
             guard let track = parseAlbumTrack(row, album: title, artist: artist, artwork: artwork) else { continue }
             tracks.append(track)
+            // Missing is audio, as it is for a radio entry: an absence of evidence.
+            if let type = watch["watchEndpointMusicSupportedConfigs"]["watchEndpointMusicConfig"]["musicVideoType"].string,
+               type != "MUSIC_VIDEO_TYPE_ATV" {
+                videoCuts.insert(track.videoId)
+            }
         }
 
         guard !tracks.isEmpty else { throw APIError.server("This album came back empty.") }
@@ -289,7 +330,8 @@ enum InnerTubeClient {
                 thumbnailUrl: artwork,
                 audioPlaylistId: playlistId
             ),
-            tracks: tracks
+            tracks: tracks,
+            videoCuts: videoCuts
         )
     }
 

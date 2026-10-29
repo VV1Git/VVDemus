@@ -13,7 +13,9 @@ import Foundation
 final class AlbumCacheStore: ObservableObject {
     static let shared = AlbumCacheStore()
 
-    private let key = "album_track_cache_v1"
+    /// v2: v1 pages were stored before `InnerTubeClient.album` swapped music-video rows for the
+    /// album's audio, so a v1 copy of "Honestly, Nevermind" would go on serving the videos.
+    private let key = "album_track_cache_v2"
     private let limit = 20
     private var cache: [String: [Track]] = [:]
     private var order: [String] = []
@@ -72,7 +74,10 @@ final class AlbumCacheStore: ObservableObject {
         return changed
     }
 
-    static let recordPrefix = "album_tracks:"
+    /// Versioned with `key`, for the same reason: a device still on v1 would sync its video
+    /// rows straight back in. An old-prefixed record now falls through to `RadioCacheStore`,
+    /// whose own prefix check turns it away.
+    static let recordPrefix = "album_tracks_v2:"
 
     private func trimToLimit() {
         while order.count > limit {
@@ -89,6 +94,7 @@ final class AlbumCacheStore: ObservableObject {
     }
 
     private func load() {
+        UserDefaults.standard.removeObject(forKey: "album_track_cache_v1")
         guard let snapshot = DefaultsSnapshot.load(Snapshot.self, forKey: key) else { return }
         cache = snapshot.cache
         order = snapshot.order
