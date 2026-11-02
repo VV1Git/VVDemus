@@ -61,27 +61,15 @@ struct StatsView: View {
     }
 
     private var topArtists: [ArtistStat] {
-        var counts: [String: Int] = [:]
-        for event in eventsInRange {
-            counts[event.track.artist, default: 0] += 1
-        }
-        return counts.map { ArtistStat(name: $0.key, count: $0.value) }
-            .sorted { $0.count > $1.count }
-            .prefix(10)
-            .map { $0 }
+        PlayRanking.top(eventsInRange, by: \.track.artist, limit: 10)
+            .map { ArtistStat(name: $0.key, count: $0.count) }
     }
 
     private var topSongs: [SongStat] {
-        var counts: [String: Int] = [:]
         var tracksByID: [String: Track] = [:]
-        for event in eventsInRange {
-            counts[event.track.id, default: 0] += 1
-            tracksByID[event.track.id] = event.track
-        }
-        return counts.compactMap { id, count in tracksByID[id].map { SongStat(track: $0, count: count) } }
-            .sorted { $0.count > $1.count }
-            .prefix(10)
-            .map { $0 }
+        for event in eventsInRange { tracksByID[event.track.id] = event.track }
+        return PlayRanking.top(eventsInRange, by: \.track.id, limit: 10)
+            .compactMap { entry in tracksByID[entry.key].map { SongStat(track: $0, count: entry.count) } }
     }
 
     private var totalListeningSeconds: Int {

@@ -30,3 +30,39 @@ struct PlayEvent: Codable {
         origin = try container.decodeIfPresent(String.self, forKey: .origin)
     }
 }
+
+/// The most-played songs or artists among some plays, in an order that holds still.
+///
+/// Counting goes through a `Dictionary`, whose order is different every time one is built, and
+/// a sort on the count alone leaves ties in whatever order they arrived — so tied entries
+/// swapped places on every redraw, and at a tie for tenth, which of them made the list did too.
+/// Ties are broken by the more recently played, then by key, so the same plays always rank
+/// the same way.
+enum PlayRanking {
+    struct Entry<Key: Hashable> {
+        let key: Key
+        let count: Int
+        let lastPlayed: Date
+    }
+
+    static func top<Key: Hashable & Comparable>(
+        _ events: [PlayEvent], by key: (PlayEvent) -> Key, limit: Int
+    ) -> [Entry<Key>] {
+        var counts: [Key: Int] = [:]
+        var last: [Key: Date] = [:]
+        for event in events {
+            let k = key(event)
+            counts[k, default: 0] += 1
+            last[k] = max(last[k] ?? .distantPast, event.playedAt)
+        }
+        return counts
+            .map { Entry(key: $0.key, count: $0.value, lastPlayed: last[$0.key] ?? .distantPast) }
+            .sorted { a, b in
+                if a.count != b.count { return a.count > b.count }
+                if a.lastPlayed != b.lastPlayed { return a.lastPlayed > b.lastPlayed }
+                return a.key < b.key
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+}
