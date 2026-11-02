@@ -270,3 +270,19 @@ private struct FakeMixSource: RadioSource {
         return RadioPage(tracks: Fixtures.tracks(ids), continuation: nil)
     }
 }
+
+/// Mix radios on Home, ranked among the other shortcuts by when they were last used.
+final class MixRadioHomeTests: XCTestCase {
+    func testAMixIsAHomeShortcutRankedByItsLastUse() {
+        let old = Date(timeIntervalSince1970: 100)
+        let recent = Date(timeIntervalSince1970: 500)
+        let mix = MixRadio(id: UUID(), name: "Gym", seeds: [], removed: [], createdAt: old, deletedAt: nil,
+                           stamp: EditStamp(editedAt: recent, editedBy: "me"))
+        let playlist = Playlist(id: UUID(), name: "P", tracks: [], createdAt: Date(timeIntervalSince1970: 300))
+        let ranked = HomeShortcuts.ranked(
+            hasLikedSongs: false, radios: [], playlists: [playlist], albums: [], mixes: [mix],
+            albumOpenedAt: { _ in nil }, openedAt: { _ in nil }
+        )
+        XCTAssertEqual(ranked.map(\.id), ["mix-\(mix.id)", "playlist-\(playlist.id)"])
+    }
+}

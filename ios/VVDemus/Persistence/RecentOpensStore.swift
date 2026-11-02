@@ -36,6 +36,7 @@ final class RecentOpensStore: ObservableObject {
     nonisolated static func radioKey(_ videoId: String) -> String { "radio:\(videoId)" }
     nonisolated static func playlistKey(_ id: UUID) -> String { "playlist:\(id.uuidString)" }
     nonisolated static func albumKey(_ browseId: String) -> String { "album:\(browseId)" }
+    nonisolated static func mixKey(_ id: UUID) -> String { "mix:\(id.uuidString)" }
 
     func openedAt(_ key: String) -> Date? { opens[key] }
 

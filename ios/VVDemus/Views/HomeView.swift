@@ -8,6 +8,7 @@ struct HomeView: View {
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var albumHistory = AlbumHistoryStore.shared
+    @ObservedObject private var mixes = MixRadioStore.shared
     @ObservedObject private var recentOpens = RecentOpensStore.shared
     @ObservedObject private var daylist = DaylistStore.shared
     @ObservedObject private var network = NetworkMonitor.shared
@@ -55,6 +56,23 @@ struct HomeView: View {
                                 .buttonStyle(.pressableCard)
                                 .cardHover()
                                 .contextMenu { removeRadioButton(station) }
+                            }
+                        }
+                    }
+
+                    if !mixes.mixes.isEmpty {
+                        HomeShelf(title: "Your Mix Radios") {
+                            ForEach(mixes.mixes) { mix in
+                                NavigationLink(value: LibraryDestination.mixRadio(mix.id)) {
+                                    JumpBackInCard(
+                                        title: mix.name,
+                                        subtitle: "Mix Radio",
+                                        imageURL: mix.seeds.first?.thumbnailUrl
+                                    )
+                                }
+                                .buttonStyle(.pressableCard)
+                                .cardHover()
+                                .contextMenu { deleteMixButton(mix) }
                             }
                         }
                     }
@@ -162,6 +180,7 @@ struct HomeView: View {
             radios: radioHistory.stations,
             playlists: playlists.playlists,
             albums: albumHistory.albums,
+            mixes: mixes.mixes,
             albumOpenedAt: { albumHistory.lastOpenedAt($0) },
             openedAt: { recentOpens.openedAt($0) }
         )
@@ -233,6 +252,22 @@ struct HomeView: View {
             .buttonStyle(.pressableCard)
             .cardHover()
             .contextMenu { removeAlbumButton(album) }
+        case .mix(let mix):
+            NavigationLink(value: LibraryDestination.mixRadio(mix.id)) {
+                ShortcutRow(title: mix.name, imageURL: mix.seeds.first?.thumbnailUrl, systemImageFallback: "dot.radiowaves.left.and.right")
+            }
+            .buttonStyle(.pressableCard)
+            .cardHover()
+            .contextMenu { deleteMixButton(mix) }
+        }
+    }
+
+    /// On the grid tile and the shelf card alike, as for a radio — the same mix is in both.
+    private func deleteMixButton(_ mix: MixRadio) -> some View {
+        Button(role: .destructive) {
+            withAnimation { mixes.delete(mix.id) }
+        } label: {
+            Label("Delete Mix", systemImage: "trash")
         }
     }
 
@@ -264,7 +299,7 @@ struct HomeView: View {
     /// "Nothing Here Yet" placeholder to someone with a full library.
     private var hasNothingToShow: Bool {
         sections.isEmpty && rankedShortcuts.isEmpty
-            && radioHistory.stations.isEmpty && playlists.playlists.isEmpty
+            && radioHistory.stations.isEmpty && playlists.playlists.isEmpty && mixes.mixes.isEmpty
     }
 
     /// Uses the same time-of-day buckets as the daylist, so the header and the mix card

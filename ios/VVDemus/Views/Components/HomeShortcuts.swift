@@ -12,6 +12,7 @@ struct HomeShortcut: Identifiable {
         case radio(RadioStation)
         case playlist(Playlist)
         case album(Album)
+        case mix(MixRadio)
     }
 
     let kind: Kind
@@ -23,6 +24,7 @@ struct HomeShortcut: Identifiable {
         case .radio(let station): return "radio-\(station.id)"
         case .playlist(let playlist): return "playlist-\(playlist.id)"
         case .album(let album): return "album-\(album.browseId)"
+        case .mix(let mix): return "mix-\(mix.id)"
         }
     }
 }
@@ -53,6 +55,7 @@ enum HomeShortcuts {
         radios: [RadioStation],
         playlists: [Playlist],
         albums: [Album],
+        mixes: [MixRadio] = [],
         albumOpenedAt: (String) -> Date?,
         openedAt: (String) -> Date?
     ) -> [HomeShortcut] {
@@ -83,6 +86,15 @@ enum HomeShortcuts {
                     albumOpenedAt(album.browseId) ?? .distantPast,
                     RecentOpensStore.albumKey(album.browseId)
                 )
+            )
+        })
+
+        items.append(contentsOf: mixes.map { mix in
+            HomeShortcut(
+                kind: .mix(mix),
+                // Its last edit, on any device, counts as much as opening it: picking a song
+                // into a mix is using it.
+                recency: newest(max(mix.createdAt, mix.stamp.editedAt), RecentOpensStore.mixKey(mix.id))
             )
         })
 

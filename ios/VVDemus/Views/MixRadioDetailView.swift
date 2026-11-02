@@ -136,6 +136,8 @@ struct MixRadioDetailView: View {
         // Keyed on what the station is built from, so every edit — here, from a song's menu
         // anywhere, or arriving from another device — brings the station up to date.
         .task(id: mix?.signature) { await ensureStation() }
+        // So Home's shortcuts sort it by when you last looked, as they do every other kind.
+        .task { RecentOpensStore.shared.markOpened(RecentOpensStore.mixKey(mixId)) }
     }
 
     private var trackList: some View {
