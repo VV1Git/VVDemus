@@ -6,7 +6,7 @@ struct LibraryView: View {
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @ObservedObject private var albumHistory = AlbumHistoryStore.shared
     @ObservedObject private var daylist = DaylistStore.shared
-    @ObservedObject private var mixSeeds = MixRadioSeedsStore.shared
+    @ObservedObject private var mixes = MixRadioStore.shared
     @State private var showNewPlaylist = false
     @State private var showSpotifyImport = false
     @State private var newPlaylistName = ""
@@ -51,33 +51,31 @@ struct LibraryView: View {
 
                 // Here, and not only behind "Go to Mix Radio" in a track menu, so the picks can
                 // be found — and cleared — without first hunting down a song that was one of them.
-                if !mixSeeds.seeds.isEmpty {
-                    Section("Mix Radio") {
-                        NavigationLink(value: LibraryDestination.mixRadio(mixSeeds.radio)) {
-                            LibraryRow(title: mixSeeds.radio.title,
-                                       subtitle: "Mix Radio · ^[\(mixSeeds.seeds.count) song](inflect: true) picked") {
-                                if let art = mixSeeds.seeds.first?.thumbnailUrl {
-                                    RemoteImage(url: art, size: Theme.ArtSize.row)
-                                } else {
-                                    LibraryRowIcon(systemImage: "dot.radiowaves.left.and.right")
+                if !mixes.mixes.isEmpty {
+                    Section("Mix Radios") {
+                        ForEach(mixes.mixes) { mix in
+                            NavigationLink(value: LibraryDestination.mixRadio(mix.id)) {
+                                LibraryRow(title: mix.name,
+                                           subtitle: "Mix Radio · ^[\(mix.seeds.count) song](inflect: true) picked") {
+                                    if let art = mix.seeds.first?.thumbnailUrl {
+                                        RemoteImage(url: art, size: Theme.ArtSize.row)
+                                    } else {
+                                        LibraryRowIcon(systemImage: "dot.radiowaves.left.and.right")
+                                    }
+                                }
+                            }
+                            .trackRowMetrics()
+                            // Mouse-reachable, for the reason the playlist section below gives.
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    withAnimation { mixes.delete(mix.id) }
+                                } label: {
+                                    Label("Delete Mix", systemImage: "trash")
                                 }
                             }
                         }
-                        .trackRowMetrics()
-                        .swipeActions {
-                            Button(role: .destructive) {
-                                withAnimation { mixSeeds.clear() }
-                            } label: {
-                                Label("Clear", systemImage: "xmark.circle")
-                            }
-                        }
-                        // Mouse-reachable, for the reason the playlist section below gives.
-                        .contextMenu {
-                            Button(role: .destructive) {
-                                withAnimation { mixSeeds.clear() }
-                            } label: {
-                                Label("Clear Mix Radio", systemImage: "xmark.circle")
-                            }
+                        .onDelete { offsets in
+                            offsets.map { mixes.mixes[$0].id }.forEach(mixes.delete)
                         }
                     }
                 }
@@ -230,7 +228,6 @@ struct LibraryView: View {
         // On the stack rather than on the list inside it, so the playlists, albums and radios
         // this screen pushes get it as well — see the note in `MacRootView.detail`.
         .environment(\.openRadio) { track in path.append(LibraryDestination.radio(track)) }
-        .environment(\.openMixRadio) { radio in path.append(LibraryDestination.mixRadio(radio)) }
         .environment(\.openLyrics) { track in path.append(LibraryDestination.lyrics(track)) }
     }
 }

@@ -14,13 +14,16 @@ final class MixRadioTests: XCTestCase {
     private func ids(_ tracks: [Track]) -> [String] { tracks.map(\.videoId) }
 
     private func blend(
-        _ seeds: [String], _ radios: [[String]], limit: Int = 50, avoiding: Set<String> = []
+        _ seeds: [String], _ radios: [[String]], limit: Int = 50, avoiding: Set<String> = [],
+        removed: [String] = [], removedRadios: [[String]] = []
     ) -> [String] {
         ids(MixRadioBlend.blend(
             seeds: Fixtures.tracks(seeds),
             radios: radios.map(Fixtures.tracks),
             limit: limit,
             avoiding: avoiding,
+            removed: Fixtures.tracks(removed),
+            removedRadios: removedRadios.map(Fixtures.tracks),
             isSameSong: byId
         ))
     }
@@ -118,7 +121,7 @@ final class MixRadioTests: XCTestCase {
     func testOneSeedsRadioFailingStillBuildsFromTheRest() async throws {
         let source = FakeMixSource(radios: ["s1": ["s1", "a1"]])
         let result = try await MixRadioService.build(seeds: Fixtures.tracks(["s1", "s2"]), source: source, isSameSong: byId)
-        XCTAssertEqual(ids(result), ["s1", "s2", "a1"])
+        XCTAssertEqual(ids(result.tracks), ["s1", "s2", "a1"])
     }
 
     func testEveryRadioFailingIsAnError() async {
@@ -135,23 +138,113 @@ final class MixRadioTests: XCTestCase {
             continuations: ["s1": ["a2", "a3"]]
         )
         let first = try await MixRadioService.build(seeds: Fixtures.tracks(["s1"]), source: source, isSameSong: byId)
-        XCTAssertEqual(ids(first), ["s1", "a1"], "a first build does not spend the extra request")
+        XCTAssertEqual(ids(first.tracks), ["s1", "a1"], "a first build does not spend the extra request")
 
         let refreshed = try await MixRadioService.build(
             seeds: Fixtures.tracks(["s1"]), avoiding: ["a1"], source: source, isSameSong: byId
         )
-        XCTAssertEqual(ids(refreshed), ["s1", "a2", "a3", "a1"])
+        XCTAssertEqual(ids(refreshed.tracks), ["s1", "a2", "a3", "a1"])
+    }
+
+    // MARK: - Steering away
+
+    func testARemovedSongIsNeverInTheStation() {
+        let result = blend(["s1"], [["s1", "a1", "a2", "a3"]], removed: ["a2"])
+        XCTAssertEqual(result, ["s1", "a1", "a3"])
+    }
+
+    /// The songs a removed song's own radio leads with are the ones most like it.
+    func testRemovingASongTakesTheSongsLikeItWithIt() {
+        let result = blend(
+            ["s1"], [["s1", "a1", "x1", "x2", "a2"]],
+            removed: ["x0"], removedRadios: [["x0", "x1", "x2"]]
+        )
+        XCTAssertEqual(result, ["s1", "a1", "a2"])
+    }
+
+    /// A song every pick agrees on outweighs one removal that also lists it.
+    func testWhatThePicksAgreeOnSurvivesARemoval() {
+        let result = blend(
+            ["s1", "s2"], [["s1", "both", "a1"], ["s2", "both", "b1"]],
+            removed: ["x0"], removedRadios: [["x0", "both"]]
+        )
+        XCTAssertTrue(result.contains("both"))
+    }
+
+    /// Lower in a removed song's radio counts for less than high in a pick's.
+    func testAWeakLikenessToARemovedSongOnlySinksASong() {
+        let result = blend(
+            ["s1"], [["s1", "a1", "a2"]],
+            removed: ["x0"], removedRadios: [["x0", "x1", "x2", "x3", "x4", "x5", "a1"]]
+        )
+        XCTAssertEqual(result, ["s1", "a2", "a1"])
+    }
+
+    // MARK: - Editing a mix
+
+    private func mix(_ seeds: [String], removed: [String] = []) -> MixRadio {
+        MixRadio(id: UUID(), name: "Mix", seeds: Fixtures.tracks(seeds), removed: Fixtures.tracks(removed),
+                 createdAt: Date(), deletedAt: nil,
+                 stamp: EditStamp(editedAt: Date(), editedBy: "me"))
+    }
+
+    func testRemovingAPickStopsItBeingOneAndSteersAwayFromIt() {
+        var m = mix(["s1", "s2"])
+        m.remove(Fixtures.track("s1"))
+        XCTAssertEqual(ids(m.seeds), ["s2"])
+        XCTAssertEqual(ids(m.removed), ["s1"])
+    }
+
+    func testAddingARemovedSongBackMakesItAPickAndTakesBackTheRemoval() {
+        var m = mix(["s1"], removed: ["x1"])
+        m.add(Fixtures.track("x1"))
+        XCTAssertEqual(ids(m.seeds), ["s1", "x1"])
+        XCTAssertEqual(m.removed, [])
+    }
+
+    func testTheSamePickAddedTwiceIsOnePick() {
+        var m = mix(["s1"])
+        m.add(Fixtures.track("s1"))
+        XCTAssertEqual(ids(m.seeds), ["s1"])
+    }
+
+    func testTheSignatureFollowsPicksAndRemovals() {
+        var m = mix(["s1"])
+        let before = m.signature
+        m.remove(Fixtures.track("a1"))
+        XCTAssertNotEqual(m.signature, before)
+    }
+
+    // MARK: - Rebuilding
+
+    /// An edit rebuilds from the radios already read, so only what the edit is about moves.
+    func testARebuildUsesTheRadiosAlreadyRead() async throws {
+        let source = FakeMixSource(radios: ["s1": ["s1", "new"], "x0": ["x0", "a1"]])
+        let result = try await MixRadioService.build(
+            seeds: Fixtures.tracks(["s1"]), removed: Fixtures.tracks(["x0"]),
+            known: ["s1": Fixtures.tracks(["s1", "a1", "a2"])], source: source, isSameSong: byId
+        )
+        XCTAssertEqual(ids(result.tracks), ["s1", "a2"], "s1's kept radio, steered away from x0's")
+        XCTAssertEqual(Set(result.radios.keys), ["x0"], "only what had to be fetched comes back")
+    }
+
+    func testARemovedSongsRadioFailingStillBuilds() async throws {
+        let source = FakeMixSource(radios: ["s1": ["s1", "a1"]])
+        let result = try await MixRadioService.build(
+            seeds: Fixtures.tracks(["s1"]), removed: Fixtures.tracks(["x0"]), source: source, isSameSong: byId
+        )
+        XCTAssertEqual(ids(result.tracks), ["s1", "a1"])
     }
 
     // MARK: - Naming
 
-    func testTitles() {
+    func testSuggestedNames() {
         let a = Fixtures.track("a", title: "Alpha")
         let b = Fixtures.track("b", title: "Beta")
         let c = Fixtures.track("c", title: "Gamma")
-        XCTAssertEqual(MixRadio(seeds: [a]).title, "Alpha Radio")
-        XCTAssertEqual(MixRadio(seeds: [a, b]).title, "Alpha + Beta Radio")
-        XCTAssertEqual(MixRadio(seeds: [a, b, c]).title, "Alpha + 2 More Radio")
+        XCTAssertEqual(MixRadio.suggestedName(for: [a]), "Alpha Mix")
+        XCTAssertEqual(MixRadio.suggestedName(for: [a, b]), "Alpha + Beta Mix")
+        XCTAssertEqual(MixRadio.suggestedName(for: [a, b, c]), "Alpha + 2 More Mix")
     }
 }
 

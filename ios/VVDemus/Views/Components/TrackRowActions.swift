@@ -18,10 +18,10 @@ struct TrackRowActions<Extra: View>: ViewModifier {
     // No `DownloadManager` here: the download item lives in `TrackMenuItems`, which observes
     // it itself. Observing it on the modifier re-rendered every row on every progress tick.
     @Environment(\.openRadio) private var openRadio
-    @Environment(\.openMixRadio) private var openMixRadio
     @Environment(\.openLyrics) private var openLyrics
     @State private var showNewPlaylistAlert = false
     @State private var newPlaylistName = ""
+    @State private var showNewMixAlert = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -79,9 +79,9 @@ struct TrackRowActions<Extra: View>: ViewModifier {
                     track: track,
                     player: player,
                     onRadio: { openRadio(track) },
-                    onMixRadio: { openMixRadio(MixRadioSeedsStore.shared.radio) },
                     onLyrics: { openLyrics(track) },
-                    showNewPlaylistAlert: $showNewPlaylistAlert
+                    showNewPlaylistAlert: $showNewPlaylistAlert,
+                    showNewMixAlert: $showNewMixAlert
                 )
                 // Last, and in its own section: screen-specific items are the destructive ones
                 // (Playlist's "Remove from Playlist"), which belong at the bottom for the same
@@ -103,6 +103,7 @@ struct TrackRowActions<Extra: View>: ViewModifier {
                     newPlaylistName = ""
                 }
             }
+            .newMixRadioAlert(isPresented: $showNewMixAlert, track: track)
     }
 }
 
@@ -117,17 +118,17 @@ struct TrackMenuItems: View {
     /// Nil hides "Go to Radio". Now Playing is a full-screen cover presented above every
     /// NavigationStack, so it has nowhere to push a radio to.
     var onRadio: (() -> Void)?
-    /// Nil hides "Go to Mix Radio", for the same reason as `onRadio`. Picking songs for one
-    /// still works without it — that needs nowhere to go.
-    var onMixRadio: (() -> Void)? = nil
     /// Nil hides "Show Lyrics", for the same reason: Now Playing presents the lyrics itself,
     /// as a cover over its own sheet, because there is no stack under it to push onto.
     var onLyrics: (() -> Void)?
     @Binding var showNewPlaylistAlert: Bool
+    /// Raised by "New Mix Radio…", for the same reason as `showNewPlaylistAlert`: a menu
+    /// cannot hold a text field, so the alert lives on whatever presented the menu.
+    @Binding var showNewMixAlert: Bool
     @ObservedObject private var liked = LikedSongsStore.shared
     @ObservedObject private var playlists = PlaylistStore.shared
     @ObservedObject private var downloads = DownloadManager.shared
-    @ObservedObject private var mixSeeds = MixRadioSeedsStore.shared
+    @ObservedObject private var mixes = MixRadioStore.shared
 
     var body: some View {
         Section {
@@ -165,30 +166,33 @@ struct TrackMenuItems: View {
                     Label("Go to Radio", systemImage: "dot.radiowaves.left.and.right")
                 }
             }
-            // A radio of several songs is picked one song at a time, from wherever each one
-            // is, and opened from any row once there are two — one pick is just "Go to Radio".
-            Button {
-                mixSeeds.toggle(track)
-            } label: {
-                if mixSeeds.contains(track) {
-                    Label("Remove from Mix Radio", systemImage: "minus.circle")
-                } else {
-                    Label("Add to Mix Radio", systemImage: "plus.square.on.square")
+            // A mix is picked one song at a time, from wherever each one is. A tick marks the
+            // mixes this song is already a pick of; choosing one of those takes it out again,
+            // which steers that mix away from songs like it — see `MixRadio.remove`.
+            Menu {
+                ForEach(mixes.mixes) { mix in
+                    Button {
+                        if mix.contains(track) {
+                            mixes.remove(track, from: mix.id)
+                        } else {
+                            mixes.add(track, to: mix.id)
+                        }
+                    } label: {
+                        if mix.contains(track) {
+                            Label(mix.name, systemImage: "checkmark")
+                        } else {
+                            Text(mix.name)
+                        }
+                    }
                 }
-            }
-            if let onMixRadio, mixSeeds.seeds.count >= 2 {
-                Button(action: onMixRadio) {
-                    Label("Go to Mix Radio (\(mixSeeds.seeds.count) Songs)", systemImage: "dot.radiowaves.left.and.right")
-                }
-            }
-            // Wherever the picks can be added to, they can be dropped — without it, starting
-            // over meant opening the station or removing each song from its own row.
-            if !mixSeeds.seeds.isEmpty {
-                Button(role: .destructive) {
-                    mixSeeds.clear()
+                if !mixes.mixes.isEmpty { Divider() }
+                Button {
+                    showNewMixAlert = true
                 } label: {
-                    Label("Clear Mix Radio", systemImage: "xmark.circle")
+                    Label("New Mix Radio…", systemImage: "plus")
                 }
+            } label: {
+                Label("Add to Mix Radio", systemImage: "plus.square.on.square")
             }
             if let onLyrics {
                 Button(action: onLyrics) {
@@ -243,5 +247,35 @@ extension View {
     func trackActions(track: Track, player: PlayerService, includesTrailingSwipes: Bool = true) -> some View {
         trackActions(track: track, player: player,
                      includesTrailingSwipes: includesTrailingSwipes) { EmptyView() }
+    }
+}
+
+/// The name prompt behind "New Mix Radio…", which creates the mix with `track` as its first pick.
+private struct NewMixRadioAlert: ViewModifier {
+    @Binding var isPresented: Bool
+    let track: Track
+    @State private var name = ""
+
+    func body(content: Content) -> some View {
+        content.alert("New Mix Radio", isPresented: $isPresented) {
+            TextField(MixRadio.suggestedName(for: [track]), text: $name)
+            Button("Cancel", role: .cancel) { name = "" }
+            Button("Create") {
+                let typed = name.trimmingCharacters(in: .whitespaces)
+                MixRadioStore.shared.create(
+                    name: typed.isEmpty ? MixRadio.suggestedName(for: [track]) : typed,
+                    with: track
+                )
+                name = ""
+            }
+        } message: {
+            Text("Starts with \u{201C}\(track.title)\u{201D}. Add more songs from any song\u{2019}s menu.")
+        }
+    }
+}
+
+extension View {
+    func newMixRadioAlert(isPresented: Binding<Bool>, track: Track) -> some View {
+        modifier(NewMixRadioAlert(isPresented: isPresented, track: track))
     }
 }

@@ -60,6 +60,7 @@ enum SyncEngine {
         if let feed = HomeFeedStore.shared.syncRecord() { generated.append(feed) }
         generated.append(contentsOf: RadioCacheStore.shared.syncRecords())
         generated.append(contentsOf: AlbumCacheStore.shared.syncRecords())
+        generated.append(contentsOf: MixStationStore.shared.syncRecords())
 
         let stats = ListeningStatsStore.shared
         let devices = recipient.map { _ in PairedPeerStore.shared.deviceRecords() }
@@ -77,7 +78,7 @@ enum SyncEngine {
             // it for everything, and has to keep getting what it always got. Nil here would ask
             // that peer for its whole log every round.
             eventsSince: stats.newestEventAt,
-            mixRadio: MixRadioSeedsStore.shared.record,
+            mixes: MixRadioStore.shared.records,
             devices: devices,
             devicesSignature: devices.flatMap { list in recipient.flatMap { PairedPeerStore.shared.signature(of: list, for: $0) } },
             eventMarks: stats.eventMarks,
@@ -108,7 +109,9 @@ enum SyncEngine {
         summary.radios = RadioHistoryStore.shared.merge(payload.radios)
         summary.albums = AlbumHistoryStore.shared.merge(payload.openedAlbums)
         summary.searches = RecentSearchStore.merge(payload.recentSearches) ? 1 : 0
-        if let mix = payload.mixRadio, MixRadioSeedsStore.shared.merge(mix) { summary.mixRadio = 1 }
+        // Before `generated`, so a station arriving in the same payload finds its mix already
+        // at the signature it was built for, and is not rebuilt here.
+        summary.mixRadio = MixRadioStore.shared.merge(payload.mixes ?? [])
 
         for record in payload.generated {
             let applied: Bool
@@ -116,6 +119,8 @@ enum SyncEngine {
                 applied = DaylistStore.shared.applySynced(record)
             } else if record.id == "home_feed_v3" {
                 applied = HomeFeedStore.shared.applySynced(record)
+            } else if record.id.hasPrefix(MixStationStore.recordPrefix) {
+                applied = MixStationStore.shared.applySynced(record)
             } else if record.id.hasPrefix(AlbumCacheStore.recordPrefix) {
                 applied = AlbumCacheStore.shared.applySynced(record)
             } else {
