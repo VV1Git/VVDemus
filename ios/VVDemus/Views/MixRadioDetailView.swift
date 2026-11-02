@@ -23,6 +23,15 @@ struct MixRadioDetailView: View {
     private var mix: MixRadio? { mixes.mix(mixId) }
     private var station: MixStationStore.Station? { stations.station(for: mixId) }
 
+    /// No station yet, or one built for picks and removals that have since changed. Either
+    /// way the list on hand is not this mix's, so the screen waits for the one that is — after
+    /// a removal exactly as after an addition, rather than leaving the old list up with no sign
+    /// that anything is happening.
+    private var awaitingStation: Bool {
+        guard let mix else { return false }
+        return station?.signature != mix.signature
+    }
+
     /// The station, less anything removed since it was built — so a removal leaves the list
     /// at once, rather than when the rebuild that steers away from it lands.
     private var tracks: [Track] {
@@ -66,7 +75,7 @@ struct MixRadioDetailView: View {
                     systemImage: "plus.square.on.square",
                     description: Text("Add songs from any song\u{2019}s menu with Add to Mix Radio.")
                 )
-            } else if station == nil {
+            } else if awaitingStation {
                 if let errorMessage {
                     ErrorRow(message: errorMessage) { Task { await ensureStation(force: true) } }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -202,12 +211,20 @@ struct MixRadioDetailView: View {
     /// device — the list changing once, under you, for no reason you could see.
     private func ensureStation(force: Bool = false) async {
         guard let mix, !mix.seeds.isEmpty, station?.signature != mix.signature else { return }
+        errorMessage = nil
         if !force, !builder.shouldBuildHere(mix) {
             let wait = MixStationBuilder.peerGrace - Date().timeIntervalSince(mix.stamp.editedAt)
             if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
             guard !Task.isCancelled, station?.signature != mix.signature else { return }
         }
-        errorMessage = nil
+        // An edit starts its own build, in the background, before this screen hears of it —
+        // and that one fails silently. Wait it out, then build here if it did not land, so a
+        // failure ends in an error to retry rather than a spinner that never stops.
+        while builder.building.contains(mixId) {
+            try? await Task.sleep(for: .milliseconds(200))
+            if Task.isCancelled { return }
+        }
+        guard station?.signature != mix.signature else { return }
         do {
             try await builder.build(mixId)
         } catch {
