@@ -1,27 +1,49 @@
 import SwiftUI
 
-/// A radio of several songs: the picked songs first, then songs like the set of them.
-/// The single-seed counterpart is `RadioDetailView`; see `MixRadioBlend` for the difference.
+/// A named radio of several songs: the picked songs first, then songs like the set of them,
+/// steered away from songs like the ones removed from it. The single-seed counterpart is
+/// `RadioDetailView`; see `MixRadioBlend` for the difference.
 struct MixRadioDetailView: View {
-    let radio: MixRadio
+    let mixId: UUID
     @ObservedObject var player: PlayerService
-    @ObservedObject private var tray = MixRadioSeedsStore.shared
-    /// The station's songs live here rather than in this view, exactly as a single-seed
-    /// radio's do. They used to sit in an in-memory dictionary, so the station was rebuilt on
-    /// every launch and on each device separately — and YouTube answers differently every
-    /// time, so it changed constantly and never matched between the phone and the Mac.
-    @ObservedObject private var radioCache = RadioCacheStore.shared
-    private var tracks: [Track] { radioCache.tracks(for: radio.cacheKey) ?? [] }
-    @State private var isLoading = true
+    @ObservedObject private var mixes = MixRadioStore.shared
+    /// The station's songs live in the store rather than in this view, so they are kept across
+    /// launches and are the same on every linked device — see `MixStationStore`.
+    @ObservedObject private var stations = MixStationStore.shared
+    @ObservedObject private var builder = MixStationBuilder.shared
+    @Environment(\.dismiss) private var dismiss
     @State private var errorMessage: String?
     @State private var searchText = ""
     @State private var sortOption: MixSortOption = .order
     @State private var isRefreshing = false
+    @State private var showRename = false
+    @State private var newName = ""
+    @State private var confirmDelete = false
 
-    private var title: String { radio.title }
+    private var mix: MixRadio? { mixes.mix(mixId) }
+    private var station: MixStationStore.Station? { stations.station(for: mixId) }
+
+    /// No station yet, or one built for picks and removals that have since changed. Either
+    /// way the list on hand is not this mix's, so the screen waits for the one that is — after
+    /// a removal exactly as after an addition, rather than leaving the old list up with no sign
+    /// that anything is happening.
+    private var awaitingStation: Bool {
+        guard let mix else { return false }
+        return station?.signature != mix.signature
+    }
+
+    /// The station, less anything removed since it was built — so a removal leaves the list
+    /// at once, rather than when the rebuild that steers away from it lands.
+    private var tracks: [Track] {
+        guard let station else { return [] }
+        let removed = Set((mix?.removed ?? []).map(\.videoId))
+        return station.tracks.filter { !removed.contains($0.videoId) }
+    }
+
+    private var title: String { mix?.name ?? "Mix Radio" }
 
     private var subtitle: String {
-        let names = radio.seeds.map(\.title)
+        let names = (mix?.seeds ?? []).map(\.title)
         switch names.count {
         case 0: return ""
         case 1: return "From \(names[0])"
@@ -39,25 +61,28 @@ struct MixRadioDetailView: View {
         sortOption.apply(to: tracks)
     }
 
-    /// Whether this screen is showing the songs currently in the tray. A station opened before
-    /// the tray changed is a snapshot of the older pick, and clearing the tray from it would
-    /// clear a pick the screen is not about.
-    private var isCurrentPick: Bool { tray.seeds == radio.seeds }
-
     var body: some View {
         Group {
-            if isLoading {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let errorMessage, tracks.isEmpty {
-                ErrorRow(message: errorMessage) { Task { await load() } }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if tracks.isEmpty {
+            if mix == nil {
                 ContentUnavailableView(
-                    "No Songs",
-                    systemImage: "music.note.list",
-                    description: Text("This radio came back empty. Refresh to build it again.")
+                    "Mix Deleted",
+                    systemImage: "dot.radiowaves.left.and.right",
+                    description: Text("This mix radio was deleted.")
                 )
+            } else if mix?.seeds.isEmpty == true {
+                ContentUnavailableView(
+                    "No Picks",
+                    systemImage: "plus.square.on.square",
+                    description: Text("Add songs from any song\u{2019}s menu with Add to Mix Radio.")
+                )
+            } else if awaitingStation {
+                if let errorMessage {
+                    ErrorRow(message: errorMessage) { Task { await ensureStation(force: true) } }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             } else {
                 trackList
             }
@@ -66,34 +91,53 @@ struct MixRadioDetailView: View {
         .navigationTitle(title)
         .compactNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .trailingActions) {
-                Menu {
-                    MixSortPicker(selection: $sortOption)
-                    Section {
-                        Button {
-                            Task { await refresh() }
-                        } label: {
-                            Label(isRefreshing ? "Refreshing…" : "Refresh", systemImage: "arrow.clockwise")
-                        }
-                        .disabled(isRefreshing)
-                    }
-                    if isCurrentPick {
+            if mix != nil {
+                ToolbarItem(placement: .trailingActions) {
+                    Menu {
+                        MixSortPicker(selection: $sortOption)
                         Section {
-                            Button(role: .destructive) {
-                                tray.clear()
+                            Button {
+                                Task { await refresh() }
                             } label: {
-                                Label("Clear Picked Songs", systemImage: "xmark.circle")
+                                Label(isRefreshing ? "Refreshing…" : "Refresh", systemImage: "arrow.clockwise")
+                            }
+                            .disabled(isRefreshing || builder.building.contains(mixId))
+                            Button {
+                                newName = mix?.name ?? ""
+                                showRename = true
+                            } label: {
+                                Label("Rename…", systemImage: "pencil")
                             }
                         }
+                        Section {
+                            Button(role: .destructive) {
+                                confirmDelete = true
+                            } label: {
+                                Label("Delete Mix", systemImage: "trash")
+                            }
+                        }
+                    } label: {
+                        Label("More", systemImage: "ellipsis")
                     }
-                } label: {
-                    Label("More", systemImage: "ellipsis")
                 }
             }
         }
-        // Keyed on the picks, so a screen kept on through a change of them — the Mac's sidebar
-        // row follows the picks rather than being rebuilt — loads the new station.
-        .task(id: radio.id) { await load() }
+        .alert("Rename Mix", isPresented: $showRename) {
+            TextField("Name", text: $newName)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") { mixes.rename(mixId, to: newName) }
+        }
+        .confirmationDialog("Delete \u{201C}\(title)\u{201D}?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete Mix", role: .destructive) {
+                mixes.delete(mixId)
+                dismiss()
+            }
+        }
+        // Keyed on what the station is built from, so every edit — here, from a song's menu
+        // anywhere, or arriving from another device — brings the station up to date.
+        .task(id: mix?.signature) { await ensureStation() }
+        // So Home's shortcuts sort it by when you last looked, as they do every other kind.
+        .task { RecentOpensStore.shared.markOpened(RecentOpensStore.mixKey(mixId)) }
     }
 
     private var trackList: some View {
@@ -101,7 +145,7 @@ struct MixRadioDetailView: View {
             MixDetailHeader(
                 title: title,
                 subtitle: subtitle,
-                imageURL: radio.seeds.first?.thumbnailUrl,
+                imageURL: mix?.seeds.first?.thumbnailUrl,
                 trackCount: tracks.count,
                 totalDuration: totalDuration(of: tracks),
                 tracks: tracks,
@@ -130,7 +174,15 @@ struct MixRadioDetailView: View {
                         play(from: track, in: playbackContext)
                     }
                     .trackRowMetrics()
-                    .trackActions(track: track, player: player)
+                    .trackActions(track: track, player: player) {
+                        // A pick and a suggested song alike: gone, and the station steers away
+                        // from songs like it. Adding it back as a pick undoes that.
+                        Button(role: .destructive) {
+                            withAnimation { mixes.remove(track, from: mixId) }
+                        } label: {
+                            Label("Remove from Mix", systemImage: "hand.thumbsdown")
+                        }
+                    }
                 }
             }
 
@@ -153,47 +205,43 @@ struct MixRadioDetailView: View {
         player.play(track: track, context: context, contextTitle: title)
     }
 
-    private func load() async {
+    /// Builds the station if the one kept is not for the mix as it stands.
+    ///
+    /// An edit made on another device is left to that device for a while: it builds as soon as
+    /// it edits, and its station arrives with the edit. Building here as well would make a
+    /// second, different station, and the newer of the two would replace the older on every
+    /// device — the list changing once, under you, for no reason you could see.
+    private func ensureStation(force: Bool = false) async {
+        guard let mix, !mix.seeds.isEmpty, station?.signature != mix.signature else { return }
         errorMessage = nil
-        // Built once, here or on the paired device, and kept until Refresh.
-        guard tracks.isEmpty else {
-            isLoading = false
-            return
+        if !force, !builder.shouldBuildHere(mix) {
+            let wait = MixStationBuilder.peerGrace - Date().timeIntervalSince(mix.stamp.editedAt)
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            guard !Task.isCancelled, station?.signature != mix.signature else { return }
         }
-        isLoading = true
+        // An edit starts its own build, in the background, before this screen hears of it —
+        // and that one fails silently. Wait it out, then build here if it did not land, so a
+        // failure ends in an error to retry rather than a spinner that never stops.
+        while builder.building.contains(mixId) {
+            try? await Task.sleep(for: .milliseconds(200))
+            if Task.isCancelled { return }
+        }
+        guard station?.signature != mix.signature else { return }
         do {
-            let built = try await MixRadioService.build(seeds: radio.seeds)
-            // A station that arrived from the paired device while this one was being built
-            // wins: replacing it would put the two devices on different lists again.
-            if tracks.isEmpty, !built.isEmpty { keep(built) }
+            try await builder.build(mixId)
         } catch {
             errorMessage = "Couldn't load this radio. Check your connection."
         }
-        isLoading = false
     }
 
-    /// Saves the station and tells the paired device straight away. Storing a station is not
-    /// itself a library change, so without the nudge the other device would only hear of it
-    /// at the next sync — and, opening the station before then, build a different one.
-    private func keep(_ built: [Track]) {
-        RadioCacheStore.shared.store(built, for: radio.cacheKey)
-        PeerLink.shared.libraryDidChange()
-    }
-
-    /// Rebuilds the station with what it showed pushed to the back, so Refresh brings new
-    /// songs forward rather than reshuffling the same ones. The picked songs stay on top.
+    /// New songs for the same picks, with what was showing pushed to the back.
     private func refresh() async {
         isRefreshing = true
         errorMessage = nil
-        let seedIds = Set(radio.seeds.map(\.videoId))
-        let shown = Set(tracks.map(\.videoId)).subtracting(seedIds)
         do {
-            let built = try await MixRadioService.build(seeds: radio.seeds, avoiding: shown)
-            if built.isEmpty {
-                errorMessage = "No new songs for this radio right now. Try again later."
-            } else {
-                keep(built)
-            }
+            try await builder.refresh(mixId)
+        } catch MixStationBuilder.Failure.noNewSongs {
+            errorMessage = "No new songs for this radio right now. Try again later."
         } catch {
             errorMessage = "Couldn't refresh this radio. Check your connection."
         }

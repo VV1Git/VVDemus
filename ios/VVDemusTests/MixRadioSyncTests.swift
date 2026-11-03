@@ -1,59 +1,98 @@
 import XCTest
 @testable import VVDemus
 
-/// The mix radio picks crossing to the paired device, through the pure `MixRadioRecord.merging`
-/// so no singleton or `UserDefaults` is touched.
+/// Named mix radios crossing between linked devices, through the pure `MixRadio.merging` so no
+/// singleton or `UserDefaults` is touched.
 final class MixRadioSyncTests: XCTestCase {
-
-    private func track(_ id: String) -> Track {
-        Track(videoId: id, title: id, artist: "A", album: nil, thumbnailUrl: nil, durationSeconds: nil)
-    }
 
     private func stamp(_ seconds: TimeInterval, _ by: String = "mac") -> EditStamp {
         EditStamp(editedAt: Date(timeIntervalSince1970: seconds), editedBy: by)
     }
 
-    func testNewerPicksReplaceOlderOnes() {
-        let local = MixRadioRecord(seeds: [track("a")], stamp: stamp(100))
-        let incoming = MixRadioRecord(seeds: [track("b"), track("c")], stamp: stamp(200, "phone"))
-        let merged = MixRadioRecord.merging(local, incoming)
-        XCTAssertTrue(merged.changed)
-        XCTAssertEqual(merged.record.seeds.map(\.videoId), ["b", "c"])
+    private func mix(_ id: UUID, _ name: String, seeds: [String] = ["a"], at seconds: TimeInterval,
+                     by: String = "mac", deleted: Bool = false) -> MixRadio {
+        MixRadio(id: id, name: name, seeds: Fixtures.tracks(seeds), removed: [],
+                 createdAt: Date(timeIntervalSince1970: 0),
+                 deletedAt: deleted ? Date(timeIntervalSince1970: seconds) : nil,
+                 stamp: stamp(seconds, by))
     }
 
-    func testOlderPicksDoNotOverwriteNewerOnes() {
-        let local = MixRadioRecord(seeds: [track("a")], stamp: stamp(200))
-        let incoming = MixRadioRecord(seeds: [track("b")], stamp: stamp(100, "phone"))
-        let merged = MixRadioRecord.merging(local, incoming)
-        XCTAssertFalse(merged.changed)
-        XCTAssertEqual(merged.record.seeds.map(\.videoId), ["a"])
+    func testAMixFromAnotherDeviceArrives() {
+        let incoming = mix(UUID(), "Gym", at: 100, by: "phone")
+        let merged = MixRadio.merging([], [incoming])
+        XCTAssertEqual(merged.changed, 1)
+        XCTAssertEqual(merged.mixes, [incoming])
     }
 
-    /// Clearing on one device has to reach the other, not be handed straight back by it.
-    func testAClearIsAnEditThatWins() {
-        let local = MixRadioRecord(seeds: [track("a"), track("b")], stamp: stamp(100))
-        let cleared = MixRadioRecord(seeds: [], stamp: stamp(200, "phone"))
-        XCTAssertEqual(MixRadioRecord.merging(local, cleared).record.seeds, [])
+    /// Each mix merges on its own: an edit to one never costs another device's edit to another.
+    func testDifferentMixesEditedOnDifferentDevicesBothSurvive() {
+        let gym = UUID(), chill = UUID()
+        let local = [mix(gym, "Gym", seeds: ["a", "b"], at: 200), mix(chill, "Chill", at: 100)]
+        let incoming = [mix(gym, "Gym", at: 100, by: "phone"),
+                        mix(chill, "Chill", seeds: ["c"], at: 300, by: "phone")]
+        let merged = MixRadio.merging(local, incoming)
+        XCTAssertEqual(merged.mixes.first { $0.id == gym }?.seeds.map(\.videoId), ["a", "b"])
+        XCTAssertEqual(merged.mixes.first { $0.id == chill }?.seeds.map(\.videoId), ["c"])
     }
 
-    /// A device that never touched its tray must take the peer's picks.
-    func testAnUntouchedTrayTakesThePeersPicks() {
-        let untouched = MixRadioRecord(seeds: [], stamp: EditStamp(editedAt: .distantPast, editedBy: "mac"))
-        let incoming = MixRadioRecord(seeds: [track("a")], stamp: stamp(100, "phone"))
-        XCTAssertEqual(MixRadioRecord.merging(untouched, incoming).record.seeds.map(\.videoId), ["a"])
+    func testTheNewerEditToOneMixWins() {
+        let id = UUID()
+        let merged = MixRadio.merging([mix(id, "Old", at: 100)], [mix(id, "New", at: 200, by: "phone")])
+        XCTAssertEqual(merged.mixes.first?.name, "New")
     }
 
-    func testReceivingTheSameRecordTwiceIsANoOp() {
-        let record = MixRadioRecord(seeds: [track("a")], stamp: stamp(100))
-        XCTAssertFalse(MixRadioRecord.merging(record, record).changed)
+    func testAnOlderEditDoesNotOverwriteANewerOne() {
+        let id = UUID()
+        let merged = MixRadio.merging([mix(id, "New", at: 200)], [mix(id, "Old", at: 100, by: "phone")])
+        XCTAssertEqual(merged.changed, 0)
+        XCTAssertEqual(merged.mixes.first?.name, "New")
     }
 
-    /// A peer on a build from before mix radio synced sends no `mixRadio` key at all.
+    /// A delete has to reach the other device, not be handed straight back by it.
+    func testADeleteIsAnEditThatWins() {
+        let id = UUID()
+        let merged = MixRadio.merging([mix(id, "Gym", at: 100)], [mix(id, "Gym", at: 200, by: "phone", deleted: true)])
+        XCTAssertFalse(merged.mixes[0].isPresent)
+    }
+
+    func testReceivingTheSameMixTwiceIsANoOp() {
+        let m = mix(UUID(), "Gym", at: 100)
+        XCTAssertEqual(MixRadio.merging([m], [m]).changed, 0)
+    }
+
+    /// The device that made an edit builds its station; the others wait for it to arrive.
+    func testOnlyTheEditingDeviceBuildsStraightAway() async {
+        let now = Date()
+        let mine = MixRadio(id: UUID(), name: "M", seeds: [], removed: [], createdAt: now, deletedAt: nil,
+                            stamp: EditStamp(editedAt: now, editedBy: PeerIdentityBox.currentPeerId))
+        var theirs = mine
+        theirs.stamp.editedBy = PeerIdentityBox.currentPeerId + "-other"
+        await MainActor.run {
+            let builder = MixStationBuilder.shared
+            XCTAssertTrue(builder.shouldBuildHere(mine, now: now))
+            XCTAssertFalse(builder.shouldBuildHere(theirs, now: now))
+            XCTAssertTrue(builder.shouldBuildHere(theirs, now: now.addingTimeInterval(MixStationBuilder.peerGrace + 1)),
+                          "after a while it builds anyway, in case the other device never does")
+        }
+    }
+
+    /// A peer on a build from before mix radio synced sends no mix key at all.
     func testPayloadFromAnOlderBuildStillDecodes() throws {
         let json = """
         {"peerId":"p","likes":[],"playlists":[],"radios":[],"generated":[],"recentSearches":[],"events":[]}
         """
         let payload = try JSONDecoder().decode(SyncPayload.self, from: Data(json.utf8))
-        XCTAssertNil(payload.mixRadio)
+        XCTAssertNil(payload.mixes)
+    }
+
+    /// A peer on the build with a single unnamed tray still sends it; that has to decode too.
+    func testPayloadWithTheOldSingleTrayStillDecodes() throws {
+        let json = """
+        {"peerId":"p","likes":[],"playlists":[],"radios":[],"generated":[],"recentSearches":[],"events":[],
+         "mixRadio":{"seeds":[],"stamp":{"editedAt":0,"editedBy":"x"}}}
+        """
+        let payload = try JSONDecoder().decode(SyncPayload.self, from: Data(json.utf8))
+        XCTAssertNotNil(payload.mixRadio)
+        XCTAssertNil(payload.mixes)
     }
 }

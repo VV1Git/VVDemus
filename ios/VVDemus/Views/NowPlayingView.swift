@@ -571,6 +571,7 @@ private struct NowPlayingActionsMenu: View {
     @ObservedObject private var playlists = PlaylistStore.shared
     @State private var showNewPlaylistAlert = false
     @State private var newPlaylistName = ""
+    @State private var showNewMixAlert = false
 
     var body: some View {
         Menu {
@@ -580,7 +581,8 @@ private struct NowPlayingActionsMenu: View {
                 track: track,
                 player: player,
                 onRadio: nil,
-                showNewPlaylistAlert: $showNewPlaylistAlert
+                showNewPlaylistAlert: $showNewPlaylistAlert,
+                showNewMixAlert: $showNewMixAlert
             )
         } label: {
             Image(systemName: "ellipsis")
@@ -605,5 +607,6 @@ private struct NowPlayingActionsMenu: View {
                 newPlaylistName = ""
             }
         }
+        .newMixRadioAlert(isPresented: $showNewMixAlert, track: track)
     }
 }

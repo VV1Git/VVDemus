@@ -24,7 +24,7 @@ struct MacRootView: View {
     @ObservedObject private var radioHistory = RadioHistoryStore.shared
     @ObservedObject private var albumHistory = AlbumHistoryStore.shared
     @ObservedObject private var link = PeerLink.shared
-    @ObservedObject private var mixSeeds = MixRadioSeedsStore.shared
+    @ObservedObject private var mixes = MixRadioStore.shared
     @State private var selection: MacSection? = .home
     /// The push stack for whichever leaf screen the sidebar has selected. One path shared by
     /// all of them, held here rather than inside the `detail` branch so it survives that
@@ -158,13 +158,12 @@ struct MacRootView: View {
         .onChange(of: selection) { _, _ in
             leafPath = NavigationPath()
         }
-        // The Mix Radio row's value carries the picks, so it changes whenever they do. Follow
-        // it, so the row stays selected and the station on screen is the one for the picks
-        // as they stand now — or, once they are cleared and the row is gone, go Home rather
-        // than leave the detail pane on a screen the sidebar no longer shows.
-        .onChange(of: mixSeeds.seeds) { _, seeds in
-            guard case .destination(.mixRadio) = selection else { return }
-            selection = seeds.isEmpty ? .home : .destination(.mixRadio(mixSeeds.radio))
+        // A mix deleted from anywhere — its own screen, or another device — takes its row with
+        // it; go Home rather than leave the detail pane on a screen the sidebar no longer shows.
+        .onChange(of: mixes.mixes.map(\.id)) { _, ids in
+            if case .destination(.mixRadio(let id)) = selection, !ids.contains(id) {
+                selection = .home
+            }
         }
         .task {
             // Started unconditionally. The toggle governs the browser remote, not the link to
@@ -229,19 +228,19 @@ struct MacRootView: View {
                 row(.destination(.stats), "Your Stats", "chart.bar.fill")
             }
 
-            if !mixSeeds.seeds.isEmpty {
-                Section("Mix Radio") {
-                    // Built exactly as the playlist rows are, with the count in the title. With a
-                    // `.badge` on it — the one modifier no working row has — clicking highlighted
-                    // the row but left the selection nil, which the detail pane shows as Home.
-                    row(.destination(.mixRadio(mixSeeds.radio)),
-                        "Mix Radio (\(mixSeeds.seeds.count))",
-                        "dot.radiowaves.left.and.right")
-                        .contextMenu {
-                            Button("Clear Mix Radio", role: .destructive) {
-                                mixSeeds.clear()
+            if !mixes.mixes.isEmpty {
+                Section("Mix Radios") {
+                    // Built exactly as the playlist rows are. No `.badge`: on one of these rows it
+                    // left a click highlighting the row with the selection nil, which the detail
+                    // pane shows as Home.
+                    ForEach(mixes.mixes) { mix in
+                        row(.destination(.mixRadio(mix.id)), mix.name, "dot.radiowaves.left.and.right")
+                            .contextMenu {
+                                Button("Delete Mix", role: .destructive) {
+                                    mixes.delete(mix.id)
+                                }
                             }
-                        }
+                    }
                 }
             }
 
@@ -362,8 +361,6 @@ struct MacRootView: View {
             .environment(\.openRadio) { leafPath.append(LibraryDestination.radio($0)) }
             // Same placement, same reasons: on the stack, not on the screen inside it.
             .environment(\.openLyrics) { leafPath.append(LibraryDestination.lyrics($0)) }
-            // Missing until now, so "Go to Mix Radio" did nothing on any sidebar leaf screen.
-            .environment(\.openMixRadio) { leafPath.append(LibraryDestination.mixRadio($0)) }
         }
     }
 }

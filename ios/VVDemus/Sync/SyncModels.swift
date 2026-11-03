@@ -197,22 +197,12 @@ extension AlbumRecord {
     }
 }
 
-/// The songs picked for a mix radio, as one ordered list.
-///
-/// Whole-list newest-wins, like an album record, not a playlist's per-entry merge: the picks
-/// are a short-lived tray in pick order, and the station is built from exactly that order, so
-/// a union of two devices' trays would be a station neither of them picked. Clearing is an
-/// edit like any other — an empty list with a fresh stamp — so it reaches the other device
-/// instead of being handed straight back by it.
+/// The single unnamed tray mix radio began as, in the shape the builds before named mixes
+/// send it. Decoded and never sent: a payload carrying it must still decode, and the tray
+/// itself is migrated into `MixRadio` on each device — see `MixRadioStore.migrateTray`.
 struct MixRadioRecord: Codable, Equatable {
     var seeds: [Track]
     var stamp: EditStamp
-
-    /// Folds `incoming` into `local`, returning the winner and whether it was `incoming`.
-    /// Equal stamps keep `local`, so re-receiving the same record is a no-op.
-    static func merging(_ local: MixRadioRecord, _ incoming: MixRadioRecord) -> (record: MixRadioRecord, changed: Bool) {
-        incoming.stamp.isNewerThan(local.stamp) ? (incoming, true) : (local, false)
-    }
 }
 
 /// A cache that is generated whole — the daylist, Home's shelves, one station's track list.
@@ -250,9 +240,13 @@ struct SyncPayload: Codable {
     /// The sender's newest play: the date the reply sends plays from, for plays that carry no
     /// `origin` — and, for a peer on a build that predates `eventMarks`, for every play.
     var eventsSince: Date?
-    /// Optional for the same wire-compatibility reason as `albums`: a peer on an older build
-    /// sends no picks, which merges as nothing.
+    /// The tray a build from before named mixes sends. Never sent from here, and ignored on
+    /// arrival — kept only so such a payload still decodes.
     var mixRadio: MixRadioRecord? = nil
+    /// Your named mix radios, tombstones included. Optional for the same wire-compatibility
+    /// reason as `albums`. Their stations travel in `generated`, under `MixStationStore`'s
+    /// prefix — which an older build's `RadioCacheStore` turns away, since it is not its own.
+    var mixes: [MixRadio]? = nil
     /// The sender's view of the group, so the recipient can meet the devices it has not been
     /// paired with — see `PairedPeerStore.merge`. Nil from an older build, and in a backup file:
     /// a file is not a device anyone has vouched for.

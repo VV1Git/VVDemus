@@ -244,6 +244,9 @@ final class RadioCacheStore: ObservableObject {
     func applySynced(_ record: GeneratedRecord) -> Bool {
         guard record.id.hasPrefix(Self.recordPrefix) else { return false }
         let seedVideoId = String(record.id.dropFirst(Self.recordPrefix.count))
+        // Mix stations kept here by the build before `MixStationStore`, still offered by a
+        // device that has not updated. Taken in, they would only crowd out real radios.
+        guard !seedVideoId.hasPrefix(MixStationStore.legacyRadioCachePrefix) else { return false }
         if let existing = storedAt[seedVideoId], record.generatedAt <= existing { return false }
         guard let tracks = try? JSONDecoder().decode([Track].self, from: record.payload),
               !tracks.isEmpty else { return false }
@@ -266,6 +269,22 @@ final class RadioCacheStore: ObservableObject {
     }
 
     private static let recordPrefix = "radio_tracks:"
+
+    /// Drops every station whose key starts with `prefix`, along with its bookkeeping.
+    func removeStations(withPrefix prefix: String) {
+        let doomed = cache.keys.filter { $0.hasPrefix(prefix) }
+        guard !doomed.isEmpty else { return }
+        for key in doomed {
+            cache.removeValue(forKey: key)
+            storedAt.removeValue(forKey: key)
+            generations.removeValue(forKey: key)
+            refreshes.removeValue(forKey: key)
+            seen.removeValue(forKey: key)
+            continuations.removeValue(forKey: key)
+        }
+        order.removeAll { $0.hasPrefix(prefix) }
+        save()
+    }
 
     private func trimToLimit() {
         while order.count > limit {
